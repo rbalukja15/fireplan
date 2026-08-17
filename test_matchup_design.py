@@ -94,7 +94,7 @@ def make_handler(model):
             a_n = int(f.get("A.1.1.count") or 0)
             d_n = int(f.get("B.1.1.count") or 0)
 
-            if model == "flat" or x == y:
+            if model == "flat" or model == "return_fire" or x == y:
                 per = atk_of(x)
             else:
                 per = ARMOUR_DMG if y in ARMOUR else SOFT_DMG
@@ -103,6 +103,20 @@ def make_handler(model):
             # A stack cannot lose more than it has: this is the cap that
             # silently understates the opponent's damage.
             a_pool, d_pool = a_n * hp_of(x), d_n * hp_of(y)
+            if model == "return_fire":
+                # What dxcalc.com actually does to an air stack: the attacker's
+                # output is scaled by the share of its own pool that survived
+                # the target's fire. The stat is FLAT — the same atk_of(x) for
+                # every target — but the raw readings slope hard, because
+                # targets differ enormously in how much they shoot back.
+                #
+                # Ground units defend against aircraft at roughly a tenth of
+                # their land defence (infantry 0.4 against 5.0, heavy tanks 4.0
+                # against 45.0, both measured live), so the anti-air fire is
+                # scaled to match. Without that the heavy-tank cell wipes the
+                # attacker and the cell under test never produces a reading.
+                a_lost = min(a_lost * 0.1, a_pool)
+                d_lost *= 1.0 - (a_lost / a_pool if a_pool else 0.0)
             self._send(render([("A.1", "A.1.1", min(a_lost, a_pool), a_pool),
                                ("B.1", "B.1.1", min(d_lost, d_pool), d_pool)]))
     return H
@@ -234,6 +248,39 @@ check("heavy armour needs no padding beyond the floor",
       dp.defender_count("ht", 10) == 20, str(dp.defender_count("ht", 10)))
 check("an unknown unit still gets a stack rather than a crash",
       dp.defender_count("nosuchunit", 10) >= 20)
+
+print("\n9. a flat stat seen through return fire is not called target-dependent")
+# The live air_vs_ground run read the Fighter at 3.68 against armoured cars and
+# 4.95 against light artillery — a 34% spread that looks exactly like a target
+# rule and is not one. Both cells are the same 5.0 stat; armoured cars simply
+# shoot back 23x harder, and the attacker's output scales with what survives.
+out = run("return_fire", ["tac"], GROUND)
+row = [l for l in out.splitlines() if l.strip().startswith("tac")]
+check("the raw row really does slope — the trap is present",
+      any("raw row slopes" in l for l in out.splitlines()), out)
+check("but it is attributed to return fire, not to the target",
+      "EXPLAINED BY RETURN FIRE" in out, out)
+check("the flat underlying stat is recovered",
+      f"The stat is {dp.MEASURED_UNITS['tac'][1]:.2f}" in out, out)
+check("and it is NOT reported as target-dependent",
+      "-> TARGET-DEPENDENT" not in out, out)
+
+print("\n10. the correction is not applied where it is not needed")
+# Dividing by (1 - f) against a server that does not attenuate would turn a
+# genuinely flat attacker into a target-dependent one. The verdict is taken
+# from the raw row for exactly this reason.
+out = run("flat", ["tac"], GROUND)
+check("a non-attenuating flat server is still read as flat",
+      "flat at" in out and "raw row slopes" not in out, out)
+check("and no return-fire story is told about it",
+      "EXPLAINED BY RETURN FIRE" not in out, out)
+
+print("\n11. a real target rule survives the correction")
+out = run("class", ["tac"], GROUND)
+check("still reported as target-dependent",
+      "TARGET-DEPENDENT" in out, out)
+check("and not explained away as return fire",
+      "EXPLAINED BY RETURN FIRE" not in out, out)
 
 print(f"\nALL {ok} CHECKS PASSED — the matrix separates a target-class rule "
       "from a flat attacker stat, which the diagonal cannot.")

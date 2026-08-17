@@ -1358,10 +1358,11 @@ def exp_matchups(p: Probe, attackers: list[str], targets: list[str],
         return
     print(f"  {len(attackers)} attacker(s) x {len(targets)} target(s), "
           f"{atk_n} attacking, one request each\n")
-    print(f"  {'atk':7} {'target':7} {'defN':>5} {'dmg/atk':>9} {'dmg/def':>9} "
-          f"{'targetHP':>9}  note")
+    print(f"  {'atk':7} {'target':7} {'defN':>5} {'dmg/atk':>9} {'corrected':>9} "
+          f"{'dmg/def':>9} {'targetHP':>9}  note")
 
     matrix: dict[str, dict[str, float]] = {}
+    raw_matrix: dict[str, dict[str, float]] = {}
     for x in attackers:
         for y in targets:
             def_n = defender_count(y, atk_n)
@@ -1375,14 +1376,14 @@ def exp_matchups(p: Probe, attackers: list[str], targets: list[str],
                                         def_terrain=def_terrain))
                     p.submit(payload)
                 except ValueError as e:                 # guard_payload refused
-                    print(f"  {x:7} {y:7} {'-':>5} {'-':>9} {'-':>9} {'-':>9}"
-                          f"  SKIPPED: {e}")
+                    print(f"  {x:7} {y:7} {'-':>5} {'-':>9} {'-':>9} {'-':>9} "
+                          f"{'-':>9}  SKIPPED: {e}")
                     record(tag, {"atk": x, "target": y, "skipped": str(e)}, {})
                     r = None
                     break
                 except BareFormReturned as e:
-                    print(f"  {x:7} {y:7} {def_n:>5} {'-':>9} {'-':>9} {'-':>9}"
-                          f"  FAILED: {e}")
+                    print(f"  {x:7} {y:7} {def_n:>5} {'-':>9} {'-':>9} {'-':>9} "
+                          f"{'-':>9}  FAILED: {e}")
                     record(tag, {"atk": x, "target": y, "error": str(e)}, {})
                     r = None
                     break
@@ -1418,27 +1419,67 @@ def exp_matchups(p: Probe, attackers: list[str], targets: list[str],
                 note = ((note + "; " if note else "")
                         + f"pool implies {target_hp:.1f} HP, table says {known[0]}")
 
-            matrix.setdefault(x, {})[y] = dmg_atk if dmg_atk is not None else float("nan")
+            # RETURN FIRE. A stack's output falls in proportion to the share of
+            # its own pool it lost in the same round, so the raw figure above is
+            # not the attacker's stat — it is the stat times what survived the
+            # target's fire. Uncorrected, a tough target looks like a resistant
+            # one: the first live run read the Fighter as "target-dependent,
+            # 3.68 vs armoured cars up to 4.95 vs light artillery", a 34%
+            # spread, when both cells are the same 5.0 stat seen through
+            # different amounts of incoming fire. See §4 of HANDOVER.md.
+            f_atk = (a["pct"] / 100.0) if a.get("pct") is not None else None
+            dmg_atk_corr = None
+            if dmg_atk is not None and f_atk is not None and f_atk < 0.999:
+                dmg_atk_corr = dmg_atk / (1.0 - f_atk)
+
+            matrix.setdefault(x, {})[y] = (dmg_atk_corr if dmg_atk_corr is not None
+                                           else float("nan"))
+            raw_matrix.setdefault(x, {})[y] = (dmg_atk if dmg_atk is not None
+                                               else float("nan"))
             cell = lambda v: f"{v:9.3f}" if isinstance(v, float) else f"{'?':>9}"
-            print(f"  {x:7} {y:7} {def_n:>5} {cell(dmg_atk)} {cell(dmg_def)} "
-                  f"{cell(target_hp)}  {note}".rstrip())
+            print(f"  {x:7} {y:7} {def_n:>5} {cell(dmg_atk)} {cell(dmg_atk_corr)} "
+                  f"{cell(dmg_def)} {cell(target_hp)}  {note}".rstrip())
             record(tag, {"atk": x, "target": y, "atk_n": atk_n, "def_n": def_n,
                          "atk_terrain": atk_terrain, "def_terrain": def_terrain,
-                         "dmg_attacking": dmg_atk, "dmg_defending": dmg_def,
+                         "dmg_attacking": dmg_atk,
+                         "dmg_attacking_corrected": dmg_atk_corr,
+                         "atk_frac_lost": f_atk,
+                         "dmg_defending": dmg_def,
                          "target_max_hp": target_hp, "note": note,
                          "atk_label": label_of(p, x),
                          "target_label": label_of(p, y),
                          "detail": d, "summary": dict(p.last_summary)},
                    {"A.1.1": a.get("lost"), "B.1.1": b.get("lost")})
 
-    report_matchups(matrix)
+    report_matchups(matrix, raw_matrix)
 
 
-def report_matchups(matrix: dict[str, dict[str, float]]) -> None:
-    """Is damage a property of the attacker alone, or of the pairing?"""
-    usable = {x: {y: v for y, v in row.items() if v == v}      # drop NaN
-              for x, row in matrix.items()}
-    usable = {x: row for x, row in usable.items() if row}
+def report_matchups(matrix: dict[str, dict[str, float]],
+                    raw_matrix: dict[str, dict[str, float]] | None = None) -> None:
+    """Is damage a property of the attacker alone, or of the pairing?
+
+    The verdict is taken from the RAW row, because the raw row is what was
+    measured. The return-fire correction is a model, and applying a model
+    before deciding whether it is needed manufactures exactly the kind of
+    confident wrong answer this project keeps having to undo — against a server
+    that does not attenuate, dividing by (1 - f) turns a flat attacker into a
+    target-dependent one.
+
+    So the correction is only consulted when the raw row slopes, and then only
+    to ask one question: is the slope explained by how hard each target shoots
+    back? That question has a falsifiable answer. On the first live run of
+    air_vs_ground it was yes for all three aircraft — a 34% raw spread on the
+    Fighter collapsed to 0.45% once corrected, landing on a flat 5.0 — and the
+    uncorrected reading would have gone into the model as a target rule that
+    does not exist.
+    """
+    def clean(m: dict[str, dict[str, float]]) -> dict[str, dict[str, float]]:
+        out = {x: {y: v for y, v in row.items() if v == v}      # drop NaN
+               for x, row in m.items()}
+        return {x: row for x, row in out.items() if row}
+
+    corrected = clean(matrix)
+    usable = clean(raw_matrix or {}) or corrected
     if not usable:
         print("\n  NO VERDICT — no cell produced a usable reading. Nothing is "
               "concluded; treat this as a defect report against the probe.")
@@ -1459,8 +1500,28 @@ def report_matchups(matrix: dict[str, dict[str, float]]) -> None:
         elif hi / lo - 1 > 0.05:
             worst = min(row, key=row.get)
             best = max(row, key=row.get)
-            print(f"    {x:7} TARGET-DEPENDENT: {lo:.2f} vs {worst} up to "
-                  f"{hi:.2f} vs {best} (x{hi / lo:.2f}).")
+            crow = corrected.get(x, {})
+            cvals = [v for y, v in crow.items() if y in row]
+            explained = False
+            if len(cvals) == len(vals) and min(cvals) > 0:
+                clo, chi = min(cvals), max(cvals)
+                explained = (chi / clo - 1) <= 0.05
+            print(f"    {x:7} raw row slopes {lo:.2f} vs {worst} up to "
+                  f"{hi:.2f} vs {best} (x{hi / lo:.2f})")
+            if explained:
+                print(f"    {'':7}   -> EXPLAINED BY RETURN FIRE, not by the "
+                      f"target: correcting each cell for the attacker's own "
+                      f"losses gives a flat {min(cvals):.2f}-{max(cvals):.2f} "
+                      f"(x{max(cvals) / min(cvals):.4f}). The stat is "
+                      f"{sum(cvals) / len(cvals):.2f}.")
+            elif cvals:
+                print(f"    {'':7}   -> TARGET-DEPENDENT: still "
+                      f"{min(cvals):.2f}-{max(cvals):.2f} "
+                      f"(x{max(cvals) / min(cvals):.2f}) after correcting for "
+                      f"return fire, so the target is doing the work.")
+            else:
+                print(f"    {'':7}   -> TARGET-DEPENDENT (no corrected figures "
+                      f"available to test return fire against).")
         else:
             print(f"    {x:7} flat at {lo:.2f}-{hi:.2f} across all "
                   f"{len(vals)} targets — damage is a property of the "
