@@ -2052,6 +2052,133 @@ def _measure_pair(p: "Probe", code: str, terrain: str,
     return out
 
 
+def pct_rel_error(pct: float) -> float:
+    """Relative uncertainty in a percentage the page printed to 3 s.f.
+
+    A 3 s.f. figure carries an absolute uncertainty of half a unit in its last
+    place, so its RELATIVE precision depends entirely on the leading digit:
+    17.1% is good to 0.29%, but 95.2% is good to 0.05%. Every pool in this
+    project is lost/pct, so this is the error bar on max HP.
+    """
+    if not pct or pct <= 0:
+        return float("inf")
+    place = math.floor(math.log10(abs(pct))) - 2      # 3 significant figures
+    return (0.5 * 10 ** place) / pct
+
+
+# Below this, the derived max HP is good to better than a tenth of a percent
+# and a re-read would spend a live request to move the third decimal.
+HP_PRECISION_TARGET = 0.001
+# Aim the re-read here: high enough that 3 s.f. is worth ~0.05%, with enough
+# headroom that the stack is not wiped (which caps its loss and ruins it).
+HP_REREAD_PCT = 0.90
+
+
+def hp_bounds(d: dict[str, float], n: int) -> tuple[float, float] | None:
+    """The interval of max HP consistent with one reading, given how the page
+    rounds. Not an estimate — a bracket.
+
+    Both inputs are rounded before we see them: HP lost to 0.1 in the span or
+    0.01 in the summary table, and the percentage to three significant figures.
+    Max HP is lost / pct / n, so the widest consistent value uses the largest
+    HP over the smallest percentage, and the narrowest the other way round.
+
+    An interval is the honest object here because the point estimate cannot
+    say whether it is exact. A tank duel printing '37.5%' is exact; one
+    printing '17.1%' is not; both look identical, and a re-read chosen on a
+    worst-case error bar can therefore land further from the truth than the
+    reading it replaced. Intersecting brackets never does.
+    """
+    lost, pct = d.get("lost"), d.get("pct")
+    if not lost or not pct or not n or pct <= 0:
+        return None
+    u_pct = 0.5 * 10 ** (math.floor(math.log10(abs(pct))) - 2)
+    u_lost = 0.005 if d.get("lost_source") == 1.0 else 0.05
+    lo_pct, hi_pct = (pct - u_pct) / 100.0, (pct + u_pct) / 100.0
+    if lo_pct <= 0:
+        return None
+    return ((lost - u_lost) / (hi_pct * n), (lost + u_lost) / (lo_pct * n))
+
+
+def sole_integer_in(bounds: tuple[float, float] | None) -> int | None:
+    """The one whole number inside the bracket, if there is exactly one.
+
+    Every unit whose max HP this project has pinned independently has turned
+    out to be a whole number — infantry 20, tanks 175, heavy tanks 260, the
+    last two confirmed by the stock form's own defaults. So a bracket
+    containing exactly one integer identifies it, and one containing several
+    identifies nothing. This reports which, rather than rounding and hoping.
+    """
+    if not bounds:
+        return None
+    lo, hi = bounds
+    candidates = [i for i in range(math.ceil(lo), math.floor(hi) + 1)]
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _sharpen_max_hp(p: "Probe", code: str, terrain: str,
+                    r: dict[str, Any]) -> float | None:
+    """Re-read max HP with the defender sized to lose ~90% of its pool.
+
+    HANDOVER §9 step 4 expected the summary table to turn 60.06 / 175.44 /
+    260.12 into clean integers. It did not, and the reason is worth recording:
+    the table sharpens HP LOST, and for these units the span's HP was already
+    exact. A tank duel removes 300.0 of 1750, which the page prints as '17.1%',
+    and 300 / 0.171 / 10 = 175.44. The binding constraint is the PERCENTAGE's
+    significant figures, not the HP's.
+
+    That is a choice of stack size, not a limit of the site. Damage dealt does
+    not depend on the defender's count, so shrinking the defender until it is
+    losing ~90% of its pool moves the printed percentage from 17.1% to the high
+    eighties, where three significant figures are worth ten times more. One
+    request per affected unit, and only for units that need it.
+    """
+    d = (r.get("detail") or {}).get("B.1.1") or {}
+    lost, pct, hp = d.get("lost"), d.get("pct"), r.get("hp_from_def")
+    def_n = r.get("def_n")
+    if not lost or not pct or not hp or not def_n:
+        return None
+    r["hp_bounds"] = hp_bounds(d, def_n)
+    # Spend the extra request only where the first reading leaves the answer
+    # genuinely ambiguous. A bracket that already contains exactly one whole
+    # number has identified it, however ugly the midpoint looks: a tank duel
+    # reads 175.44, but its bracket is 174.90-175.98, and 175 is the only
+    # integer in it. Re-reading that would cost dxter a page view to move a
+    # decimal nobody quotes. Courtesy is a design constraint here, not a note.
+    if (pct_rel_error(pct) <= HP_PRECISION_TARGET
+            or sole_integer_in(r["hp_bounds"]) is not None):
+        return None
+    want = max(1, round(lost / (HP_REREAD_PCT * hp)))
+    if want == def_n:
+        return None                      # identical payload, nothing to learn
+    try:
+        alt = _measure_pair(p, code, terrain, r.get("atk_n") or 10, want)
+    except (ValueError, BareFormReturned):
+        return None
+    b = (alt.get("detail") or {}).get("B.1.1") or {}
+    # A wiped stack has its loss capped at its pool, so pct pins to 100% and
+    # the reading says only "at least this much". Keep the coarse one instead.
+    if b.get("pct", 0) >= 99.9 or not alt.get("hp_from_def"):
+        return None
+    second = hp_bounds(b, want)
+    if not second:
+        return None
+    first = r.get("hp_bounds")
+    lo, hi = second
+    if first:
+        lo, hi = max(first[0], lo), min(first[1], hi)
+        if lo > hi:
+            # The two brackets exclude each other, so one of the assumptions
+            # behind them is wrong. Report it rather than average two readings
+            # that cannot both be of the same quantity.
+            print(f"  ! {code}: max-HP brackets from {def_n} and {want} "
+                  f"defenders do not overlap ({first} vs {second}). Keeping "
+                  f"the first and flagging it.", file=sys.stderr)
+            return None
+    r["hp_bounds"] = (lo, hi)
+    return 0.5 * (lo + hi)
+
+
 def exp_unit_stats(p: "Probe") -> None:
     """Max HP, attack damage and defence damage for the whole roster.
 
@@ -2073,8 +2200,8 @@ def exp_unit_stats(p: "Probe") -> None:
         print("  ! No unit optgroups found — cannot classify the roster.")
         return
     print(f"  {len(roster)} unit types from the live form\n")
-    print(f"  {'unit':8} {'terrain':8} {'maxHP':>8} {'atk/unit':>9} "
-          f"{'def/unit':>9} {'ratio':>7}  note")
+    print(f"  {'unit':8} {'terrain':8} {'maxHP':>8} {'HP is':>6} "
+          f"{'atk/unit':>9} {'def/unit':>9} {'ratio':>7}  note")
 
     for code, terrain in roster.items():
         note = ""
@@ -2098,14 +2225,18 @@ def exp_unit_stats(p: "Probe") -> None:
                     still = still or bool(alt.get("sat_A"))
                 if still:
                     note = "STILL SATURATED — treat as a lower bound"
+            sharp = _sharpen_max_hp(p, code, terrain, r)
+            if sharp:
+                r["hp_from_def"], r["hp_precise"] = sharp, True
+                note = (note + "; " if note else "") + "HP re-read near 90%"
         except ValueError as e:                 # guard_payload refused it
-            print(f"  {code:8} {terrain:8} {'-':>8} {'-':>9} {'-':>9} {'-':>7}"
-                  f"  SKIPPED: {e}".rstrip())
+            print(f"  {code:8} {terrain:8} {'-':>8} {'-':>6} {'-':>9} "
+                  f"{'-':>9} {'-':>7}  SKIPPED: {e}".rstrip())
             record("unit_stats", {"unit": code, "terrain": terrain}, {})
             continue
         except BareFormReturned as e:
-            print(f"  {code:8} {terrain:8} {'-':>8} {'-':>9} {'-':>9} {'-':>7}"
-                  f"  FAILED: {e}")
+            print(f"  {code:8} {terrain:8} {'-':>8} {'-':>6} {'-':>9} "
+                  f"{'-':>9} {'-':>7}  FAILED: {e}")
             record("unit_stats", {"unit": code, "terrain": terrain,
                                   "error": str(e)}, {})
             continue
@@ -2117,10 +2248,19 @@ def exp_unit_stats(p: "Probe") -> None:
             return (f"{v:{width}.{places}f}" if isinstance(v, float)
                     else f"{'?':>{width}}")
 
-        print(f"  {code:8} {terrain:8} {cell(hp, 8)} {cell(atk, 9)} "
-              f"{cell(dfn, 9)} {cell(ratio, 7, 3)}  {note}".rstrip())
+        bounds = r.get("hp_bounds")
+        exact = sole_integer_in(bounds)
+        if exact is not None:
+            note = (note + "; " if note else "") + f"bracket {bounds[0]:.2f}-" \
+                   f"{bounds[1]:.2f} holds one integer"
+        print(f"  {code:8} {terrain:8} {cell(hp, 8)} "
+              f"{(str(exact) if exact is not None else '?'):>6} "
+              f"{cell(atk, 9)} {cell(dfn, 9)} {cell(ratio, 7, 3)}  "
+              f"{note}".rstrip())
         record("unit_stats", {"unit": code, "terrain": terrain,
-                              "max_hp": hp, "dmg_attacking": atk,
+                              "max_hp": hp, "max_hp_bounds": bounds,
+                              "max_hp_integer": exact,
+                              "dmg_attacking": atk,
                               "dmg_defending": dfn, "note": note},
                {"A.1.1": (r.get("detail", {}).get("A.1.1") or {}).get("lost"),
                 "B.1.1": (r.get("detail", {}).get("B.1.1") or {}).get("lost")})
@@ -2144,7 +2284,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
 # it is about to spend on someone else's ad-supported fan site before it starts
 # rather than after. Approximate by design: saturation re-runs add a few.
 REQUEST_ESTIMATE: dict[str, int] = {
-    "unit_stats": 17, "buildings": 14, "trenches": 10, "air_vs_ground": 30,
+    "unit_stats": 20, "buildings": 14, "trenches": 10, "air_vs_ground": 30,
     "land_matrix": 100, "size_factor": 33, "hp_scaling": 10, "patrol": 12,
     "fortress": 6, "terrain": 5, "variance": 60,
 }

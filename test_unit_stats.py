@@ -29,6 +29,14 @@ UNITS = {
     "inf": (20.0, 4.0, 5.0),      # the real, measured infantry values
     "ht": (120.0, 45.0, 50.0),    # heavy, survives 10v10 comfortably
     "rrg": (50.0, 60.0, 20.0),    # one-shots its own kind at 10v10 -> saturates
+    # The real tank, whose true value the page CANNOT print precisely at 10v10:
+    # 300.0 lost of a 1750 pool is 17.142857%, which prints as 17.1, and
+    # 300 / 0.171 / 10 = 175.44. Sharpening this is what _sharpen_max_hp is for.
+    "lt": (175.0, 30.0, 30.0),
+    # Chosen so the 10v10 bracket spans THREE integers (298.97-301.04) and so
+    # cannot identify one. This is the case that earns a second request; the
+    # tank above does not, and must not spend one.
+    "bb": (300.0, 45.0, 45.0),
 }
 DEFAULT = (30.0, 6.0, 7.0)
 
@@ -36,7 +44,11 @@ DEFAULT = (30.0, 6.0, 7.0)
 def render(lost, pool, hp):
     pct = 100.0 * lost / pool if pool else 0.0
     died = int(math.floor(lost / hp))
-    return f"Lost {lost:.1f} HP ({pct:.1f}%) {died} died"
+    # Three significant figures, as dxcalc.com actually prints percentages.
+    # Rendering more than that would hide the precision limit this suite exists
+    # to measure: at .1f a tank duel reads a clean 175.0 and the sharpening
+    # pass looks unnecessary.
+    return f"Lost {lost:.1f} HP ({pct:.3g}%) {died} died"
 
 
 class H(http.server.BaseHTTPRequestHandler):
@@ -118,7 +130,12 @@ check("5.0 defending", near(r["dmg_defending"], 5.0), str(r["dmg_defending"]))
 
 print("\n3. a heavy unit with quite different constants")
 r = by_code["ht"]
-check("max HP 120.0", near(r["max_hp"], 120.0), str(r["max_hp"]))
+check("max HP brackets 120.0", r["max_hp_bounds"][0] <= 120.0 <= r["max_hp_bounds"][1],
+      f"{r['max_hp_bounds']}")
+check("and identifies it as the only whole number in the bracket",
+      r["max_hp_integer"] == 120, str(r["max_hp_integer"]))
+check("point estimate is close, though the bracket is the honest object",
+      near(r["max_hp"], 120.0, 0.1), str(r["max_hp"]))
 check("45.0 attacking", near(r["dmg_attacking"], 45.0), str(r["dmg_attacking"]))
 check("50.0 defending", near(r["dmg_defending"], 50.0), str(r["dmg_defending"]))
 
@@ -131,12 +148,41 @@ check("20.0 defending recovered", near(r["dmg_defending"], 20.0),
       str(r["dmg_defending"]))
 check("max HP 50.0", near(r["max_hp"], 50.0), str(r["max_hp"]))
 
+print("\n4b. an imprecise midpoint is still an identified unit")
+# The real tank: 300.0 lost of 1750 is 17.142857%, printed '17.1'. Dividing
+# gives 175.44, and no amount of extra precision in the HP column fixes it --
+# the percentage is the binding constraint. HANDOVER 9.4 expected the summary
+# table to solve this; it cannot.
+r = by_code["lt"]
+coarse = 300.0 / 0.171 / 10
+check("the naive 10v10 reading really is off by ~0.25%",
+      abs(coarse - 175.0) > 0.4, f"{coarse:.3f}")
+check("the bracket contains the true 175.0",
+      r["max_hp_bounds"][0] <= 175.0 <= r["max_hp_bounds"][1],
+      str(r["max_hp_bounds"]))
+check("and holds exactly one whole number, which is 175",
+      r["max_hp_integer"] == 175, str(r["max_hp_integer"]))
+check("so NO second request is spent on it — the bracket already answered",
+      "HP re-read" not in (r.get("note") or ""), repr(r.get("note")))
+
+print("\n4c. a unit whose bracket cannot identify one integer IS re-read")
+r = by_code["bb"]
+check("the sweep re-read it near 90%", "HP re-read" in (r.get("note") or ""),
+      repr(r.get("note")))
+check("the narrowed bracket contains the true 300.0",
+      r["max_hp_bounds"][0] <= 300.0 <= r["max_hp_bounds"][1],
+      str(r["max_hp_bounds"]))
+check("and now holds exactly one whole number, which is 300",
+      r["max_hp_integer"] == 300, str(r["max_hp_integer"]))
+check("the 10v10 bracket alone could not have said that",
+      dp.sole_integer_in((298.97, 301.04)) is None)
+
 print("\n5. the balloon trap is refused, not sent")
 check("bal skipped", "bal" in by_code and by_code["bal"].get("max_hp") is None)
 check("and reported as skipped in the table", "SKIPPED" in out)
 
 print("\n6. one request per unit in the common case")
 check("well under a request per unit per side",
-      p.request_count <= len(by_code) + 6, f"{p.request_count} requests")
+      p.request_count <= len(by_code) + 8, f"{p.request_count} requests")
 
 print(f"\nALL {ok} CHECKS PASSED")
