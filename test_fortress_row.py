@@ -137,4 +137,29 @@ check("old control already equalled its own level-1 payload",
       old_control == old_level1,
       "baseline already held fortress/1/100% at index 0")
 
+print("\n7. a building destroyed in the round still parses")
+# Verbatim from the live buildings sweep: a level-1 Recruiting Office has 5 HP
+# and 30 infantry deal 8.5 to buildings, so it dies in the measured round. The
+# row loses its arrow and LVL tail and spaces the minus off the number. The old
+# DELTA_RE required the arrow, so this parsed as nothing and the sweep printed
+# "NO ROW" — the same reading it gives for a type the server ignored entirely,
+# which is precisely the distinction the buildings experiment exists to make.
+dead = dp.parse_reading("- 5.0 HP (100%) destroyed")
+check("parses at all — not None", dead is not None, repr(dead))
+check("reads the magnitude past the spaced minus", dead["lost"] == 5.0)
+check("reads the percentage", dead["pct"] == 100.0)
+check("flags it destroyed", dead.get("destroyed") == 1.0)
+check("still recovers the pool", dead["pool"] == 5.0)
+check("carries no level or DR — the page prints neither",
+      "level" not in dead and "dr_before" not in dead)
+
+alive = dp.parse_reading("-8.5 HP (14.2%) → LVL:1 51.5 HP")
+check("a surviving building is not flagged destroyed",
+      "destroyed" not in alive, repr(alive))
+check("and a fortress row still reads its DR",
+      dp.parse_reading("-8.5 HP (5.67%) → LVL:3 41.5 HP; DR: 60% → 57.5%")
+      ["dr_before"] == 60.0)
+check("a unit row is untouched by the destroyed branch",
+      dp.parse_reading("Lost 50.0 HP (16.7%) 2 died")["died"] == 2.0)
+
 print(f"\nALL {ok} CHECKS PASSED")

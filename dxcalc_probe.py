@@ -769,8 +769,20 @@ READING_RE = re.compile(
 # loss, and the arrow points at the resulting value. Same arithmetic underneath
 # — magnitude over percentage still gives the pool — but the wording differs,
 # so it needs its own pattern instead of falling through to parse_hp().
+#
+# A building that dies in the round loses the arrow and the LVL tail entirely,
+# and spaces the minus off the number:
+#
+#   "- 5.0 HP (100%) destroyed"
+#
+# The old pattern required the arrow, so a destroyed building parsed as nothing
+# and the sweep printed "NO ROW" — indistinguishable from a type the server had
+# ignored, which is the exact confusion this experiment exists to resolve. A
+# level-1 Recruiting Office has 5 HP and 30 infantry deal 8.5, so the smaller
+# buildings hit this on any ordinary run.
 DELTA_RE = re.compile(
-    r"(-?[\d.]+)\s*HP\s*\(\s*([\d.]+)\s*%\s*\)\s*(?:→|->)")
+    r"(-?\s*[\d.]+)\s*HP\s*\(\s*([\d.]+)\s*%\s*\)\s*(?:(?:→|->)|(destroyed))",
+    re.I)
 
 # The building row continues past the arrow, and the tail is the most
 # informative text on the page:
@@ -793,9 +805,11 @@ def parse_reading(text: str) -> dict[str, float] | None:
     if not m:
         d = DELTA_RE.search(text)
         if d:
-            lost = abs(float(d.group(1)))
+            lost = abs(float(d.group(1).replace(" ", "")))
             pct = float(d.group(2))
             out: dict[str, float] = {"lost": lost, "pct": pct, "delta": 1.0}
+            if d.group(3):
+                out["destroyed"] = 1.0
             if pct > 0:
                 out["pool"] = round(lost / (pct / 100), 1)
             tail = BLDG_TAIL_RE.search(text)
