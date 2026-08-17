@@ -68,10 +68,18 @@ KNOWN SERVER BUG
     aborted, not just that pair. Reproduced three times; vanished the moment
     'bal' was dropped. guard_payload() below refuses to send that combination.
 
+BUILDING ROWS INDEX FROM 1, NOT 0
+    bldg.0 is a hidden TEMPLATE that the page clones to make real rows, and
+    every browser submission carries it, so the server must ignore it. An
+    earlier note here claimed building rows index from 0 while unit rows index
+    from 1. That was wrong, and it is what made fortresses read as inert: the
+    sweep configured the template, the baseline already contained it, and so
+    the control and the level-1 run were the same request. See exp_fortress.
+
 STILL OPEN
-    - Fortresses produced zero effect in every configuration tried. Most
-      likely the synthetic building rows are missing something the real UI
-      attaches, so this says more about the rig than about the calculator.
+    - Fortress mitigation, now that the sweep writes to bldg.1. Unmeasured
+      rather than zero: the previous null result was an artifact of the index.
+      Extend to the other seven building types once forts read non-1.0.
     - Tactical bomber deals 25.0 to infantry but 0.0 to heavy tanks, while
       fighters deal 0 ground damage generally. Target-class rule or bug?
       One data point each; needs the full air x ground matrix.
@@ -125,7 +133,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from html.parser import HTMLParser
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 BASE_URL = "https://dxcalc.com/s1914"
 DEFAULT_DELAY = 1.5
@@ -487,14 +495,30 @@ class Probe:
             raise RuntimeError("No form fields found — page layout changed?")
         return self.baseline
 
-    def submit(self, overrides: dict[str, Any]) -> dict[str, float]:
+    def submit(self, overrides: dict[str, Any],
+               create: Iterable[str] = ()) -> dict[str, float]:
         if not self.baseline:
             self.load_form()
         payload = dict(self.baseline)
+        create = set(create)
+        dropped: list[str] = []
         for k, v in overrides.items():
-            if k not in payload:
-                continue  # row/stack the live form doesn't have; skip it
-            payload[k] = "" if v is None else str(v)
+            val = "" if v is None else str(v)
+            if k not in payload and k not in create:
+                # Blanking a row the form doesn't have is harmless — that is
+                # what duel() does to rows 2-8. SETTING one is a silent bug:
+                # the experiment believes it configured something it did not.
+                # The fortress sweep lost six requests a run to exactly this.
+                if val:
+                    dropped.append(k)
+                continue
+            payload[k] = val
+        if dropped:
+            print(f"  ! {len(dropped)} field(s) absent from the form were "
+                  f"dropped, NOT sent: {', '.join(dropped[:4])}"
+                  + (" ..." if len(dropped) > 4 else "")
+                  + "\n    (pass create=[...] to synthesise them, as the "
+                    "page's own add-row JS does)", file=sys.stderr)
 
         if self.submit_marker:
             payload[self.submit_marker[0]] = self.submit_marker[1]
@@ -860,52 +884,73 @@ def exp_patrol(p: Probe) -> None:
 
 
 def exp_fortress(p: Probe) -> None:
-    """Retry of the sweep that produced nothing.
+    """Fortress mitigation, written to the building row the server reads.
 
-    Two likely reasons the earlier attempt read zero everywhere:
-      1. A fortress row needs BOTH level and HP. The help page says any unit
-         or building with missing/zero HP is silently ignored — the same rule
-         that swallows incomplete unit rows. A level-only fortress row is
-         therefore dropped without comment.
-      2. Buildings attach to a POSITION, and every stack at that position
-         inherits them. Spacing pairs 10 km apart to isolate them also
-         separated the defender from its own fortress.
+    The previous sweep wrote to B.1.bldg.0.*, and bldg.0 is a hidden TEMPLATE,
+    not a building. The markup is <div hidden id=B.1.bldg.0>; bytro.js
+    addBuilding() starts at newId = 1, clones bldg.0, and calls
+    removeAttribute("hidden") on the clone, while renumberBuildings() only ever
+    walks 1..maxBuildings. Real buildings are bldg.1..N.
 
-    So: same position for both stacks, and level plus HP on the building row.
-    Run --dump-fields first and set BLDG_FIELDS to the real names.
+    Three consequences followed from that single index, and each hid the next:
+      * A browser submits the hidden template on EVERY request, so the server
+        must discard index 0 — otherwise every battle on the site would come
+        with a free level-1 fortress.
+      * Being on the form, the template is already in p.baseline carrying
+        abb=fortress, lvl=1, hp=100%. So the "control, no fortress" run was
+        not a control, and the level-1 run set those same three values again,
+        making it byte-identical to the control.
+      * The guard meant to catch all this asked whether bldg.0 was MISSING
+        from the baseline. It never is. The tripwire could not fire.
+
+    Every level therefore read as a ratio of 1.0 against a contaminated
+    control — the "fortresses do nothing" entry in STILL OPEN above. That was
+    the rig, exactly as suspected, and not the calculator.
+
+    bldg.0 is left exactly as the form supplies it: a real browser sends it
+    too, and it appears identically in control and treatment, so it cancels.
     """
-    bldg_abb = "B.1.bldg.0.abb"   # buildings protect the DEFENDER
-    bldg_lvl = "B.1.bldg.0.lvl"   # note: bldg rows index from 0, unit rows from 1
-    bldg_hp = "B.1.bldg.0.hp"
-    if bldg_abb not in p.baseline:
-        print("  ! building fields are not in the baseline form.", file=sys.stderr)
-        print("    'add bldg' injects them client-side, so a plain GET can't", file=sys.stderr)
-        print("    see them. In DevTools on the page, with a fortress added:", file=sys.stderr)
-        print("      [...document.querySelectorAll('[name]')]", file=sys.stderr)
-        print("        .map(e => e.name + ' = ' + e.value).join('\\n')", file=sys.stderr)
-        print("    then paste the fortress rows in above.", file=sys.stderr)
-        return
+    row = 1                        # real buildings start here; 0 is a template
+    abb = f"B.1.bldg.{row}.abb"    # buildings protect the DEFENDER
+    lvl = f"B.1.bldg.{row}.lvl"
+    hp = f"B.1.bldg.{row}.hp"
+    # bldg.1 exists only once the page's own JS has cloned the template, so a
+    # scripted GET never sees it. submit() drops unknown keys unless told to
+    # create them — which is precisely what addBuilding() does in the browser.
+    new_row = (abb, lvl, hp)
 
-    # Control first: identical battle, no fortress. Every fort reading is a
-    # ratio against this, so an absolute number never has to be trusted.
+    # Control: the same battle with no building row at all. Every level reads
+    # as a ratio against this, so no absolute number has to be trusted.
     base = settings()
     base.update(duel(1, "inf", 30, "inf", 30))
     try:
-        record("fortress", {"level": 0, "note": "control, no bldg"}, p.submit(base))
+        control = p.submit(base)
     except BareFormReturned as e:
         print(f"  ! control: {e}", file=sys.stderr)
         return
+    record("fortress", {"level": 0, "note": "control, no bldg row"}, control)
+    ref = control.get("B.1.1")
+    print(f"  control (no fortress): defender lost {ref}")
 
-    # Land terrain, both stacks at the same position so the defender actually
-    # inherits its own fortress, and stacks big enough to survive one round —
-    # a wipe saturates the result and hides any mitigation.
+    # Both stacks at the same position so the defender inherits its own
+    # fortress, and 30 a side so one round cannot wipe either — a wipe
+    # saturates the reading and hides mitigation completely.
+    #
+    # Readings are HP LOST, so mitigation shows up as a ratio BELOW 1.0.
     for level in (1, 2, 3, 4, 5):
-        ov = dict(settings(), **{bldg_abb: "fortress", bldg_lvl: str(level), bldg_hp: "100%"})
+        ov = dict(settings(), **{abb: "fortress", lvl: str(level), hp: "100%"})
         ov.update(duel(1, "inf", 30, "inf", 30))
         try:
-            record("fortress", {"level": level, "hp": "100%"}, p.submit(ov))
+            r = p.submit(ov, create=new_row)
         except BareFormReturned as e:
             print(f"  ! fort L{level}: {e}", file=sys.stderr)
+            continue
+        record("fortress", {"level": level, "hp": "100%", "row": row}, r)
+        got = r.get("B.1.1")
+        ratio = (got / ref) if (ref and got is not None) else None
+        print(f"  fortress L{level}: defender lost {got}"
+              + (f"   ratio {ratio:.4f}" if ratio is not None else "")
+              + ("  <- mitigation" if ratio is not None and ratio < 0.999 else ""))
 
 
 def exp_size_factor(p: Probe) -> None:
