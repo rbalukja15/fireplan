@@ -1,0 +1,494 @@
+// web/data.js — measured constants for the dxcalc/s1914 clean-room model.
+//
+// PURE DATA. No logic, no network, no DOM. Every constant here carries a
+// provenance key into PROVENANCE, and every provenance note carries one of
+// four confidence tags:
+//
+//   'measured'  read directly off a live response in results.jsonl
+//   'derived'   arithmetic over measured readings, no free parameters
+//   'assumed'   plausible, consistent with the data, NOT pinned by it
+//   'unmeasured' no reading exists; the app must refuse or flag loudly
+//
+// A constant without one of those tags is a defect. See HANDOVER.md §0.
+//
+// Readings referenced below are in ../results.jsonl (168 rows at the time of
+// writing; HANDOVER.md's "150 rows" is stale). Print precision of the source
+// page: HP lost to 0.1 in the unit spans and to 0.01 in the summary table;
+// percentages to 3 significant figures. Every pool figure is therefore a
+// BRACKET (pool = lost / pct), never a point — see PROVENANCE.precision.
+
+// ---------------------------------------------------------------------------
+// UNITS
+// ---------------------------------------------------------------------------
+// atk / def are SAME-CLASS (diagonal) coefficients ONLY: the unit fighting its
+// own kind. Attack is known to be per-target-class (`tac` is 3.0 against air
+// and 30.0 against ground), so these must NOT be generalised to other targets.
+// The engine treats an off-diagonal use of them as 'estimated', never measured.
+//
+// maxHP is an INTEGER INFERENCE from a measured bracket, not a reading. Do not
+// render maxHPBracket midpoints such as 175.44 — that is a measurement of
+// nothing. Where the bracket is null the quantity was never measured.
+
+export const UNITS = {
+  inf: {
+    code: 'inf', label: 'Infantry', cls: 'land',
+    maxHP: 20, maxHPBracket: [19.9476, 20.0526],
+    atk: 4.0, def: 5.0,
+    provenance: { maxHP: 'UNITS.maxHP', atk: 'UNITS.diagonal', def: 'UNITS.diagonal' },
+  },
+  cav: {
+    code: 'cav', label: 'Cavalry', cls: 'land',
+    maxHP: 25, maxHPBracket: [24.9784, 25.0217],
+    atk: 15.0, def: 7.5,
+    provenance: { maxHP: 'UNITS.maxHP', atk: 'UNITS.diagonal', def: 'UNITS.diagonal' },
+  },
+  ac: {
+    code: 'ac', label: 'Armored Car', cls: 'land',
+    maxHP: 60, maxHPBracket: [59.6965, 60.3065],
+    atk: 6.0, def: 12.0,
+    provenance: { maxHP: 'UNITS.maxHP', atk: 'UNITS.diagonal', def: 'UNITS.diagonal' },
+  },
+  lart: {
+    code: 'lart', label: 'Light Artillery', cls: 'land',
+    maxHP: 10, maxHPBracket: [9.9890, 10.0110],
+    atk: 5.0, def: 1.0,
+    provenance: { maxHP: 'UNITS.maxHP', atk: 'UNITS.diagonal', def: 'UNITS.diagonal' },
+  },
+  art: {
+    code: 'art', label: 'Artillery', cls: 'land',
+    maxHP: 20, maxHPBracket: [19.9738, 20.0263],
+    atk: 8.0, def: 2.7,
+    provenance: { maxHP: 'UNITS.maxHP', atk: 'UNITS.diagonal', def: 'UNITS.diagonal' },
+  },
+  rrg: {
+    code: 'rrg', label: 'Railgun', cls: 'land',
+    maxHP: 60, maxHPBracket: [59.9685, 60.1519],
+    atk: 20.0, def: 6.7,
+    provenance: { maxHP: 'UNITS.maxHP', atk: 'UNITS.diagonal', def: 'UNITS.diagonal' },
+  },
+  lt: {
+    code: 'lt', label: 'Tank', cls: 'land',
+    maxHP: 175, maxHPBracket: [174.9242, 175.9560],
+    atk: 30.0, def: 30.0,
+    provenance: { maxHP: 'UNITS.maxHP.formDefault', atk: 'UNITS.diagonal', def: 'UNITS.diagonal' },
+  },
+  ht: {
+    code: 'ht', label: 'Heavy Tank', cls: 'land',
+    maxHP: 260, maxHPBracket: [259.3631, 260.8725],
+    atk: 45.0, def: 45.0,
+    provenance: { maxHP: 'UNITS.maxHP.formDefault', atk: 'UNITS.diagonal', def: 'UNITS.diagonal' },
+  },
+  convoy: {
+    code: 'convoy', label: 'Airplane Convoy', cls: 'land',
+    maxHP: 20, maxHPBracket: [19.9700, 20.0300],
+    atk: 1.0, def: 1.0,
+    provenance: { maxHP: 'UNITS.maxHP', atk: 'UNITS.diagonal', def: 'UNITS.diagonal' },
+  },
+  st: {
+    code: 'st', label: 'Stormtrooper', cls: 'land',
+    maxHP: 40, maxHPBracket: [39.9672, 40.0328],
+    atk: 25.0, def: 6.3,
+    provenance: { maxHP: 'UNITS.maxHP', atk: 'UNITS.diagonal', def: 'UNITS.diagonal' },
+  },
+
+  bal: {
+    code: 'bal', label: 'Balloon', cls: 'air',
+    maxHP: null, maxHPBracket: null,
+    atk: null, def: null,
+    provenance: { maxHP: 'UNITS.balloon', atk: 'UNITS.balloon', def: 'UNITS.balloon' },
+  },
+  int: {
+    code: 'int', label: 'Fighter', cls: 'air',
+    maxHP: 60, maxHPBracket: [59.9685, 60.1519],
+    atk: 20.0, def: 20.0,
+    provenance: { maxHP: 'UNITS.maxHP', atk: 'UNITS.diagonal', def: 'UNITS.diagonal' },
+  },
+  tac: {
+    code: 'tac', label: 'Bomber', cls: 'air',
+    maxHP: 80, maxHPBracket: [79.8802, 80.1202],
+    atk: 3.0, def: 3.0,
+    provenance: { maxHP: 'UNITS.maxHP', atk: 'UNITS.diagonal', def: 'UNITS.diagonal' },
+  },
+  zep: {
+    code: 'zep', label: 'Zeppelin', cls: 'air',
+    maxHP: 140, maxHPBracket: [139.8462, 140.2665],
+    atk: 5.0, def: 5.0,
+    provenance: { maxHP: 'UNITS.maxHP', atk: 'UNITS.diagonal', def: 'UNITS.diagonal' },
+  },
+
+  sub: {
+    code: 'sub', label: 'Submarine', cls: 'sea',
+    maxHP: 100, maxHPBracket: [99.8739, 100.1264],
+    atk: 40.0, def: 40.0,
+    provenance: { maxHP: 'UNITS.maxHP.noIndependentCheck', atk: 'UNITS.diagonal', def: 'UNITS.diagonal' },
+  },
+  cl: {
+    code: 'cl', label: 'Light Cruiser', cls: 'sea',
+    maxHP: 50, maxHPBracket: [49.8728, 50.1278],
+    atk: 10.0, def: 10.0,
+    provenance: { maxHP: 'UNITS.maxHP.noIndependentCheck', atk: 'UNITS.diagonal', def: 'UNITS.diagonal' },
+  },
+  bb: {
+    code: 'bb', label: 'Battleship', cls: 'sea',
+    maxHP: 200, maxHPBracket: [199.4988, 200.5038],
+    atk: 40.0, def: 40.0,
+    provenance: { maxHP: 'UNITS.maxHP.noIndependentCheck', atk: 'UNITS.diagonal', def: 'UNITS.diagonal' },
+  },
+};
+
+// ---------------------------------------------------------------------------
+// CROSS-CLASS COEFFICIENTS
+// ---------------------------------------------------------------------------
+// The only cross-class pairing anyone has ever measured is AIR attacking
+// GROUND. Both halves of it are here. Everything else is absent by design:
+// see NOT_MEASURED.
+
+// An air unit's attack against ANY ground unit. Flat across all ten ground
+// targets once the post-fire evaluation of §RETURN FIRE is applied.
+export const AIR_ATTACK_VS_GROUND = {
+  int: 5.0,
+  tac: 30.0,
+  zep: 5.0,
+  // bal: absent. Never measured, and cannot be submitted in air terrain.
+};
+
+// A ground unit's defence output while an air stack attacks it.
+// NOT the same as a ground unit attacking air, which is unmeasured.
+export const GROUND_DEFENCE_VS_AIR = {
+  inf: 0.4, cav: 1.0, ac: 8.0, lart: 0.2, art: 0.3,
+  rrg: 0.7, lt: 3.0, ht: 4.0, convoy: 0.5, st: 1.0,
+};
+
+// Damage a stack deals to BUILDINGS, per effective unit. One unit type has
+// ever been measured. Absence from this table means "no reading exists".
+export const BUILDING_DAMAGE_PER_EFFECTIVE_UNIT = {
+  inf: 0.3,
+};
+
+// ---------------------------------------------------------------------------
+// BUILDINGS
+// ---------------------------------------------------------------------------
+// maxLevel === null means the server's cap was never established (the sweep
+// asked for 3, was not rejected, and never probed higher). The form's own
+// select offers 1-5 for every type, which is a UI cap, not a server cap.
+// hpPerLevel === null means HP does not divide evenly by the levels tested.
+
+export const BUILDINGS = {
+  fortress: {
+    code: 'fortress', label: 'Fortress',
+    maxLevel: 5, hpPerLevel: 50, mitigates: true,
+    poolAtLevel: { 1: 50, 2: 100, 3: 150, 4: 200, 5: 250 },
+    provenance: { maxLevel: 'BUILDINGS.maxLevel.server', hp: 'BUILDINGS.fortressHP', mitigates: 'FORTRESS.dr' },
+  },
+  recruiting: {
+    code: 'recruiting', label: 'Recruiting Office',
+    maxLevel: 1, hpPerLevel: 5, mitigates: false,
+    poolAtLevel: { 1: 5 },
+    provenance: { maxLevel: 'BUILDINGS.maxLevel.server', hp: 'BUILDINGS.hp.oneLevel', mitigates: 'BUILDINGS.inert' },
+  },
+  railway: {
+    code: 'railway', label: 'Railway',
+    maxLevel: 1, hpPerLevel: 60, mitigates: false,
+    poolAtLevel: { 1: 60 },
+    provenance: { maxLevel: 'BUILDINGS.maxLevel.server', hp: 'BUILDINGS.hp.oneLevel', mitigates: 'BUILDINGS.inert' },
+  },
+  workshop: {
+    code: 'workshop', label: 'Workshop',
+    maxLevel: null, hpPerLevel: null, mitigates: false,
+    poolAtLevel: { 3: 35 },
+    provenance: { maxLevel: 'BUILDINGS.maxLevel.unknown', hp: 'BUILDINGS.hp.workshop', mitigates: 'BUILDINGS.inert' },
+  },
+  factory: {
+    code: 'factory', label: 'Factory',
+    maxLevel: null, hpPerLevel: 40, mitigates: false,
+    poolAtLevel: { 3: 120 },
+    provenance: { maxLevel: 'BUILDINGS.maxLevel.unknown', hp: 'BUILDINGS.hp.oneLevel', mitigates: 'BUILDINGS.inert' },
+  },
+  barracks: {
+    code: 'barracks', label: 'Barracks',
+    maxLevel: 2, hpPerLevel: 40, mitigates: false,
+    poolAtLevel: { 2: 80 },
+    provenance: { maxLevel: 'BUILDINGS.maxLevel.server', hp: 'BUILDINGS.hp.oneLevel', mitigates: 'BUILDINGS.inert' },
+  },
+  aerodrome: {
+    code: 'aerodrome', label: 'Aerodrome',
+    maxLevel: 1, hpPerLevel: 60, mitigates: false,
+    poolAtLevel: { 1: 60 },
+    provenance: { maxLevel: 'BUILDINGS.maxLevel.server', hp: 'BUILDINGS.hp.oneLevel', mitigates: 'BUILDINGS.inert' },
+  },
+  harbor: {
+    code: 'harbor', label: 'Harbor',
+    maxLevel: 1, hpPerLevel: 60, mitigates: false,
+    poolAtLevel: { 1: 60 },
+    provenance: { maxLevel: 'BUILDINGS.maxLevel.server', hp: 'BUILDINGS.hp.oneLevel', mitigates: 'BUILDINGS.inert' },
+  },
+};
+
+// ---------------------------------------------------------------------------
+// FORTRESS
+// ---------------------------------------------------------------------------
+export const FORTRESS = {
+  drSlopePer50HP: 0.15,   // DR = 0.15 * (fortressHP / 50 + 1)
+  drOffset: 0.15,         // the "+1" term: any fortress at all costs 15%
+  hpPerLevel: 50,
+  maxMeasuredLevel: 5,
+  provenance: { dr: 'FORTRESS.dr', hp: 'BUILDINGS.fortressHP' },
+};
+
+// ---------------------------------------------------------------------------
+// TRENCHES
+// ---------------------------------------------------------------------------
+// Two independent effects on two different schedules, from ten rows of
+// 10 infantry vs 10 infantry. ONLY these nine levels were ever sampled;
+// levels 6-9, 11-14 and 16-19 (12 of 21) have never been submitted.
+//
+// TRENCH_POOL enlarges the stack's HP pool AND its per-unit max HP (which is
+// what changes the death count). It applies while attacking as well as
+// defending. TRENCH_OUTPUT raises the DEFENDER's damage output only — an
+// attacker's trench 20 left the defender's loss at exactly 40.0.
+
+export const TRENCH_POOL = {
+  0: 1.00, 1: 1.00, 2: 1.00, 3: 1.00,
+  4: 1.15, 5: 1.20, 10: 1.24, 15: 1.30, 20: 1.35,
+};
+
+// The brackets these point values came from. pool = lost / pct, and pct is
+// printed to 3 significant figures, so each is an interval, not a reading.
+// Note level 10: [1.2382, 1.2463] EXCLUDES 1.25. Do not "tidy" it to 1.25 —
+// the measurement forbids it.
+export const TRENCH_POOL_BRACKET = {
+  0: [0.9974, 1.0026], 1: [0.9974, 1.0026], 2: [0.9974, 1.0026], 3: [0.9974, 1.0026],
+  4: [1.1460, 1.1529], 5: [1.1939, 1.2014], 10: [1.2382, 1.2463],
+  15: [1.2943, 1.3031], 20: [1.3466, 1.3561],
+};
+
+export const TRENCH_OUTPUT = {
+  0: 1.00, 1: 1.25, 2: 1.30, 3: 1.35,
+  4: 1.40, 5: 1.40, 10: 1.54, 15: 1.62, 20: 1.75,
+};
+
+export const TRENCH_SAMPLED_LEVELS = [0, 1, 2, 3, 4, 5, 10, 15, 20];
+export const TRENCH_MAX_LEVEL = 20;
+
+// ---------------------------------------------------------------------------
+// FORM INPUT DOMAINS (read off the committed form capture, last_response.html)
+// ---------------------------------------------------------------------------
+export const FORM_DOMAINS = {
+  terrain: ['land', 'sea', 'air', 'patrol', 'debark'],
+  positionKm: [0, 1, 2, 3, 10, 20, 30, 40, 50, 75, 150],
+  trench: { min: 0, max: 20 },
+  buildingLevelSelect: [1, 2, 3, 4, 5],
+  maxRounds: { min: 0.25, max: 1000, step: 0.25 },
+  provenance: { all: 'FORM.domains' },
+};
+
+// ---------------------------------------------------------------------------
+// WHAT IS NOT MEASURED
+// ---------------------------------------------------------------------------
+// The app must surface the relevant entries at the point of use, not in a
+// footnote. Ranked roughly by how likely a user is to hit it.
+
+export const NOT_MEASURED = [
+  {
+    key: 'land_off_diagonal',
+    what: 'Land unit vs a DIFFERENT land unit (90 of 100 land pairings).',
+    why: 'Attack is known to be per-target-class, so the same-class diagonal cannot be assumed to generalise. This is the single biggest gap.',
+    closedBy: 'the land_matrix experiment, ~100 requests',
+  },
+  { key: 'naval_off_diagonal', what: 'Naval unit vs a different naval unit (6 of 9 pairings).', why: 'Only the three diagonals were flown.', closedBy: 'a 6-cell naval sweep' },
+  { key: 'ground_attacking_air', what: 'A ground stack ATTACKING an air stack.', why: 'Only ground DEFENDING against air was measured. The roles are not interchangeable.', closedBy: 'a ground-attacks-air sweep' },
+  { key: 'air_defending', what: 'An air stack DEFENDING against a ground attacker.', why: 'Never submitted.', closedBy: 'the same sweep' },
+  { key: 'air_off_diagonal', what: 'Air vs a different air unit.', why: 'Only int/tac/zep diagonals exist; bal not even that.', closedBy: 'a 6-cell air sweep' },
+  { key: 'sea_land_air', what: 'Any sea-vs-land or sea-vs-air pairing.', why: 'Entirely absent from the record.', closedBy: 'a cross-class sweep' },
+  { key: 'balloon', what: 'The Balloon: max HP, attack, defence, class interactions — every quantity.', why: 'Sending bal in air terrain aborts the whole batch server-side with no error, so it has four rows in results.jsonl and all four are empty.', closedBy: 'unknown; the request itself fails' },
+  { key: 'building_damage_per_unit', what: 'Damage to buildings from any unit but infantry.', why: 'Infantry deal 0.3 per effective unit. Nothing else in the model predicts that number, so it cannot be inferred for other units.', closedBy: 'one request per unit type against a building' },
+  { key: 'multi_round', what: 'Battles longer than one round.', why: 'EVERY measurement in results.jsonl used maxRounds=1. Round-to-round carry-over, whether m(f) re-evaluates, and whether fortress DR decays across rounds are all unmeasured.', closedBy: 'a maxRounds sweep' },
+  { key: 'air_E_above_20', what: 'Which effective-count law an attenuated air stack above 20 units uses.', why: 'All 30 attenuated stacks were 10 units, where E(n) = n, so E(n_alive)·m(f_after) and a per-unit sum of m(f_i) are indistinguishable. They diverge above 20.', closedBy: 'one air_vs_ground cell with a 30-unit air stack' },
+  { key: 'E_with_m_above_20', what: 'E(n) combined with m(f) for n > 20.', why: 'Only a 10-unit stack was ever damaged.', closedBy: 'an hp_scaling sweep at n=30' },
+  { key: 'air_wiped', what: 'An air attacker reduced to zero survivors.', why: 'The post-fire law divides by the survivor count; at zero survivors it has no measured branch.', closedBy: 'one deliberately lopsided air_vs_ground cell' },
+  { key: 'attenuation_scope', what: 'Whether post-fire evaluation applies to sea, or to air defending.', why: 'Only air-attacks-ground was measured; air-vs-air and sea-vs-sea are argued unattenuated from roundness, not read.', closedBy: 'a lopsided sea duel' },
+  { key: 'm_f_generality', what: 'Whether m(f) applies to defenders and to units other than infantry.', why: 'The HP sweep varied only an ATTACKING infantry stack.', closedBy: 'an hp_scaling sweep on the defender' },
+  { key: 'E_gaps', what: 'E(n) at n in 21-28, 31-44, 46-49, and above 113.', why: 'Interpolation only; the sampled endpoints bracket every gap.', closedBy: 'a few cheap counts' },
+  { key: 'terrain', what: 'Terrain modifiers; patrol and debark semantics.', why: 'The terrain experiment has never run. Patrol has 18 rows but its multi-tick ground law is unpinned.', closedBy: 'a terrain sweep' },
+  { key: 'variance', what: 'simulateVariance (a ±10% roll).', why: 'Never sampled. Unknown whether it rolls per unit or per unit-type per round.', closedBy: 'a repeated-request sweep' },
+  { key: 'trench_gaps', what: 'Trench levels 6-9, 11-14, 16-19 (12 of 21).', why: 'Never submitted. Neither trench curve is smooth — output plateaus at x1.40 across levels 4 and 5 — so interpolation is demonstrably risky.', closedBy: '12 requests' },
+  { key: 'trench_generality', what: 'Trench multipliers for any unit but infantry, and whether the output bonus multiplies the stat or the effective unit count.', why: 'Only 10v10 infantry was flown, and at n=10 E(n)=n, so the two readings of the output bonus are indistinguishable.', closedBy: 'one trench row with a 30-unit stack' },
+  { key: 'trench_10_pool', what: 'The level-10 pool multiplier beyond 2 decimal places.', why: 'Bracketed to [1.2382, 1.2463], which excludes the tidy 1.25.', closedBy: 'a larger stack, which tightens the bracket' },
+  { key: 'fortress_edges', what: 'A fortress on the ATTACKING side; a fortress against air or naval attackers; fortress-trench interaction; DR above level 5.', why: 'Only a level 1-5 fortress defending against infantry was measured. At level 6 the formula returns DR = 1.05, so it must saturate or the cap is real.', closedBy: 'a handful of requests' },
+  { key: 'building_caps', what: 'Workshop and factory level caps; workshop HP per level.', why: 'The sweep asked for 3, was not rejected, and never probed higher. Workshop shows 35 total at L3 with 20 in the top level, so HP is not uniform per level.', closedBy: 'two requests' },
+  { key: 'heroes', what: 'Heroes.', why: 'An addHero(side, stack) button exists on the form and was never once exercised. Every reading is hero-free.', closedBy: 'a hero sweep' },
+  { key: 'position', what: 'Position / range effects.', why: 'Every run was at position 0.', closedBy: 'a position sweep' },
+];
+
+// ---------------------------------------------------------------------------
+// PROVENANCE
+// ---------------------------------------------------------------------------
+// Free-form notes keyed by constant name. Every note says where the number was
+// measured, how well, and what it is NOT evidence for.
+
+export const PROVENANCE = {
+  precision: {
+    confidence: 'measured',
+    note: 'The source page prints HP lost to 0.1 in each unit span and to 0.01 in the summary table, and percentages to 3 significant figures. A stack POOL is never printed: it is pool = lost / pct, so every pool is an interval whose width is set by the percentage. Quoting a derived pool to 2 decimal places is a documented failure mode of this project (HANDOVER.md), committed by HANDOVER.md itself in its trench section.',
+  },
+
+  'UNITS.diagonal': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=unit_stats: 68 rows = the 17-unit roster flown FOUR times (timestamps 1786960631 / 1786963878 / 1786981063 / 1786981460), byte-identical readings every time. HANDOVER.md says three runs; the file holds four.',
+    method: 'Each row is a 10 v 10 duel of a unit against itself, so E(10) = 10 and m(1) = 1 and the coefficient is simply reading / 10.',
+    tolerance: '±0.005 per unit (the span prints HP lost to 0.1, divided by E = 10). art 2.7, rrg 6.7 and st 6.3 sit at that limit and should carry it.',
+    notEvidenceFor: 'ANY off-diagonal pairing. Attack is per-target-class — tac is 3.0 against air and 30.0 against ground — so a diagonal value says nothing about a different target.',
+  },
+  'UNITS.maxHP': {
+    confidence: 'derived',
+    source: 'results.jsonl, experiment=unit_stats, meta.max_hp_bounds (fourth run).',
+    method: 'The reading is the BRACKET (lost/pct/n, widened by both print precisions). The integer is an inference from "the bracket holds exactly one whole number", which is true for 16 of 16 units that have any reading at all.',
+    crossCheck: 'For 13 of those 16 the air_vs_ground pools give a second, independent bracket around the same integer.',
+    caution: 'results.jsonl does not store the pool and percentage that produced meta.max_hp_bounds for unit_stats, so those brackets cannot be re-derived from the file — the conclusion is on disk, the evidence is not. Do not display bracket midpoints (175.44, 260.12, 60.06): they are measurements of nothing.',
+  },
+  'UNITS.maxHP.formDefault': {
+    confidence: 'derived',
+    source: 'As UNITS.maxHP, plus independent confirmation: 175 and 260 are the stock form\'s own default HP values in last_response.html.',
+  },
+  'UNITS.maxHP.noIndependentCheck': {
+    confidence: 'derived',
+    source: 'As UNITS.maxHP, but weaker: sub, cl and bb appear only in unit_stats. No row anywhere else in results.jsonl constrains their max HP, so the integer rests on a single bracket whose own inputs were not recorded.',
+  },
+  'UNITS.balloon': {
+    confidence: 'unmeasured',
+    source: 'results.jsonl: bal has 4 unit_stats rows and 10 air_vs_ground rows, and every one of them has empty readings.',
+    note: 'The probe refuses to send bal with terrain=air because doing so aborts the entire batch server-side with no error message. Nothing about this unit is known: not max HP, not attack, not defence. Do not interpolate it from the other fliers.',
+  },
+
+  'AIR_ATTACK_VS_GROUND': {
+    confidence: 'derived',
+    source: 'results.jsonl, experiment=air_vs_ground: 30 cells (3 fliers x 10 ground targets), one session.',
+    method: 'Invert the post-fire output law (see RETURN_FIRE) on each cell. All ten targets return the same value for a given flier, exactly.',
+    residual: 'Worst 0.005 HP across all 30 cells, which is exactly half a print unit of the summary table\'s 2-decimal figure. Re-derived in this session from the raw readings, not copied from prose.',
+    supersedes: 'HANDOVER.md §4 reports these as ranges (5.000-5.022 / 30.000-30.121 / 5.001-5.016) because it uses an approximate return-fire law. Under the correct law the spread is zero. The headline numbers 5 / 30 / 5 were right; the formula that produced them was not.',
+    note: 'Flat across every ground target. The "Bomber does 0 damage to heavy tanks" report that motivated the experiment is not reproducible.',
+  },
+  'GROUND_DEFENCE_VS_AIR': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=air_vs_ground: attacker-side HP lost / E(defender count).',
+    method: 'Each of the ten values is confirmed by THREE independent attackers (int, tac, zep). Spread across the three is 0.00e+00 in every case.',
+    note: 'This is a ground unit DEFENDING against air. A ground unit ATTACKING air is unmeasured. Note the spread: ac at 8.0 is 20x lart at 0.2, which is exactly what made uncorrected readings look like target dependence.',
+    tolerance: '±0.005 or better.',
+  },
+  'BUILDING_DAMAGE_PER_EFFECTIVE_UNIT': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiments=fortress and buildings: 30 infantry take 8.5 HP off a building, and 8.5 / E(30) = 8.5 / 28.3333 = 0.3 exactly.',
+    note: 'ONE unit type, at full HP, in every row. 0.3 is a data point, not a law — every buildings request used the same 30-infantry attacker. Nothing in the model predicts the 0.3 : 4.0 ratio against units, so it cannot be extrapolated. Building damage is additive: it is NOT carved out of the damage dealt to units, and it is NOT reduced by fortress DR.',
+  },
+
+  'E_n': {
+    confidence: 'measured',
+    source: 'Independently confirmed at n = 10, 15, 20, 29, 30, 45, 50, 57 and 113, all exact to print precision. The non-trivial fits are E(29) = 27.65 (st dealt exactly 27.65), E(45) = 34.5833 (cav dealt exactly 34.58), E(30) = 28.3333, E(50) = 35.',
+    formula: 'E(n) = n for n <= 20; else 20 + k(60-k)/60 with k = min(n,50) - 20. Saturates at 35 effective units, so stacking past 50 does nothing.',
+    note: 'The min(n,50) cap does real work: uncapped, n=57 predicts 13.67 where 14.0 was measured. Untested at n in 21-28, 31-44, 46-49 and above 113 — interpolation there is derived, not measured, and the curve is smooth with every gap bracketed.',
+  },
+  'm_f': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=hp_scaling: 10 points at 10% intervals, 10 infantry attacking 50 infantry.',
+    formula: 'm(f) = 0.05 + 0.95f, f = current HP / full HP for the whole stack.',
+    residual: 'ZERO deviation at all ten points.',
+    note: 'The 0.05 floor is real: a stack at 10% HP deals 14.5% of full damage. The POOL scales linearly with f with no floor. Only the ATTACKER\'s HP was swept, and only for infantry — that m(f) applies to a defender or to any other unit type is assumed.',
+  },
+  'wiped_stack': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=hp_scaling: 8 of the 10 points have attacker_lost == attacker_pool, and all 8 sit exactly on the line set by the two survivors.',
+    note: 'A land stack wiped inside the round still deals its full damage. The equivalent for an air attacker is unmeasured, and the post-fire law has no branch at zero survivors.',
+  },
+  'deaths': {
+    confidence: 'measured',
+    source: '81 of 81 stack readings across air_vs_ground, fortress and trenches agree.',
+    formula: 'deaths = floor(HP lost / effective per-unit max HP), where "effective" means the TRENCH-INFLATED figure. At trench 4, 40.0 HP lost kills 1 infantry rather than 2, because per-unit HP has grown to about 23.',
+    note: 'Whether the death count clamps to the stack size when a damaged stack is wiped was never read: the hp_scaling rows record no death figure.',
+  },
+  'RETURN_FIRE': {
+    confidence: 'derived',
+    source: 'results.jsonl, experiment=air_vs_ground: all 30 cells with readings.',
+    formula: 'For an AIR attacker against a GROUND defender only, the attacker\'s output is evaluated on its state AFTER that round\'s incoming fire: deaths = floor(lost/maxHP); n_alive = n - deaths; f_after = (pool - lost) / (n_alive * maxHP); dealt = base * E(n_alive) * m(f_after).',
+    residual: 'Worst 0.005 HP over all 30 cells — half a print unit, i.e. exact to the available precision. Re-derived from the raw readings in this session.',
+    supersedes: 'HANDOVER.md §4 gives dealt = base * E(n) * (1 - own_fraction_lost). That law is refuted by the 30 cells it was fitted to: worst residual 1.12 HP against a display resolution of 0.005, wrong in 26 of 30 cells and always in the same direction. It coincides with the correct law only when the attacker\'s loss is an exact multiple of its max HP, which is why the two "clean" cells looked like confirmation.',
+    note: 'This ADDS NO MECHANIC. There is no separate return-fire attenuation: it is the ordinary m(f) output law, evaluated post-fire instead of pre-fire. The pre/post asymmetry is the whole of the phenomenon. An equivalent form, dealt = base * sum over surviving units of m(f_i), fits identically — the two are algebraically the same whenever E(n_alive) = n_alive, i.e. for stacks of 20 or fewer, which is every stack ever measured. They diverge above 20 and nothing decides between them.',
+  },
+  'attenuation_scope': {
+    confidence: 'mixed — see below',
+    ground_defender: 'measured: the ground defender is never attenuated, even losing 26% of its pool in the round. Checked against the tac row on all 10 cells: every one dealt exactly stat * E(n_full). Post-fire evaluation would have predicted up to 20% less.',
+    air_and_sea_duels: 'derived: air-vs-air and sea-vs-sea are NOT attenuated. Solving the 10v10 diagonals under attenuation forces int 29.925, tac 3.111, zep 5.176, sub 66.667, cl 12.5, bb 50; without it they are exactly 20 / 3 / 5 / 40 / 10 / 40. Every one of the 19 distinct stats measured in this project is a round number, so the unattenuated reading is right. This is an argument from roundness, not a reading — but it is strong enough to lift HANDOVER.md\'s "suspect" flag on the air rows.',
+    cause: 'assumed: the consistent reading is that incoming fire resolves first against an air attacker only. The BEHAVIOUR is measured; the mechanism is a story.',
+  },
+  'FORTRESS.dr': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiments=fortress (levels 1-5) and buildings (the L3 cell), reproduced on three separate runs.',
+    formula: 'DR = 0.15 * (fortressHP / 50 + 1), continuous in CURRENT HP. At full HP that is 0.15 * (level + 1).',
+    residual: 'Observed defender loss ratios 0.6999 / 0.5499 / 0.3998 / 0.2498 / 0.0997 against 0.70 / 0.55 / 0.40 / 0.25 / 0.10 — every level within 0.002.',
+    note: 'The "+1" discontinuity is in the game: having ANY fortress costs the attacker 15% before levels count. The page prints the decay directly — "DR: 60% -> 57.5%" for a level-3 fortress that has taken 8.5 damage, and 0.15*(141.5/50+1) = 57.45%. The round\'s damage uses the START-OF-ROUND value. Only the defender\'s UNITS are protected: the fortress\'s own damage is not reduced, and the fortress does not reduce the defender\'s output.',
+    limits: 'Levels 1-5 only, and only against a land (infantry) attacker on the defending side. At level 6 the formula returns DR = 1.05, so it must saturate or the cap is real; unmeasured either way.',
+  },
+  'BUILDINGS.inert': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=buildings: one request per type against 30 infantry.',
+    note: 'The defender\'s loss ratio versus control is EXACTLY 1.00000 for all seven non-fortress types. This is a positive reading, not a silence: each type renders a result row and takes the same 8.5 HP, so the field demonstrably reached the server, and what is absent is the "DR:" clause.',
+  },
+  'BUILDINGS.fortressHP': {
+    confidence: 'measured',
+    source: 'Fortress pool read from its own result row at every level: exactly 50 / 100 / 150 / 200 / 250 at L1-L5. Damage comes off the top level.',
+  },
+  'BUILDINGS.hp.oneLevel': {
+    confidence: 'derived',
+    source: 'One observation per type (railway/aerodrome/harbor L1 = 60, barracks L2 = 80, factory L3 = 120, recruiting L1 = 5.0 and destroyed outright by the 8.5 damage).',
+    note: 'Only the fortress has HP per level confirmed at more than one level. "40 per level" for the factory is 120/3 from a single reading.',
+  },
+  'BUILDINGS.hp.workshop': {
+    confidence: 'measured at L3 only',
+    source: '35 HP total at level 3, with 20 in the top level.',
+    note: 'Workshop HP is NOT uniform per level. 5 + 10 + 20 = 35 is a plausible doubling series and is assumed, not measured — only L3 was ever flown. Two requests would settle it.',
+  },
+  'BUILDINGS.maxLevel.server': {
+    confidence: 'measured',
+    source: 'The server states each cap itself: "oops: max level for X is N", read by parse_max_level(). Fortress 5, barracks 2, recruiting / railway / aerodrome / harbor 1.',
+  },
+  'BUILDINGS.maxLevel.unknown': {
+    confidence: 'unmeasured',
+    note: 'The sweep asked workshop and factory for level 3, was not rejected, and never probed higher. The form\'s lvl select offers 1-5 for every type, which is a UI cap and not a server cap. The true cap is at least 3 and otherwise unknown.',
+  },
+
+  'TRENCH_POOL': {
+    confidence: 'derived',
+    source: 'results.jsonl, experiment=trenches: 10 rows, 10 infantry vs 10 infantry, one session.',
+    method: 'pool = lost / pct with the attacker\'s output invariant at exactly 40.0, so each multiplier is a BRACKET, not a reading. See TRENCH_POOL_BRACKET.',
+    note: 'Levels 4, 5, 15 and 20 each bracket a clean 2-decimal value. Level 10 does not: [1.2382, 1.2463] excludes 1.25, and the carried value 1.24 is not pinned to 2 decimals. The pool bonus applies while ATTACKING as well as defending (attacker trench 20 gave pool x1.35 and turned 2 deaths into 1). Levels 1-3 confer no pool bonus at all.',
+    limits: 'Infantry only. That the multiplier is unit-independent and purely multiplicative is assumed.',
+  },
+  'TRENCH_OUTPUT': {
+    confidence: 'measured',
+    source: 'Same 10 rows. These come from an absolute HP-lost figure rather than a ratio of rounded numbers, so they are precise to ±0.001 — much better than the pool multipliers.',
+    note: 'DEFENDER only: an attacker at trench 20 left the defender\'s loss at exactly 40.0, the control value. The curve is not smooth — it plateaus at x1.40 across levels 4 AND 5 — so both schedules are probably table lookups rather than formulas (assumed; bytro.js contains no trench logic at all, only form handling).',
+    limits: 'Measured only at n = 10, where E(n) = n. Whether the bonus multiplies the base stat or the effective unit count is therefore undetermined, and the two diverge above 20 units.',
+  },
+  'TRENCH.gaps': {
+    confidence: 'unmeasured',
+    note: 'Levels 6-9, 11-14 and 16-19 were never submitted: 12 of 21 levels. Interpolation is assumed and, given the x1.40 plateau, demonstrably risky. Both sampled sequences are non-decreasing, so a value at an unsampled level can be BRACKETED by its sampled neighbours — that bracketing is what the engine reports, and it rests on an assumption of monotonicity, not on a reading.',
+  },
+
+  'resolution_order': {
+    confidence: 'derived (single round)',
+    note: '1. The defender\'s fortress DR is computed from the fortress HP at ROUND START. 2. Both sides\' outputs come from the PRE-round state, except an AIR attacker against GROUND, which uses its post-fire state. 3. Damage is applied; building damage is additive and unmitigated. 4. deaths = floor(HP lost / trench-inflated per-unit max HP). Every measurement used maxRounds=1, so this is a description of ONE round and multi-round iteration is unmeasured.',
+  },
+  'result_semantics': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=semantics: 3 rows with asymmetric counts.',
+    note: 'The page\'s span reports HP LOST, not HP left, and pool = lost / pct. This is why every constant above can be trusted at all.',
+  },
+  'FORM.domains': {
+    confidence: 'measured',
+    source: 'Read directly from the committed form capture last_response.html this session — a single flat <select name=A.1.1.unit> with <optgroup label=Land|Air|Naval>.',
+    note: 'Not physics. Listed so the app does not invent options the game does not have. RANGED_KM values (artillery 50, railgun 150, cruiser 40, battleship 75) come from the help page, not from this rig.',
+  },
+  'integrity': {
+    confidence: 'measured',
+    note: 'results.jsonl grew from 150 to 168 rows during the session that produced these tables, when a concurrent session flew the patrol experiment. The 18 patrol rows are single-sample and their multi-tick GROUND law does not close (predicted tick 3/4 defender output 3.5/3.5 against observed 3.4/3.3), so patrol is deliberately NOT implemented. Two patrol findings do bear on the app: maxRounds is ignored entirely for terrain=air (0.25/0.5/0.75/1 return byte-identical results), and patrol out-damages a direct air strike in all 9 cells measured.',
+  },
+};

@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Battle Calculator — Supremacy 1914</title>
+<meta name="description" content="An offline battle calculator for Supremacy 1914 that shows its working and states how well each number is measured.">
+<link rel="stylesheet" href="./styles.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%E2%9A%94%EF%B8%8F%3C/text%3E%3C/svg%3E">
+</head>
+<body>
+
+<a class="skip" href="#result">Skip to result</a>
+
+<header class="site-head">
+  <div class="wrap head-inner">
+    <div class="brand">
+      <h1>Battle Calculator</h1>
+      <p class="tagline">Supremacy&nbsp;1914 &mdash; one round, variance off</p>
+    </div>
+    <p class="offline-note" title="This page performs no network requests at all.">
+      <span class="dot" aria-hidden="true"></span>
+      Runs entirely in your browser. Never contacts dxcalc.com.
+    </p>
+  </div>
+</header>
+
+<!-- Fatal-load banner: shown only if the engine or data module fails to load. -->
+<div class="wrap" id="fatal" hidden>
+  <div class="banner banner-unknown" role="alert">
+    <p class="banner-title">The model did not load</p>
+    <p class="banner-body" id="fatal-body"></p>
+  </div>
+</div>
+
+<main class="wrap" id="app" hidden>
+
+  <!-- ------------------------------------------------------------------ -->
+  <!-- CONFIDENCE BANNER: the integrity feature. Driven by coverage.level. -->
+  <!-- ------------------------------------------------------------------ -->
+  <div id="coverage" class="banner" role="status" aria-live="polite">
+    <p class="banner-title"><span class="banner-icon" aria-hidden="true"></span><span id="coverage-headline"></span></p>
+    <p class="banner-body" id="coverage-reason"></p>
+    <ul class="caveats" id="coverage-caveats"></ul>
+  </div>
+
+  <!-- ------------------------------------------------------------------ -->
+  <!-- STACK BUILDERS                                                     -->
+  <!-- ------------------------------------------------------------------ -->
+  <form id="builders" class="builders" novalidate>
+    <div id="stack-attacker"></div>
+    <div id="stack-defender"></div>
+  </form>
+
+  <div class="global-row">
+    <div class="field field-rounds">
+      <label for="rounds">Rounds</label>
+      <input type="number" id="rounds" name="rounds" value="1" min="0.25" max="1000" step="0.25" inputmode="decimal">
+      <p class="field-note" id="rounds-note">Every measurement behind this model used exactly one round.</p>
+    </div>
+    <div class="global-actions">
+      <button type="button" id="swap" class="btn">Swap sides</button>
+      <button type="button" id="reset" class="btn">Reset</button>
+      <button type="button" id="share" class="btn btn-primary">Copy link</button>
+    </div>
+  </div>
+
+  <!-- ------------------------------------------------------------------ -->
+  <!-- RESULT                                                             -->
+  <!-- ------------------------------------------------------------------ -->
+  <section id="result" class="result" aria-labelledby="result-h">
+    <div class="result-head">
+      <h2 id="result-h">Outcome</h2>
+      <span class="conf-chip" id="result-chip"></span>
+    </div>
+
+    <p class="verdict" id="verdict" aria-live="polite"></p>
+
+    <!-- Raised only when the engine's own figures contradict each other. -->
+    <p class="sanity" id="sanity" role="alert" hidden></p>
+
+    <div class="scoreboard">
+      <article class="score score-attacker" aria-labelledby="sb-a-h">
+        <h3 id="sb-a-h" class="score-h"><span class="side-tag side-tag-attacker">Attacker</span> <span id="sb-a-name"></span></h3>
+        <dl class="score-grid">
+          <div class="score-cell score-cell-lead">
+            <dt>HP lost</dt>
+            <dd class="figure figure-lead" id="sb-a-hplost">&mdash;</dd>
+            <dd class="figure-sub" id="sb-a-pct"></dd>
+          </div>
+          <div class="score-cell">
+            <dt>Units killed</dt>
+            <dd class="figure" id="sb-a-deaths">&mdash;</dd>
+          </div>
+          <div class="score-cell">
+            <dt>Units left</dt>
+            <dd class="figure" id="sb-a-left">&mdash;</dd>
+          </div>
+          <div class="score-cell">
+            <dt>Damage dealt</dt>
+            <dd class="figure figure-small" id="sb-a-dealt">&mdash;</dd>
+          </div>
+          <div class="score-cell">
+            <dt>HP pool</dt>
+            <dd class="figure figure-small" id="sb-a-pool">&mdash;</dd>
+          </div>
+        </dl>
+        <ul class="score-buildings" id="sb-a-bldg"></ul>
+      </article>
+
+      <article class="score score-defender" aria-labelledby="sb-d-h">
+        <h3 id="sb-d-h" class="score-h"><span class="side-tag side-tag-defender">Defender</span> <span id="sb-d-name"></span></h3>
+        <dl class="score-grid">
+          <div class="score-cell score-cell-lead">
+            <dt>HP lost</dt>
+            <dd class="figure figure-lead" id="sb-d-hplost">&mdash;</dd>
+            <dd class="figure-sub" id="sb-d-pct"></dd>
+          </div>
+          <div class="score-cell">
+            <dt>Units killed</dt>
+            <dd class="figure" id="sb-d-deaths">&mdash;</dd>
+          </div>
+          <div class="score-cell">
+            <dt>Units left</dt>
+            <dd class="figure" id="sb-d-left">&mdash;</dd>
+          </div>
+          <div class="score-cell">
+            <dt>Damage dealt</dt>
+            <dd class="figure figure-small" id="sb-d-dealt">&mdash;</dd>
+          </div>
+          <div class="score-cell">
+            <dt>HP pool</dt>
+            <dd class="figure figure-small" id="sb-d-pool">&mdash;</dd>
+          </div>
+        </dl>
+        <ul class="score-buildings" id="sb-d-bldg"></ul>
+      </article>
+    </div>
+  </section>
+
+  <!-- ------------------------------------------------------------------ -->
+  <!-- SHOW THE WORKING                                                   -->
+  <!-- ------------------------------------------------------------------ -->
+  <details class="working" id="working">
+    <summary>
+      <span class="working-title">Show the working</span>
+      <span class="working-count" id="working-count"></span>
+    </summary>
+    <p class="working-lede">
+      Every figure above comes out of this chain. If a step is not here, the app is not
+      claiming it.
+    </p>
+    <div class="table-scroll">
+      <table class="deriv">
+        <caption class="visually-hidden">Derivation of the result, step by step</caption>
+        <thead>
+          <tr><th scope="col" class="c-step">#</th><th scope="col">Step</th><th scope="col">Formula</th><th scope="col" class="c-val">Value</th></tr>
+        </thead>
+        <tbody id="deriv-body"></tbody>
+      </table>
+    </div>
+  </details>
+
+  <!-- ------------------------------------------------------------------ -->
+  <!-- STANDING LIMITS + ROSTER                                           -->
+  <!-- ------------------------------------------------------------------ -->
+  <section class="limits" aria-labelledby="limits-h">
+    <h2 id="limits-h">What this model does not know</h2>
+    <p class="limits-lede">
+      True of every result on this page, whatever the banner above says. These are gaps in
+      the measurement record, not in the arithmetic.
+    </p>
+    <ul class="limits-list">
+      <li><strong>Land unit vs. a different land unit.</strong> Attack is known to depend on the
+        target's class, and only same-class pairings were ever measured. 90 of the 100 land
+        pairings are extrapolation.</li>
+      <li><strong>Terrain.</strong> This page models a direct attack. Patrol was measured separately
+        and behaves differently &mdash; same base stat, far less of the attacker's own attrition
+        charged against it &mdash; and is not modelled here. Debark is unknown.</li>
+      <li><strong>Multi-round battles.</strong> Every measurement used exactly one round.</li>
+      <li><strong>Variance.</strong> The game rolls roughly &plusmn;10%. Nothing here is rolled;
+        these are the variance-off figures.</li>
+      <li><strong>Heroes, positioning and range.</strong> Never exercised. All measurements sit at
+        position 0 with no hero.</li>
+      <li><strong>The Balloon.</strong> Not one quantity was ever measured &mdash; the calculator
+        refuses to accept it in the air.</li>
+    </ul>
+  </section>
+
+  <details class="roster" id="roster">
+    <summary><span class="working-title">Unit reference &amp; provenance</span></summary>
+    <p class="working-lede" id="roster-lede"></p>
+    <div class="table-scroll">
+      <table class="deriv roster-table">
+        <caption class="visually-hidden">Unit statistics and how each was obtained</caption>
+        <thead>
+          <tr>
+            <th scope="col">Unit</th><th scope="col">Class</th>
+            <th scope="col" class="c-val">Max HP</th>
+            <th scope="col" class="c-val">Attack</th>
+            <th scope="col" class="c-val">Defence</th>
+            <th scope="col">How it was obtained</th>
+          </tr>
+        </thead>
+        <tbody id="roster-body"></tbody>
+      </table>
+    </div>
+    <p class="working-lede">
+      Attack and defence are <strong>same-class only</strong> &mdash; the value a unit shows when
+      fighting its own kind. Cross-class values exist for air attacking ground and ground
+      defending against air; everything else is unmeasured.
+    </p>
+  </details>
+
+</main>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <p>
+      A clean-room implementation of measured game mechanics. No affiliation with
+      dxcalc.com or Bytro Labs. Constants were recovered by black-box measurement and
+      carry the confidence labels shown throughout.
+    </p>
+  </div>
+</footer>
+
+<!-- Mobile-only sticky summary: the number you actually came for. -->
+<div class="stickybar" id="stickybar" hidden>
+  <a class="stickybar-inner" href="#result">
+    <span class="sb-side sb-side-a"><b id="st-a">&mdash;</b><small>attacker dead</small></span>
+    <span class="sb-conf" id="st-conf"></span>
+    <span class="sb-side sb-side-d"><b id="st-d">&mdash;</b><small>defender dead</small></span>
+  </a>
+</div>
+
+<!-- ---------------------------------------------------------------------- -->
+<!-- STACK BUILDER TEMPLATE. {s} is replaced with the side key by app.js so  -->
+<!-- every id/for pair stays unique and every control keeps a real label.    -->
+<!-- ---------------------------------------------------------------------- -->
+<template id="stack-tpl">
+  <section class="stack stack-{s}" aria-labelledby="{s}-h">
+    <header class="stack-head">
+      <h2 id="{s}-h"><span class="side-tag side-tag-{s}">{S}</span></h2>
+      <p class="stack-summary" id="{s}-summary"></p>
+    </header>
+
+    <div class="stack-body">
+      <div class="field field-unit">
+        <label for="{s}-unit">Unit</label>
+        <select id="{s}-unit" name="{s}-unit"></select>
+        <p class="field-note" id="{s}-unit-note"></p>
+      </div>
+
+      <div class="field field-count">
+        <label for="{s}-count">Count</label>
+        <input type="number" id="{s}-count" name="{s}-count" min="1" max="500" step="1" value="30" inputmode="numeric">
+        <p class="field-note" id="{s}-count-note"></p>
+      </div>
+
+      <div class="field field-hp">
+        <label for="{s}-hp">Stack HP</label>
+        <div class="hp-row">
+          <input type="number" id="{s}-hp" name="{s}-hp" min="1" max="100" step="1" value="100" inputmode="numeric" aria-describedby="{s}-hp-note">
+          <span class="unit-suffix" aria-hidden="true">%</span>
+          <input type="range" id="{s}-hp-range" min="1" max="100" step="1" value="100"
+                 aria-label="{S} stack HP percent (slider)">
+        </div>
+        <p class="field-note" id="{s}-hp-note"></p>
+      </div>
+
+      <div class="field field-trench">
+        <label for="{s}-trench">Trench level</label>
+        <select id="{s}-trench" name="{s}-trench"></select>
+        <p class="field-note" id="{s}-trench-note"></p>
+      </div>
+    </div>
+
+    <div class="bldg-block">
+      <div class="bldg-head">
+        <h3>Buildings</h3>
+        <button type="button" class="btn btn-small" data-add-bldg="{s}">+ Add</button>
+      </div>
+      <ul class="bldg-list" id="{s}-bldgs"></ul>
+      <p class="field-note" id="{s}-bldg-note">Only a fortress changes the fighting. The rest just soak damage.</p>
+    </div>
+  </section>
+</template>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>

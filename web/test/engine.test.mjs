@@ -1,0 +1,625 @@
+#!/usr/bin/env node
+/**
+ * Does web/engine.js reproduce the battles that were actually fought?
+ *
+ * The engine is only trustworthy insofar as it predicts real measurements, so
+ * this suite replays ../../results.jsonl row by row and compares the engine's
+ * prediction against what dxcalc.com actually printed. Nothing here is a
+ * self-consistency check against a constant the engine itself carries: every
+ * expected value below came off the wire.
+ *
+ * It also asserts the honesty properties, which matter as much as the numbers:
+ * simulate() never throws, an unmeasured matchup is never labelled 'measured',
+ * an 'unknown' matchup yields withheld numbers rather than invented ones, and
+ * derivation[] is populated for every result.
+ *
+ * TOLERANCES, and why
+ * -------------------
+ * The source page prints HP lost to 0.1 in each unit span and to 0.01 in the
+ * summary table, and percentages to 3 significant figures. So:
+ *
+ *   HP lost, from the summary table (meta.detail.*.lost_source == 1) ±0.005
+ *   HP lost, from a span                                            ±0.05
+ *   A stack POOL is never printed at all. It is pool = lost / pct, so the
+ *     assertion is that the engine's pool falls inside the interval implied by
+ *     both print precisions — a bracket, never a point. Quoting a derived pool
+ *     to 2 decimals is a documented failure mode of this project.
+ *   Death counts are integers and are asserted exactly.
+ *
+ * Run:  node web/test/engine.test.mjs
+ */
+
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+
+import {
+  UNITS, TRENCH_POOL, TRENCH_POOL_BRACKET, TRENCH_OUTPUT, PROVENANCE, NOT_MEASURED,
+} from '../data.js';
+import {
+  effectiveUnits, hpMultiplier, fortressDR, trenchFactors, coverageOf, simulate,
+} from '../engine.js';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const RESULTS = join(HERE, '..', '..', 'results.jsonl');
+
+const rows = readFileSync(RESULTS, 'utf8')
+  .split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
+
+let ok = 0;
+const failures = [];
+const unreproduced = [];
+
+function check(label, cond, detail = '') {
+  if (cond) {
+    ok += 1;
+    console.log(`  PASS  ${label}`);
+  } else {
+    failures.push({ label, detail });
+    console.log(`  FAIL  ${label}\n        ${detail}`);
+  }
+}
+
+/** A measurement the engine could not reproduce. Reported, never papered over. */
+function cannotReproduce(what, expected, got, note) {
+  unreproduced.push({ what, expected, got, note });
+}
+
+function near(a, b, tol) {
+  return a !== null && a !== undefined && Number.isFinite(a) && Math.abs(a - b) <= tol + 1e-12;
+}
+
+/** Decimal places the recorder actually stored, which fixes the print source. */
+function decimals(x) {
+  const s = String(x);
+  const i = s.indexOf('.');
+  return i < 0 ? 0 : s.length - i - 1;
+}
+
+function lostTol(value, detail) {
+  if (detail && detail.lost_source === 1) return 0.005;   // summary table, 2 dp
+  return decimals(value) >= 2 ? 0.005 : 0.05;             // else the span, 1 dp
+}
+
+/** pool = lost / pct, widened by both print precisions. */
+function poolBracket(lost, pct, lostSource) {
+  const u = lostSource === 1 ? 0.005 : 0.05;
+  const upct = 0.5 * 10 ** (Math.floor(Math.log10(Math.abs(pct))) - 2);
+  return [(lost - u) / ((pct + upct) / 100), (lost + u) / ((pct - upct) / 100)];
+}
+
+function inBracket(x, [lo, hi]) {
+  return Number.isFinite(x) && x >= lo - 1e-9 && x <= hi + 1e-9;
+}
+
+function fmt(x) {
+  return x === null || x === undefined ? String(x) : Number(x).toFixed(4);
+}
+
+const withReadings = (name) => rows.filter(
+  (r) => r.experiment === name && r.readings && Object.keys(r.readings).length,
+);
+
+console.log(`Replaying ${rows.length} recorded requests from results.jsonl\n`);
+
+// ===========================================================================
+console.log('1. semantics — the three asymmetric duels that fixed HP LOST vs HP LEFT');
+// ===========================================================================
+for (const r of withReadings('semantics')) {
+  const { atk, def } = r.meta;
+  const res = simulate({
+    attacker: { unit: 'inf', count: atk },
+    defender: { unit: 'inf', count: def },
+    rounds: 1,
+  });
+  const eA = r.readings['A.1.1'];
+  const eB = r.readings['B.1.1'];
+  check(`${atk} inf vs ${def} inf: attacker loses ${eA}`,
+    near(res.attacker.hpLost, eA, lostTol(eA)), `engine ${fmt(res.attacker.hpLost)}`);
+  check(`${atk} inf vs ${def} inf: defender loses ${eB}`,
+    near(res.defender.hpLost, eB, lostTol(eB)), `engine ${fmt(res.defender.hpLost)}`);
+  if (!near(res.attacker.hpLost, eA, lostTol(eA))) cannotReproduce(`semantics ${atk}v${def} attacker`, eA, res.attacker.hpLost);
+  if (!near(res.defender.hpLost, eB, lostTol(eB))) cannotReproduce(`semantics ${atk}v${def} defender`, eB, res.defender.hpLost);
+}
+
+// ===========================================================================
+console.log('\n2. unit_stats — the same-class diagonal, all four runs of the roster');
+// ===========================================================================
+{
+  let run = 0; let seen = new Set();
+  for (const r of withReadings('unit_stats')) {
+    const code = r.meta.unit;
+    if (seen.has(code)) { run += 1; seen = new Set(); }
+    seen.add(code);
+    const res = simulate({
+      attacker: { unit: code, count: 10 },
+      defender: { unit: code, count: 10 },
+      rounds: 1,
+    });
+    const eA = r.readings['A.1.1'];
+    const eB = r.readings['B.1.1'];
+    const tag = `run ${run + 1} ${code} 10v10`;
+    check(`${tag}: attacker loses ${eA} (defence ${UNITS[code].def} x E(10))`,
+      near(res.attacker.hpLost, eA, lostTol(eA)), `engine ${fmt(res.attacker.hpLost)}`);
+    check(`${tag}: defender loses ${eB} (attack ${UNITS[code].atk} x E(10))`,
+      near(res.defender.hpLost, eB, lostTol(eB)), `engine ${fmt(res.defender.hpLost)}`);
+    check(`${tag}: coverage is 'measured'`, res.coverage.level === 'measured', res.coverage.level);
+    if (!near(res.attacker.hpLost, eA, lostTol(eA))) cannotReproduce(`unit_stats ${tag} attacker`, eA, res.attacker.hpLost);
+    if (!near(res.defender.hpLost, eB, lostTol(eB))) cannotReproduce(`unit_stats ${tag} defender`, eB, res.defender.hpLost);
+  }
+  const skipped = rows.filter((r) => r.experiment === 'unit_stats'
+    && (!r.readings || !Object.keys(r.readings).length));
+  check(`the ${skipped.length} balloon rows carry no readings, and the engine offers no numbers for it`,
+    skipped.length > 0 && skipped.every((r) => r.meta.unit === 'bal')
+      && simulate({ attacker: { unit: 'bal', count: 10 }, defender: { unit: 'bal', count: 10 } })
+        .attacker.hpLost === null,
+    'the Balloon must stay unmeasurable, not be interpolated from the other fliers');
+}
+
+// ===========================================================================
+console.log('\n3. hp_scaling — m(f) = 0.05 + 0.95f, 10 infantry at f HP vs 50 infantry');
+// ===========================================================================
+for (const r of withReadings('hp_scaling')) {
+  const pct = r.meta.hp_pct;
+  const res = simulate({
+    attacker: { unit: 'inf', count: 10, hpPct: pct },
+    defender: { unit: 'inf', count: 50 },
+    rounds: 1,
+  });
+  const eA = r.readings['A.1.1'];
+  const eB = r.readings['B.1.1'];
+  check(`attacker at ${pct}% HP loses ${eA}` + (pct <= 80 ? ' (wiped, capped by its pool)' : ''),
+    near(res.attacker.hpLost, eA, lostTol(eA)), `engine ${fmt(res.attacker.hpLost)}`);
+  check(`attacker at ${pct}% HP still deals ${eB} = 40 x m(${pct / 100})`,
+    near(res.defender.hpLost, eB, lostTol(eB)), `engine ${fmt(res.defender.hpLost)}`);
+  if (pct <= 80) {
+    check(`  and the wiped stack is reported wiped`, res.attacker.wiped === true, String(res.attacker.wiped));
+  }
+  if (!near(res.defender.hpLost, eB, lostTol(eB))) cannotReproduce(`hp_scaling ${pct}% defender`, eB, res.defender.hpLost);
+}
+
+// ===========================================================================
+console.log('\n4. air_vs_ground — 30 cells, both directions, post-fire attacker output');
+// ===========================================================================
+for (const r of withReadings('air_vs_ground')) {
+  const m = r.meta;
+  const d = m.detail || {};
+  const res = simulate({
+    attacker: { unit: m.atk, count: m.atk_n },
+    defender: { unit: m.target, count: m.def_n },
+    rounds: 1,
+  });
+  const tag = `${m.atk} x${m.atk_n} -> ${m.target} x${m.def_n}`;
+  const A = d['A.1.1'];
+  const B = d['B.1.1'];
+
+  check(`${tag}: air attacker loses ${A.lost} (${m.target} defence x E(${m.def_n}))`,
+    near(res.attacker.hpLost, A.lost, lostTol(A.lost, A)), `engine ${fmt(res.attacker.hpLost)}`);
+  check(`${tag}: ground defender loses ${B.lost} (post-fire output)`,
+    near(res.defender.hpLost, B.lost, lostTol(B.lost, B)), `engine ${fmt(res.defender.hpLost)}`);
+  check(`${tag}: deaths ${A.died} / ${B.died}`,
+    res.attacker.deaths === A.died && res.defender.deaths === B.died,
+    `engine ${res.attacker.deaths} / ${res.defender.deaths}`);
+  check(`${tag}: attacker pool inside the measured bracket`,
+    inBracket(res.attacker.pool, poolBracket(A.lost, A.pct, A.lost_source)),
+    `engine ${fmt(res.attacker.pool)} vs [${poolBracket(A.lost, A.pct, A.lost_source).map(fmt)}]`);
+  check(`${tag}: defender pool inside the measured bracket`,
+    inBracket(res.defender.pool, poolBracket(B.lost, B.pct, B.lost_source)),
+    `engine ${fmt(res.defender.pool)} vs [${poolBracket(B.lost, B.pct, B.lost_source).map(fmt)}]`);
+  check(`${tag}: coverage is 'measured' (the one measured cross-class pairing)`,
+    res.coverage.level === 'measured', res.coverage.level);
+
+  if (!near(res.defender.hpLost, B.lost, lostTol(B.lost, B))) {
+    cannotReproduce(`air_vs_ground ${tag} defender loss`, B.lost, res.defender.hpLost);
+  }
+  if (!near(res.attacker.hpLost, A.lost, lostTol(A.lost, A))) {
+    cannotReproduce(`air_vs_ground ${tag} attacker loss`, A.lost, res.attacker.hpLost);
+  }
+}
+check('the 10 balloon air_vs_ground rows are empty, and the engine withholds rather than guesses',
+  rows.filter((r) => r.experiment === 'air_vs_ground' && r.meta.atk === 'bal'
+    && (!r.readings || !Object.keys(r.readings).length)).length === 10
+  && simulate({ attacker: { unit: 'bal', count: 10 }, defender: { unit: 'inf', count: 57 } })
+    .defender.hpLost === null);
+
+// ===========================================================================
+console.log('\n5. trenches — 10 infantry vs 10 infantry across the nine sampled levels');
+// ===========================================================================
+for (const r of withReadings('trenches')) {
+  const m = r.meta;
+  const d = m.detail;
+  const defTrench = m.trench || 0;
+  const atkTrench = m.atk_trench || 0;
+  const res = simulate({
+    attacker: { unit: 'inf', count: 10, trench: atkTrench },
+    defender: { unit: 'inf', count: 10, trench: defTrench },
+    rounds: 1,
+  });
+  const A = d['A.1.1'];
+  const B = d['B.1.1'];
+  const tag = m.label;
+
+  check(`${tag}: attacker loses ${A.lost}`
+    + (defTrench ? ` = 50 x trench output ${TRENCH_OUTPUT[defTrench]}` : ''),
+    near(res.attacker.hpLost, A.lost, lostTol(A.lost, A)), `engine ${fmt(res.attacker.hpLost)}`);
+  check(`${tag}: defender loses ${B.lost} (the trench does NOT reduce damage)`,
+    near(res.defender.hpLost, B.lost, lostTol(B.lost, B)), `engine ${fmt(res.defender.hpLost)}`);
+  check(`${tag}: deaths ${A.died} / ${B.died} (per-unit HP is trench-inflated)`,
+    res.attacker.deaths === A.died && res.defender.deaths === B.died,
+    `engine ${res.attacker.deaths} / ${res.defender.deaths}`);
+  check(`${tag}: defender pool inside the measured bracket`,
+    inBracket(res.defender.pool, poolBracket(B.lost, B.pct, B.lost_source)),
+    `engine ${fmt(res.defender.pool)} vs [${poolBracket(B.lost, B.pct, B.lost_source).map(fmt)}]`);
+  check(`${tag}: attacker pool inside the measured bracket`,
+    inBracket(res.attacker.pool, poolBracket(A.lost, A.pct, A.lost_source)),
+    `engine ${fmt(res.attacker.pool)} vs [${poolBracket(A.lost, A.pct, A.lost_source).map(fmt)}]`);
+
+  if (!near(res.attacker.hpLost, A.lost, lostTol(A.lost, A))) {
+    cannotReproduce(`trenches ${tag} attacker loss`, A.lost, res.attacker.hpLost);
+  }
+}
+// The carried pool multipliers must sit inside the brackets they came from,
+// and level 10 must NOT be tidied to 1.25.
+for (const lvl of Object.keys(TRENCH_POOL_BRACKET)) {
+  const [lo, hi] = TRENCH_POOL_BRACKET[lvl];
+  check(`trench L${lvl} pool multiplier ${TRENCH_POOL[lvl]} lies in its measured bracket [${lo}, ${hi}]`,
+    TRENCH_POOL[lvl] >= lo && TRENCH_POOL[lvl] <= hi);
+}
+check('trench L10 is carried as 1.24, and 1.25 is excluded by the measurement',
+  TRENCH_POOL[10] === 1.24 && 1.25 > TRENCH_POOL_BRACKET[10][1],
+  `bracket [${TRENCH_POOL_BRACKET[10]}]`);
+
+// ===========================================================================
+console.log('\n6. fortress — 30 infantry vs 30 infantry, levels 1-5');
+// ===========================================================================
+for (const r of rows.filter((x) => x.experiment === 'fortress')) {
+  const lvl = r.meta.level;
+  const res = simulate({
+    attacker: { unit: 'inf', count: 30 },
+    defender: {
+      unit: 'inf',
+      count: 30,
+      buildings: lvl ? [{ code: 'fortress', level: lvl }] : [],
+    },
+    rounds: 1,
+  });
+  const eB = r.readings['B.1.1'];
+  check(`fortress L${lvl}: defender loses ${eB}` + (lvl ? ` = 113.33 x (1 - 0.15 x ${lvl + 1})` : ' (control)'),
+    near(res.defender.hpLost, eB, lostTol(eB)), `engine ${fmt(res.defender.hpLost)}`);
+  if (!near(res.defender.hpLost, eB, lostTol(eB))) {
+    cannotReproduce(`fortress L${lvl} defender loss`, eB, res.defender.hpLost);
+  }
+  if (lvl === 0) {
+    check('fortress control: attacker loses 141.7 (5.0 x E(30) = 141.667)',
+      near(res.attacker.hpLost, r.readings['A.1.1'], lostTol(r.readings['A.1.1'])),
+      `engine ${fmt(res.attacker.hpLost)}`);
+  } else {
+    // The attacker slot in these six rows reads -8.5: the building's own result
+    // row overwrote it, a known and fixed rig defect. There is no attacker
+    // measurement to compare against here, so none is asserted.
+    check(`fortress L${lvl}: the fortress itself loses 8.5 HP, unreduced by its own DR`,
+      near(res.defender.buildings[0].hpLost, 8.5, 0.05),
+      `engine ${fmt(res.defender.buildings[0].hpLost)}`);
+    check(`fortress L${lvl}: the attacker's output is NOT reduced by the fortress`,
+      near(res.attacker.damageDealt / (1 - fortressDR(50 * lvl)), 113.3333, 0.001),
+      `engine delivered ${fmt(res.attacker.damageDealt)}`);
+  }
+}
+
+// ===========================================================================
+console.log('\n7. buildings — only the fortress mitigates; the other seven are inert');
+// ===========================================================================
+for (const r of rows.filter((x) => x.experiment === 'buildings')) {
+  const m = r.meta;
+  const b = m.type ? [{ code: m.type, level: m.level }] : [];
+  const res = simulate({
+    attacker: { unit: 'inf', count: 30 },
+    defender: { unit: 'inf', count: 30, buildings: b },
+    rounds: 1,
+  });
+  const tag = m.type ? `${m.type} L${m.level}` : 'control (no building)';
+  const eA = r.readings['A.1.1'];
+  const eB = r.readings['B.1.1'];
+  check(`${tag}: attacker loses ${eA}`,
+    near(res.attacker.hpLost, eA, lostTol(eA)), `engine ${fmt(res.attacker.hpLost)}`);
+  check(`${tag}: defender loses ${eB}` + (m.type === 'fortress' ? ' (mitigated)' : m.type ? ' (unchanged — inert)' : ''),
+    near(res.defender.hpLost, eB, lostTol(eB)), `engine ${fmt(res.defender.hpLost)}`);
+  if (!near(res.defender.hpLost, eB, lostTol(eB))) {
+    cannotReproduce(`buildings ${tag} defender loss`, eB, res.defender.hpLost);
+  }
+  const eBld = r.readings['B.1.bldg.1'];
+  if (eBld !== undefined) {
+    check(`${tag}: the building loses ${eBld} HP`,
+      near(res.defender.buildings[0].hpLost, eBld, lostTol(eBld)),
+      `engine ${fmt(res.defender.buildings[0].hpLost)}`);
+    if (m.bldg && m.bldg.pool) {
+      const br = poolBracket(m.bldg.lost, m.bldg.pct, undefined);
+      check(`${tag}: building HP pool inside the measured bracket`,
+        inBracket(res.defender.buildings[0].hpFull, br),
+        `engine ${fmt(res.defender.buildings[0].hpFull)} vs [${br.map(fmt)}]`);
+    }
+  }
+}
+
+// ===========================================================================
+console.log('\n8. the invariants HANDOVER §10 asks the app to assert against itself');
+// ===========================================================================
+check('E(30) = 28.3333', Math.abs(effectiveUnits(30) - 28.333333) < 1e-4, String(effectiveUnits(30)));
+check('E(50) = E(57) = E(113) = 35',
+  effectiveUnits(50) === 35 && effectiveUnits(57) === 35 && effectiveUnits(113) === 35);
+check('E(45) = 34.5833', Math.abs(effectiveUnits(45) - 34.583333) < 1e-4, String(effectiveUnits(45)));
+check('E(29) = 27.65', Math.abs(effectiveUnits(29) - 27.65) < 1e-9, String(effectiveUnits(29)));
+check('E(20) = 20 and E(10) = 10 (linear below 21)',
+  effectiveUnits(20) === 20 && effectiveUnits(10) === 10);
+check('m(0.1) = 0.145 — the 0.05 floor is real', Math.abs(hpMultiplier(0.1) - 0.145) < 1e-12);
+check('m(1) = 1', Math.abs(hpMultiplier(1) - 1) < 1e-12);
+{
+  const r = simulate({ attacker: { unit: 'inf', count: 30 }, defender: { unit: 'inf', count: 30 } });
+  check('30 inf vs 30 inf: attacker 141.67, defender 113.33',
+    near(r.attacker.hpLost, 141.6667, 0.001) && near(r.defender.hpLost, 113.3333, 0.001),
+    `${fmt(r.attacker.hpLost)} / ${fmt(r.defender.hpLost)}`);
+}
+{
+  const r = simulate({ attacker: { unit: 'tac', count: 10 }, defender: { unit: 'ac', count: 20 } });
+  check('10 tac vs 20 ac: attacker 160.00, defender exactly 240.00',
+    near(r.attacker.hpLost, 160, 1e-9) && near(r.defender.hpLost, 240, 1e-9),
+    `${fmt(r.attacker.hpLost)} / ${fmt(r.defender.hpLost)}`);
+}
+{
+  const r = simulate({ attacker: { unit: 'tac', count: 10 }, defender: { unit: 'ht', count: 20 } });
+  check('10 tac vs 20 ht: attacker 80.00, defender exactly 270.00',
+    near(r.attacker.hpLost, 80, 1e-9) && near(r.defender.hpLost, 270, 1e-9),
+    `${fmt(r.attacker.hpLost)} / ${fmt(r.defender.hpLost)}`);
+}
+{
+  // The cell that discriminates the correct post-fire law (36.833) from
+  // HANDOVER §4's approximation (36.667). The measurement says 36.83.
+  const r = simulate({ attacker: { unit: 'int', count: 10 }, defender: { unit: 'ac', count: 20 } });
+  check('10 int vs 20 ac: defender loses 36.83, NOT the 36.67 of the superseded law',
+    near(r.defender.hpLost, 36.83, 0.005) && !near(r.defender.hpLost, 36.667, 0.005),
+    `engine ${fmt(r.defender.hpLost)}`);
+}
+{
+  const r = simulate({
+    attacker: { unit: 'inf', count: 10 },
+    defender: { unit: 'inf', count: 10, trench: 20 },
+  });
+  check('trench 20 on the defender: attacker loses 87.5, defender pool x1.35',
+    near(r.attacker.hpLost, 87.5, 1e-9) && near(r.defender.pool, 270, 1e-9),
+    `${fmt(r.attacker.hpLost)} / pool ${fmt(r.defender.pool)}`);
+}
+{
+  const r = simulate({
+    attacker: { unit: 'inf', count: 10, trench: 20 },
+    defender: { unit: 'inf', count: 10 },
+  });
+  check('trench 20 on the attacker: defender still loses exactly 40.0, attacker pool x1.35',
+    near(r.defender.hpLost, 40, 1e-9) && near(r.attacker.pool, 270, 1e-9),
+    `${fmt(r.defender.hpLost)} / pool ${fmt(r.attacker.pool)}`);
+  check('  and its deaths fall from 2 to 1 on the inflated per-unit HP',
+    r.attacker.deaths === 1, String(r.attacker.deaths));
+}
+for (const [lvl, want] of [[1, 0.70], [2, 0.55], [3, 0.40], [4, 0.25], [5, 0.10]]) {
+  check(`fortress L${lvl}: defender's loss ratio ${want.toFixed(2)}`,
+    Math.abs((1 - fortressDR(50 * lvl)) - want) < 1e-9,
+    String(1 - fortressDR(50 * lvl)));
+}
+check('a worn fortress mitigates less: 241.5 HP gives DR 87.45%',
+  Math.abs(fortressDR(241.5) - 0.8745) < 1e-9, String(fortressDR(241.5)));
+check('fortressDR clamps to 1 rather than returning the raw 1.05 at level 6',
+  fortressDR(300) === 1, String(fortressDR(300)));
+check('fortressDR(0) is 0 — a destroyed or absent fortress is not credited 15%',
+  fortressDR(0) === 0);
+
+// ===========================================================================
+console.log('\n9. max HP integers, cross-checked against pools measured elsewhere');
+// ===========================================================================
+{
+  // meta.max_hp_bounds cannot be re-derived from results.jsonl (the pool and
+  // percentage behind it were never written). The air_vs_ground rows give an
+  // INDEPENDENT bracket, but only for the 13 units that appear there.
+  const covered = new Set();
+  for (const r of withReadings('air_vs_ground')) {
+    const m = r.meta;
+    for (const [slot, code, n] of [['A.1.1', m.atk, m.atk_n], ['B.1.1', m.target, m.def_n]]) {
+      const d = m.detail[slot];
+      const [lo, hi] = poolBracket(d.lost, d.pct, d.lost_source);
+      const unit = UNITS[code];
+      if (!inBracket(unit.maxHP * n, [lo, hi])) {
+        cannotReproduce(`${code} maxHP ${unit.maxHP}`, `pool in [${lo.toFixed(2)}, ${hi.toFixed(2)}]`,
+          unit.maxHP * n);
+      }
+      covered.add(code);
+    }
+  }
+  check(`all ${covered.size} units appearing in air_vs_ground have max HP integers consistent `
+    + 'with an independently derived pool bracket',
+    unreproduced.filter((u) => u.what.includes('maxHP')).length === 0,
+    JSON.stringify(unreproduced.filter((u) => u.what.includes('maxHP'))));
+  const uncovered = Object.keys(UNITS).filter((c) => !covered.has(c));
+  check(`and the ${uncovered.length} that do not (${uncovered.join(', ')}) are flagged as having `
+    + 'no independent check',
+    uncovered.every((c) => c === 'bal'
+      || PROVENANCE[UNITS[c].provenance.maxHP].source.includes('no independent')
+      || UNITS[c].provenance.maxHP === 'UNITS.maxHP.noIndependentCheck'
+      || UNITS[c].provenance.maxHP === 'UNITS.balloon'),
+    uncovered.map((c) => `${c}:${UNITS[c].provenance.maxHP}`).join(' '));
+}
+
+// ===========================================================================
+console.log('\n10. honesty — simulate() never throws, and never overstates what it knows');
+// ===========================================================================
+{
+  const codes = Object.keys(UNITS);
+  let threw = 0; let noDerivation = 0; let mislabelled = 0; let fabricated = 0;
+  let measuredCells = 0; let estimatedCells = 0; let unknownCells = 0;
+  for (const a of codes) {
+    for (const d of codes) {
+      let res;
+      try {
+        res = simulate({
+          attacker: { unit: a, count: 30, hpPct: 55, trench: 7, buildings: [{ code: 'barracks', level: 9 }] },
+          defender: { unit: d, count: 45, hpPct: 100, trench: 20, buildings: [{ code: 'fortress', level: 3 }] },
+          rounds: 3,
+        });
+      } catch (err) {
+        threw += 1;
+        cannotReproduce(`simulate(${a} vs ${d}) threw`, 'a Result', String(err && err.message));
+        continue;
+      }
+      if (!Array.isArray(res.derivation) || res.derivation.length === 0) noDerivation += 1;
+      const cov = coverageOf(a, d);
+      if (cov.level !== 'measured' && res.coverage.level === 'measured') mislabelled += 1;
+      if (res.coverage.level === 'unknown'
+          && (res.attacker.hpLost !== null || res.defender.hpLost !== null)) fabricated += 1;
+      if (res.coverage.level === 'measured') measuredCells += 1;
+      else if (res.coverage.level === 'estimated') estimatedCells += 1;
+      else unknownCells += 1;
+    }
+  }
+  const n = codes.length * codes.length;
+  check(`simulate() never throws across all ${n} roster pairings (in a deliberately awkward `
+    + 'configuration: 55% HP, trench 7, an over-cap building, 3 rounds)', threw === 0, `${threw} threw`);
+  check(`derivation[] is populated for all ${n} results`, noDerivation === 0, `${noDerivation} empty`);
+  check('no result is labelled \'measured\' when the matchup is not', mislabelled === 0, `${mislabelled} mislabelled`);
+  check('every \'unknown\' result withholds its numbers instead of inventing them',
+    fabricated === 0, `${fabricated} fabricated`);
+  check(`the cross-product splits ${measuredCells} measured / ${estimatedCells} estimated / `
+    + `${unknownCells} unknown — and this configuration has 3 rounds and trench 7, so nothing `
+    + 'here should be measured', measuredCells === 0, `${measuredCells} claimed measured`);
+}
+{
+  // Same sweep in the clean configuration: one round, no trench, no buildings.
+  const codes = Object.keys(UNITS);
+  const seen = { measured: 0, estimated: 0, unknown: 0 };
+  for (const a of codes) {
+    for (const d of codes) {
+      const res = simulate({
+        attacker: { unit: a, count: 10 }, defender: { unit: d, count: 10 }, rounds: 1,
+      });
+      seen[res.coverage.level] += 1;
+      if (res.coverage.level === 'measured'
+          && !(a === d || (UNITS[a].cls === 'air' && UNITS[d].cls === 'land' && a !== 'bal'))) {
+        cannotReproduce(`coverage(${a} vs ${d})`, 'not measured', 'measured');
+      }
+    }
+  }
+  // 16 diagonals (bal excluded) + 3 fliers x 10 ground units = 46
+  check(`in a clean 1-round duel exactly 46 of ${codes.length ** 2} pairings are 'measured' `
+    + '(16 diagonals + 3 fliers x 10 ground targets)', seen.measured === 46, JSON.stringify(seen));
+  check('land attacking air is never measured and never numbered',
+    (() => {
+      const r = simulate({ attacker: { unit: 'inf', count: 10 }, defender: { unit: 'int', count: 10 } });
+      return r.coverage.level === 'unknown' && r.defender.hpLost === null && r.attacker.hpLost === null
+        && /never been measured/.test(r.coverage.reason);
+    })());
+  check('land off-diagonal is \'estimated\', numbered, and says why it might be wrong',
+    (() => {
+      const r = simulate({ attacker: { unit: 'inf', count: 10 }, defender: { unit: 'ht', count: 10 } });
+      return r.coverage.level === 'estimated' && r.defender.hpLost > 0
+        && /off-diagonal/.test(r.coverage.reason) && /wrong by any factor/.test(r.coverage.reason);
+    })());
+  check('sea off-diagonal is \'estimated\' too',
+    simulate({ attacker: { unit: 'sub', count: 10 }, defender: { unit: 'bb', count: 10 } })
+      .coverage.level === 'estimated');
+}
+check('multi-round downgrades a measured matchup to \'estimated\' and says every reading used 1 round',
+  (() => {
+    const r = simulate({
+      attacker: { unit: 'inf', count: 10 }, defender: { unit: 'inf', count: 10 }, rounds: 4,
+    });
+    return r.coverage.level === 'estimated'
+      && r.coverage.caveats.some((c) => /maxRounds = 1|4 rounds/.test(c));
+  })());
+check('an unsampled trench level is not exact, and brackets its sampled neighbours',
+  (() => {
+    const t = trenchFactors(7);
+    return t.exact === false && t.pool === TRENCH_POOL[5] && t.poolRange[1] === TRENCH_POOL[10]
+      && t.outputRange[0] === TRENCH_OUTPUT[5] && t.outputRange[1] === TRENCH_OUTPUT[10]
+      && /never submitted/.test(t.note);
+  })());
+check('a sampled trench level is exact', trenchFactors(15).exact === true && trenchFactors(0).exact === true);
+check('trench above 20 is clamped and flagged',
+  trenchFactors(25).level === 20 && trenchFactors(25).exact === false);
+check('building damage from a non-infantry attacker is withheld, not extrapolated',
+  (() => {
+    const r = simulate({
+      attacker: { unit: 'cav', count: 30 },
+      defender: { unit: 'cav', count: 30, buildings: [{ code: 'fortress', level: 3 }] },
+    });
+    return r.defender.damageToBuildings === null
+      && r.coverage.caveats.some((c) => /only ever been measured for infantry/.test(c));
+  })());
+check('a fortress against an air attacker still computes, but is downgraded and caveated',
+  (() => {
+    const r = simulate({
+      attacker: { unit: 'tac', count: 10 },
+      defender: { unit: 'inf', count: 57, buildings: [{ code: 'fortress', level: 3 }] },
+    });
+    return r.coverage.level === 'estimated'
+      && r.coverage.caveats.some((c) => /land \(infantry\) attacker/.test(c));
+  })());
+check('an air attacker wiped to zero survivors withholds its damage instead of guessing a branch',
+  (() => {
+    const r = simulate({
+      attacker: { unit: 'tac', count: 1 },
+      defender: { unit: 'ac', count: 50 },
+    });
+    return r.attacker.wiped === true && r.defender.hpLost === null
+      && r.coverage.level === 'unknown'
+      && r.coverage.caveats.some((c) => /no survivors/.test(c));
+  })());
+check('every derivation entry carries a label, a formula and a value key',
+  (() => {
+    const r = simulate({
+      attacker: { unit: 'int', count: 10 },
+      defender: { unit: 'inf', count: 57, buildings: [{ code: 'fortress', level: 2 }] },
+    });
+    return r.derivation.length > 5 && r.derivation.every(
+      (e) => typeof e.label === 'string' && typeof e.formula === 'string' && 'value' in e,
+    );
+  })());
+check('every constant in UNITS points at a PROVENANCE note that exists',
+  Object.values(UNITS).every((u) => Object.values(u.provenance).every((k) => PROVENANCE[k])),
+  Object.values(UNITS).flatMap((u) => Object.values(u.provenance).filter((k) => !PROVENANCE[k])).join(' '));
+check(`NOT_MEASURED lists ${NOT_MEASURED.length} open gaps, each with what/why/closedBy`,
+  NOT_MEASURED.length >= 20 && NOT_MEASURED.every((g) => g.key && g.what && g.why && g.closedBy));
+check('the land off-diagonal gap — the biggest one — is named in NOT_MEASURED',
+  NOT_MEASURED.some((g) => g.key === 'land_off_diagonal' && /biggest/.test(g.why)));
+
+// ===========================================================================
+console.log('\n11. coverage of the record itself');
+// ===========================================================================
+{
+  const counts = {};
+  for (const r of rows) counts[r.experiment] = (counts[r.experiment] || 0) + 1;
+  const replayed = ['semantics', 'unit_stats', 'hp_scaling', 'air_vs_ground', 'trenches', 'fortress', 'buildings'];
+  const notReplayed = Object.keys(counts).filter((e) => !replayed.includes(e));
+  console.log(`  note  replayed: ${replayed.map((e) => `${e} ${counts[e]}`).join(', ')}`);
+  console.log(`  note  NOT replayed: ${notReplayed.map((e) => `${e} ${counts[e]}`).join(', ') || 'none'}`);
+  check('the only experiment left unreplayed is patrol, which the engine deliberately '
+    + 'does not implement (its multi-tick ground law does not close)',
+    notReplayed.length === 1 && notReplayed[0] === 'patrol',
+    notReplayed.join(', '));
+  check('and the reason is recorded in PROVENANCE.integrity',
+    /patrol is deliberately NOT implemented/.test(PROVENANCE.integrity.note));
+}
+
+// ===========================================================================
+console.log('');
+if (unreproduced.length) {
+  console.log('MEASUREMENTS THE ENGINE COULD NOT REPRODUCE:');
+  for (const u of unreproduced) {
+    console.log(`  - ${u.what}: recorded ${u.expected}, engine ${fmt(u.got)}${u.note ? ` (${u.note})` : ''}`);
+  }
+  console.log('');
+}
+if (failures.length) {
+  console.log(`${failures.length} CHECK(S) FAILED, ${ok} passed`);
+  for (const f of failures) console.log(`  FAILED: ${f.label}\n          ${f.detail}`);
+  process.exit(1);
+}
+console.log(`ALL ${ok} CHECKS PASSED`);
+console.log('Tolerances: HP lost ±0.005 where the summary table gave 2 decimals, ±0.05 where only '
+  + 'a 1-decimal span was recorded; pools asserted inside the bracket implied by 3-significant-figure '
+  + 'percentages; death counts exact.');
