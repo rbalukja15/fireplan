@@ -747,6 +747,70 @@ console.log('\n12. composite stacks — replayed against the four measured mixtu
     dup.coverage.caveats.some((c) => /same unit type twice/.test(c)),
     dup.coverage.caveats.join(' | '));
 
+  // --- two defects found by the UI worker, both integrity failures --------
+  // 1. Coverage judged only the FIRST row of each side. A stack of infantry
+  //    plus artillery attacking infantry plus cavalry is four pairings, and
+  //    only one is the measured diagonal -- it reported 'measured' citing
+  //    infantry-vs-infantry while cavalry-vs-artillery, never once submitted,
+  //    went unmentioned.
+  const mixedPair = simulate({
+    attacker: { rows: [{ unit: 'inf', count: 10 }, { unit: 'art', count: 40 }] },
+    defender: { rows: [{ unit: 'inf', count: 30 }, { unit: 'cav', count: 10 }] },
+  });
+  check('coverage judges every pairing, not just the first row of each side',
+    mixedPair.coverage.level === 'estimated', mixedPair.coverage.level);
+  check('and says how many pairings are unmeasured',
+    /3 of 4 unit pairings/.test(mixedPair.coverage.reason),
+    mixedPair.coverage.reason.slice(0, 90));
+  check('the pairing cross-product is exposed for inspection',
+    Array.isArray(mixedPair.coverage.pairs) && mixedPair.coverage.pairs.length === 4);
+  check('an all-measured mixture is still reported measured',
+    simulate({ attacker: { rows: [{ unit: 'inf', count: 10 }] },
+      defender: { rows: [{ unit: 'inf', count: 30 }] } }).coverage.level === 'measured');
+
+  // 2. Rows reported damageDealt: 0 on the air and patrol paths, whose laws
+  //    work on whole-stack survivors and cannot be decomposed per row. Zero is
+  //    a claim; the stack total was 113 at the time.
+  const airMix = simulate({
+    attacker: { rows: [{ unit: 'int', count: 10 }, { unit: 'tac', count: 10 }] },
+    defender: { rows: [{ unit: 'inf', count: 30 }, { unit: 'ht', count: 10 }] },
+  });
+  check('an un-itemisable row reports null damage dealt, never 0',
+    airMix.attacker.rows.every((r) => r.damageDealt === null),
+    JSON.stringify(airMix.attacker.rows.map((r) => r.damageDealt)));
+  check('while the stack total is still reported',
+    typeof airMix.attacker.damageDealt === 'number' && airMix.attacker.damageDealt > 0,
+    String(airMix.attacker.damageDealt));
+  check('a land mixture DOES itemise damage dealt per row',
+    simulate({ attacker: { rows: [{ unit: 'inf', count: 25 }, { unit: 'art', count: 25 }] },
+      defender: { rows: [{ unit: 'inf', count: 30 }] } })
+      .attacker.rows.every((r) => typeof r.damageDealt === 'number'));
+
+  // 3. Stack-level multipliers must reach the ROWS too. They did not: a
+  //    defender on trench 10 reported rows summing to 141.67 against a stack
+  //    figure of 218.17 -- the same number times the 1.54 trench output bonus.
+  //    Rows that do not sum to their own stack are the composite version of
+  //    the building row that clobbered the attacker's slot for a whole phase.
+  for (const [why, cfg] of [
+    ['trench output bonus', { attacker: { rows: [{ unit: 'inf', count: 10 }], trench: 20 },
+      defender: { rows: [{ unit: 'inf', count: 30 }], trench: 10 } }],
+    ['a trenched mixture', { attacker: { rows: [{ unit: 'inf', count: 20 }] },
+      defender: { rows: [{ unit: 'inf', count: 25 }, { unit: 'art', count: 25 }], trench: 15 } }],
+    ['patrol duration', { mode: 'patrol', rounds: 2,
+      attacker: { rows: [{ unit: 'tac', count: 10 }] },
+      defender: { rows: [{ unit: 'inf', count: 57 }] } }],
+  ]) {
+    const r = simulate(cfg);
+    for (const side of ['attacker', 'defender']) {
+      const rowsSum = r[side].rows.reduce(
+        (t, x) => t + (typeof x.damageDealt === 'number' ? x.damageDealt : 0), 0);
+      const total = r[side].damageDealt;
+      if (total === null || !r[side].rows.some((x) => typeof x.damageDealt === 'number')) continue;
+      check(`${why}: ${side} rows sum to the stack's damage dealt`,
+        Math.abs(rowsSum - total) < 0.01, `${rowsSum.toFixed(2)} vs ${total.toFixed(2)}`);
+    }
+  }
+
   // Single-row configs must be untouched by any of this.
   const single = simulate({ attacker: { unit: 'inf', count: 30 },
     defender: { unit: 'inf', count: 30 } });

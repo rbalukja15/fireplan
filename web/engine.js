@@ -271,6 +271,47 @@ export function allocationWeights(rows) {
   });
 }
 
+/**
+ * Coverage for two COMPOSITE stacks: the worst cell of the cross-product.
+ *
+ * A stack of 10 infantry + 40 artillery attacking 30 infantry + 10 cavalry is
+ * four pairings, and only one of them is the measured diagonal. Judging on the
+ * first row of each side reported "measured" on the strength of
+ * infantry-vs-infantry while cavalry-vs-artillery -- never submitted once --
+ * went unmentioned. That is precisely the confident-wrong-answer failure this
+ * project exists to avoid, so the verdict is the WORST pairing present and it
+ * names which one it is.
+ */
+export function coverageOfStacks(atkRows, defRows) {
+  const a = (atkRows || []).filter((r) => r.count > 0);
+  const d = (defRows || []).filter((r) => r.count > 0);
+  if (!a.length || !d.length) {
+    return { level: 'unknown', reason: 'A side has no units.', pairs: [] };
+  }
+  const rank = { measured: 0, estimated: 1, unknown: 2 };
+  const pairs = [];
+  for (const ar of a) {
+    for (const dr of d) {
+      const c = coverageOf(ar.unit, dr.unit);
+      pairs.push({ atk: ar.unit, def: dr.unit, ...c });
+    }
+  }
+  pairs.sort((x, y) => rank[y.level] - rank[x.level]);
+  const worstPair = pairs[0];
+  const nPairs = pairs.length;
+  if (nPairs === 1) return { ...worstPair, pairs };
+  const bad = pairs.filter((p) => p.level !== 'measured');
+  const lead = bad.length
+    ? `${bad.length} of ${nPairs} unit pairings in this battle are not measured. `
+      + `The worst is ${worstPair.atk.label} vs ${worstPair.def.label}: `
+    : `All ${nPairs} unit pairings in this battle are measured. `;
+  return {
+    level: worstPair.level,
+    reason: lead + worstPair.reason,
+    pairs,
+  };
+}
+
 export function coverageOf(atkUnit, defUnit) {
   const a = resolveUnit(atkUnit);
   const d = resolveUnit(defUnit);
@@ -409,7 +450,10 @@ function makeSide(cfg, role, derivation, caveats) {
     r.pool = r.poolFull === null ? null : r.poolFull * (r.hpPct / 100);
     r.hpLost = 0;
     r.deaths = 0;
-    r.damageDealt = 0;
+    // null, not 0. A path that cannot decompose the stack's output per row --
+    // the air and patrol laws work on whole-stack survivors -- must say it has
+    // no figure. Zero is a claim, and it was a false one.
+    r.damageDealt = null;
   }
 
   const primary = rows.length ? rows[0].unit : resolveUnit(cfg && cfg.unit);
@@ -581,7 +625,7 @@ function runSimulation(config, derivation, caveats) {
   const atk = makeSide(config.attacker, 'attacker', derivation, caveats);
   const def = makeSide(config.defender, 'defender', derivation, caveats);
 
-  const matchup = coverageOf(atk.unit, def.unit);
+  const matchup = coverageOfStacks(atk.rows, def.rows);
   let level = matchup.level;
   const reasons = [matchup.reason];
 
@@ -691,7 +735,7 @@ function runSimulation(config, derivation, caveats) {
     return {
       attacker: sideResult(atk, true),
       defender: sideResult(def, true),
-      coverage: { level, reason: reasons.join(' '), caveats },
+      coverage: { level, reason: reasons.join(' '), caveats, pairs: matchup.pairs || [] },
       derivation,
     };
   }
@@ -800,9 +844,9 @@ function runSimulation(config, derivation, caveats) {
 
     // 1. Defender's output — always from the PRE-round state (measured: a
     //    ground defender is not attenuated even losing 26% of its pool).
-    const defParts = stackOutput(def, (u) => defenceCoefficient(u, atk.unit).value);
-    const defOutput = defParts.total === null ? 0
-      : defParts.total * def.tf.output * patrolScale;
+    const defParts = stackOutput(def, (u) => defenceCoefficient(u, atk.unit).value,
+                                 def.tf.output * patrolScale);
+    const defOutput = defParts.total === null ? 0 : defParts.total;
     if (def.rows.length > 1) {
       for (const pt of defParts.parts) {
         derivation.push({
@@ -931,7 +975,7 @@ function runSimulation(config, derivation, caveats) {
         }
       }
     } else {
-      const atkParts = stackOutput(atk, (u) => attackCoefficient(u, def.unit).value);
+      const atkParts = stackOutput(atk, (u) => attackCoefficient(u, def.unit).value, 1);
       atkOutput = atkParts.total === null ? null : atkParts.total;
       if (atk.rows.length > 1 && atkOutput !== null) {
         for (const pt of atkParts.parts) {
@@ -1089,7 +1133,7 @@ function runSimulation(config, derivation, caveats) {
   return {
     attacker: sideResult(atk, false),
     defender: sideResult(def, false),
-    coverage: { level, reason: reasons.join(' '), caveats },
+    coverage: { level, reason: reasons.join(' '), caveats, pairs: matchup.pairs || [] },
     derivation,
   };
 }
@@ -1100,14 +1144,20 @@ function runSimulation(config, derivation, caveats) {
  * with effective_i already carrying the cumulative roster-order saturation.
  * For a single row this is exactly coefficient x E(n) x m(f), unchanged.
  */
-function stackOutput(side, coefFor, mulEach) {
+function stackOutput(side, coefFor, scale, mulEach) {
+  const k = (typeof scale === 'number' && Number.isFinite(scale)) ? scale : 1;
   let total = 0;
   const parts = [];
   for (const r of side.rows) {
     const c = coefFor(r.unit);
     if (c === null || c === undefined) return { total: null, parts: [] };
     const m = mulEach ? mulEach(r) : hpMultiplier(r.hpPct / 100);
-    const out = c * r.effective * m;
+    // The stack-level multipliers (trench output, patrol duration) must be
+    // carried onto the ROWS as well, or the rows no longer sum to the stack.
+    // They did not, and the UI's row-vs-total sanity check caught it: a
+    // defender on trench 10 reported rows totalling 141.67 against a stack
+    // figure of 218.17, the same number times the 1.54 trench bonus.
+    const out = c * r.effective * m * k;
     r.damageDealt = out;
     total += out;
     parts.push({ row: r, coef: c, mul: m, out });
