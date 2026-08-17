@@ -51,13 +51,60 @@ ATTACK vs DEFENCE ARE DIFFERENT COEFFICIENTS
 Infantry max HP = 20.0, derived independently from both stacks of the same
 round (299.4/15 and 200.0/10). Deaths are floor(HP_lost / 20).
 
-Per-unit base damage, other units — PROVISIONAL, RE-RUN BEFORE USE:
-    cavalry 15 | artillery 8 | heavy tank 45
-    Collected before we noticed the stock form ships B.1.2=ac x5, B.1.3=lt x3,
-    B.1.4=ht x1 pre-filled, so any run that set only row 1 was silently
-    fighting three extra defender types. duel() now blanks rows 2-8, but these
-    numbers predate that, AND they carry no attack/defence label. Suspect on
-    both counts.
+UNIT TABLE — measured by --run unit_stats, one U-vs-U request each, and
+reproduced identically on two separate runs (the engine is deterministic).
+
+    unit    class   maxHP   atk   def    def/atk
+    inf     land       20   4.0   5.0      1.25
+    cav     land       25  15.0   7.5      0.50
+    ac      land       60   6.0  12.0      2.00
+    lart    land       10   5.0   1.0      0.20
+    art     land       20   8.0   2.7      0.34
+    rrg     land       60  20.0   6.7      0.34
+    lt      land      175  30.0  30.0      1.00
+    ht      land      260  45.0  45.0      1.00
+    convoy  land       20   1.0   1.0      1.00
+    st      land       40  25.0   6.3      0.25
+    bal     air         —     —     —         —   (guarded: crashes in air)
+    int     air        60  20.0  20.0      1.00
+    tac     air        80   3.0   3.0      1.00
+    zep     air       140   5.0   5.0      1.00
+    sub     sea       100  40.0  40.0      1.00
+    cl      sea        50  10.0  10.0      1.00
+    bb      sea       200  40.0  40.0      1.00
+
+    ATTACK AND DEFENCE ARE INDEPENDENT STATS, not one number plus a global
+    bonus. Seven units differ between the two and nine are symmetric, so the
+    1.25 seen for infantry is specific to infantry, not a defender bonus.
+    Offensive land units defend far worse than they attack (artillery 0.34,
+    stormtroopers 0.25, light artillery 0.20) while armoured cars invert it
+    (2.00). Every air and naval unit measured so far is symmetric.
+
+    maxHP is derived from the loss percentage, whose displayed precision caps
+    the result — raw output shows 60.06, 175.44, 260.12 for what are plainly
+    60, 175, 260. Confirmed against the stock form, which ships lt at 525/3 =
+    175.0 and ht at 260/1 = 260.0 per unit.
+
+FORTRESS — measured, and it works
+    A fortress on the DEFENDER scales incoming damage by
+        m(L) = 0.85 - 0.15 * L        for L = 1..5
+    i.e. 0.70 0.55 0.40 0.25 0.10. All five points fit exactly. Note the
+    discontinuity: no fortress at all is 1.00, so merely having one costs the
+    attacker 15% before levels are counted, as though it acted at level L+1.
+
+    The control also re-confirms the core model independently: 30 inf vs
+    30 inf gives E(30) = 28.3333, and 28.3333 * 4.0 = 113.3 (defender's loss)
+    and 28.3333 * 5.0 = 141.7 (attacker's loss), both matching to display
+    precision.
+
+STILL UNEXPLAINED
+    With a fortress present the ATTACKER's reading is -8.5 at every level,
+    where the control reads 141.7. It is negative, and constant while the
+    defender's number moves, so it is not damage. It cannot have come from
+    parse_reading() either, whose pattern has no minus sign — it is the
+    parse_hp() fallback picking the first number out of span text we do not
+    recognise. submit() now prints that raw text; re-run the fortress sweep
+    to see what the page is actually saying there.
 
 Trenches add to the defender's HP pool rather than reducing incoming damage.
 Levels 1-3 conferred no measurable benefit at all.
@@ -384,7 +431,7 @@ def parse_hp(text: str) -> float | None:
 # you have that unit type's max HP from the very same request that measured
 # damage. Reading only the first number threw all of that away.
 READING_RE = re.compile(
-    r"Lost\s+([\d.]+)\s*HP\s*\(\s*([\d.]+)\s*%\s*\)"
+    r"Lost\s+(-?[\d.]+)\s*HP\s*\(\s*(-?[\d.]+)\s*%\s*\)"
     r"(?:\s*(?:all\s+)?(\d+)\s+died)?", re.I)
 
 
@@ -452,6 +499,7 @@ class Probe:
         self.encoding = encoding        # what we actually send
         self.save_response = save_response
         self.last_details: dict[str, dict[str, float]] = {}
+        self.last_raw: dict[str, str] = {}
         self.last_response = ""
         self.submit_marker: tuple[str, str] | None = None
         self.select_options: dict[str, list[str]] = {}
@@ -570,7 +618,9 @@ class Probe:
         # Full breakdown lives on the Probe; the return value stays a plain
         # slot -> HP-lost mapping so existing experiments keep working.
         self.last_details = {}
+        self.last_raw = dict(scraper.readings)
         out: dict[str, float] = {}
+        unparsed: list[tuple[str, str]] = []
         for slot, text in scraper.readings.items():
             detail = parse_reading(text)
             if detail is not None:
@@ -579,7 +629,16 @@ class Probe:
                 continue
             val = parse_hp(text)          # fallback for unrecognised phrasing
             if val is not None:
+                unparsed.append((slot, text))
                 out[slot] = val
+        if unparsed:
+            # The fallback grabs the first number in the span, which need not
+            # be an HP value at all. Say so, and show the text, rather than
+            # letting a mystery number enter results.jsonl unremarked.
+            print("  ! span text not recognised — fell back to its leading "
+                  "number, which may not be HP:", file=sys.stderr)
+            for slot, text in unparsed[:4]:
+                print(f"      {slot}: {text!r}", file=sys.stderr)
         return out
 
 
