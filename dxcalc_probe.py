@@ -71,12 +71,16 @@ ISOLATION TECHNIQUE
     trusted.
 
 TRANSPORT
-    The form is enctype="multipart/form-data" and onAttack() ends in a native
-    form.submit(), so a browser posts multipart. Posting urlencoded means the
-    server parses nothing at all — not even the submit marker — and replies
-    with the stock default form: no results, no 'oops'. That is the SAME
-    symptom as omitting the marker, which made the two failure modes hard to
-    tell apart. Both are handled now; see encode_multipart().
+    The ONLY thing that was ever broken here was the missing submit marker.
+    Once MainSubmitButton='Start Battle' is injected, a plain urlencoded POST
+    round-trips fine — confirmed by a live --sanity run.
+
+    The form does declare enctype="multipart/form-data" and onAttack() ends in
+    a native form.submit(), so a real browser posts multipart. The server
+    evidently accepts both. urlencoded is the default because it is the
+    encoding with live proof behind it; --encoding multipart is available to
+    reproduce the browser byte-for-byte if a payload ever behaves oddly
+    (suspect it first for values containing '&', '=' or non-ASCII).
 
 COURTESY
     This is one person's fan site. DEFAULT_DELAY is deliberately slow. Please
@@ -250,12 +254,11 @@ def find_submit_marker(page: str) -> tuple[str, str] | None:
     return (m.group(1), m.group(2)) if m else None
 
 
-# The form declares enctype="multipart/form-data", and onAttack() finishes with
-# a native form.submit(), which honours that enctype. So a real browser sends a
-# multipart body. Posting urlencoded instead means the server parses NOTHING —
-# not even the MainSubmitButton marker — and answers with the stock default
-# form: no results, no 'oops'. Identical symptom to the missing marker, which
-# is why the two were easy to confuse.
+# The form declares enctype="multipart/form-data" and onAttack() finishes with a
+# native form.submit(), so a browser posts multipart. The server accepts plain
+# urlencoded too — a live --sanity run proved it — so this is here as a
+# byte-faithful fallback, not as the default. Reach for it only if a payload
+# misbehaves in a way that smells like encoding (embedded '&' or '=', non-ASCII).
 MULTIPART_BOUNDARY = "----dxcalcProbeBoundary7MA4YWxkTrZu0gW"
 
 
@@ -327,7 +330,8 @@ class BareFormReturned(RuntimeError):
 
 class Probe:
     def __init__(self, delay: float = DEFAULT_DELAY, dry_run: bool = False,
-                 insecure: bool = False) -> None:
+                 insecure: bool = False, encoding: str = "urlencoded",
+                 save_response: str | None = None) -> None:
         self.delay = delay
         self.dry_run = dry_run
         self.jar = http.cookiejar.CookieJar()
@@ -338,9 +342,9 @@ class Probe:
         self.baseline: dict[str, str] = {}
         self.post_url = BASE_URL
         self.form_method = "post"
-        # Assume multipart until a GET says otherwise: that is what the live
-        # form declares, and urlencoded is the failure mode we just fixed.
-        self.form_enctype = "multipart/form-data"
+        self.form_enctype = ""          # what the page declares, informational
+        self.encoding = encoding        # what we actually send
+        self.save_response = save_response
         self.last_response = ""
         self.submit_marker: tuple[str, str] | None = None
         self.select_options: dict[str, list[str]] = {}
@@ -374,12 +378,9 @@ class Probe:
         self.baseline = scraper.fields
         self.post_url = urllib.parse.urljoin(BASE_URL, scraper.form_action or "")
         self.form_method = scraper.form_method
-        if scraper.form_enctype:
-            self.form_enctype = scraper.form_enctype
-        print(f"Form encoding: {self.form_enctype}")
-        if "multipart" not in self.form_enctype:
-            print("  ! Form is no longer multipart — posting urlencoded. If "
-                  "results stop parsing, check this first.", file=sys.stderr)
+        self.form_enctype = scraper.form_enctype
+        print(f"Encoding: sending {self.encoding} "
+              f"(form declares {self.form_enctype or 'nothing'})")
         self.select_options = scraper.select_options
         self.select_groups = scraper.select_groups
         self.option_labels = scraper.option_labels
@@ -406,7 +407,7 @@ class Probe:
             return {}
 
         self._throttle()
-        if "multipart" in self.form_enctype:
+        if self.encoding == "multipart":
             body, content_type = encode_multipart(payload)
         else:
             body = urllib.parse.urlencode(payload).encode()
@@ -425,6 +426,10 @@ class Probe:
             html = resp.read().decode("utf-8", "replace")
         self.request_count += 1
         self.last_response = html
+        if self.save_response:
+            with open(self.save_response, "w") as fh:
+                fh.write(html)
+            print(f"  (response saved to {self.save_response})", file=sys.stderr)
 
         oops = find_oops(html)
         if oops:
@@ -794,9 +799,17 @@ def main() -> int:
                     help="print payloads instead of sending them")
     ap.add_argument("--insecure", action="store_true",
                     help="skip TLS verification (last resort; see the SSL hint)")
+    ap.add_argument("--encoding", choices=("urlencoded", "multipart"),
+                    default="urlencoded",
+                    help="POST body encoding. urlencoded is proven against the "
+                         "live server; multipart reproduces the browser exactly")
+    ap.add_argument("--save-response", metavar="PATH",
+                    help="write every successful response body to PATH "
+                         "(overwritten each request; use with --sanity)")
     args = ap.parse_args()
 
-    p = Probe(delay=args.delay, dry_run=args.dry_run, insecure=args.insecure)
+    p = Probe(delay=args.delay, dry_run=args.dry_run, insecure=args.insecure,
+              encoding=args.encoding, save_response=args.save_response)
     print(f"Loading form from {BASE_URL} ...")
     fields = p.load_form()
     print(f"Discovered {len(fields)} fields.\n")
