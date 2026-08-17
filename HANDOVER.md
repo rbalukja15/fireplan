@@ -3,14 +3,30 @@
 Black-box recovery of the combat formulas behind dxter's *Supremacy 1914* battle
 calculator. Read this before touching `dxcalc_probe.py`.
 
-**Status: the model is in good shape; the network is not.** The POST
+**Status: the four queued experiments have now run live.** The POST
 round-trips, the result semantics are settled, the whole unit roster is
-measured, and fortresses are solved. Four experiments are now written and
-offline-tested but have never been run live — `buildings`, `trenches`,
-`air_vs_ground`, `land_matrix` — because the last session ran in an environment
-where `dxcalc.com` is blocked. **Read §1 before anything else: the next session
-needs to start in the right environment, and that cannot be fixed once it is
-running.**
+measured three times over, fortresses are solved, and as of 2026-08-17
+`buildings`, `trenches`, `air_vs_ground` and `hp_scaling` have all produced
+results. `land_matrix` (~100 requests) is the main experiment still unrun.
+
+What that session established, in one place:
+
+- **Only the fortress mitigates damage.** The other seven building types
+  render a row, take damage, and confer no DR at all.
+- **Trenches enlarge the pool; they do not reduce damage.** The old
+  "levels 1–3 conferred no benefit" was half right and half a reading error.
+- **No air unit is immune to anything.** The Bomber deals 30.0 to every ground
+  unit measured, heavy tanks included.
+- **Attack values are per target class.** The Bomber is 3.0 against air and
+  30.0 against ground; `MEASURED_UNITS` only ever saw the diagonal.
+- **A stack's output scales with what survives the round's incoming fire** —
+  in air-to-ground. This one is new, it is not present in land-to-land, and
+  it explains a target-dependence that does not exist.
+- **`m(f) = 0.05 + 0.95f` confirmed exactly**, and a wiped stack still deals
+  its full damage.
+
+**Read §1 before anything else: the next session needs to start in the right
+environment, and that cannot be fixed once it is running.**
 
 ---
 
@@ -30,6 +46,37 @@ our rig, not a fact about the game.**
 
 Treat a null result as a defect report against the probe until proven otherwise.
 Three separate ones were, and each hid the next.
+
+**The 2026-08-17 session made it six, in four different disguises.** The rule
+generalises past null results: *any* confident verdict from this rig is worth
+one look at how it was computed.
+
+- The `buildings` sweep asked for level 3 on all eight types. Only the fortress
+  goes that high, so five types were rejected with `oops: max level for X is 1`
+  and reported as untested. **Not a null result — a rejected request.** The
+  server states each cap; the sweep now reads it and retries.
+- A level-1 Recruiting Office has 5 HP and dies to the 8.5 damage 30 infantry
+  deal. The page then prints `- 5.0 HP (100%) destroyed`, with no arrow and no
+  LVL tail, which the parser did not match — so it printed `NO ROW`, **the same
+  output it gives for a type the server ignored entirely**, which is the one
+  distinction that experiment exists to make.
+- The `trenches` sweep proved trenches enlarge the defender's pool, then
+  checked the attacker by comparing absolute HP lost — 50.0 with a trench, 50.0
+  without — and concluded "no effect while attacking". The percentage had moved
+  25% → 18.5%. **The blunt test that produced the original wrong conclusion,
+  reproduced one function further down the same file**, in an experiment
+  written specifically to avoid it.
+- `air_vs_ground` reported all three aircraft TARGET-DEPENDENT from a 34%
+  spread that is entirely return fire. **This one would have gone into the
+  model as a game mechanic**; it is an artifact of what the attacker was
+  shooting at. See §4.
+- `unit_stats` was re-run because §9 promised the summary table would sharpen
+  max HP into clean integers. It did not, and could not: the binding constraint
+  is the percentage's significant figures, not the HP's. **The handover itself
+  was the defective instrument that time.**
+
+Five of those six were the rig reporting something false with confidence, not
+reporting nothing. "Treat a null result as a defect report" is too narrow.
 
 ---
 
@@ -135,7 +182,7 @@ here because two of them actively drove experiment designs.
 | "Building rows index from 0. Unit rows index from 1. This asymmetry is real." | **Wrong, and it cost the whole fortress phase.** `bldg.0` is a `<div hidden>` template that the page clones; `addBuilding()` starts at `newId = 1` and `renumberBuildings()` walks `1..maxBuildings`. Real buildings are `bldg.1..N`. |
 | "Isolation is by 10 km spacing; ranged units contaminate neighbours." | Wrong. Isolation is by the `target` field. `A.n.target = B.n` pairs them, `target = 0` defends. Position governs range-to-target and building inheritance only. |
 | Per-unit damage: infantry 4.0, cavalry 15, artillery 8, heavy tank 45 | Only infantry 4.0 survived, and only as the *attacking* value. See §4 — attack and defence are separate stats, and those figures carried no side label. |
-| "Trenches add to the defender's HP pool rather than reducing damage. Levels 1–3 conferred no benefit." | **Unverified.** Predates the HP-lost discovery and all three parser bugs. This has exactly the shape of the fortress null result. Re-run before citing. |
+| "Trenches add to the defender's HP pool rather than reducing damage. Levels 1–3 conferred no benefit." | **Half right, verified 2026-08-17.** The pool claim is correct. "No benefit at 1–3" is the pool-only reading: levels 1–3 leave the pool alone but already raise the defender's damage output by 25–35%. See §4. |
 
 ---
 
@@ -262,19 +309,85 @@ Saturates at 35 effective units; stacking past 50 does nothing. Independently
 re-confirmed at n=30: `E(30) = 28.3333`, and `28.3333 × 4.0 = 113.3` matched the
 fortress control exactly.
 
-### HP scaling
+### HP scaling — re-verified 2026-08-17
 
 ```
 m(f) = 0.05 + 0.95*f
 ```
 
-Fitted exactly, but **fitted through the truncating parser and never
-re-verified**. Lower confidence than the rest of this section.
+Re-run live after the parser fixes, `--run hp_scaling`, ten points at 10%
+intervals. **Zero deviation at every point.** The 0.05 floor is real: a stack
+at 10% HP deals 14.5% of full damage, not 10%. This is no longer the
+low-confidence entry it was.
+
+The pool scales linearly with no floor (`pool = n * maxHP * f`), so the floor
+is specifically on output.
+
+### A wiped stack still deals its full damage — settled
+
+Listed as an open question through the whole project, and answered for free by
+the sweep above. Fifty defenders deal `5.0 × E(50) = 175` HP per round, more
+than a damaged ten-stack can absorb, so the attacker was **destroyed in 8 of
+those 10 rounds** — and those eight points sit exactly on the line the two
+surviving rounds define.
+
+So a stack that dies inside the measured round still delivers its full attack.
+Every coefficient read from the far side of a wiped stack is sound, which
+retroactively validates the lopsided re-runs in `unit_stats` and the
+`STILL WIPED` cells in the matrix experiments.
+
+Note this does *not* license ignoring saturation. A wiped stack's own **loss**
+is still capped at its pool, so the coefficient read *from* it is still a lower
+bound. What is now known is that the reading from the *other* side is clean.
+
+### Return fire: output scales with what survives — air-to-ground
+
+**New, and the most consequential finding of the 2026-08-17 session.** In an
+air-attacks-ground battle, a stack's delivered damage is scaled by the share of
+its own pool that survived the round:
+
+```
+dealt = base_stat * E(n) * (1 - own_fraction_lost)
+```
+
+Measured across all 30 cells of `air_vs_ground`. Correcting for it collapses
+each aircraft's apparent target dependence onto a single flat stat:
+
+| attacker | raw spread across 10 ground targets | corrected | stat |
+|---|---|---|---|
+| `int` Fighter | 3.68 – 4.95 (×1.34) | 5.000 – 5.022 | **5.0** |
+| `tac` Bomber | 24.00 – 29.75 (×1.24) | 30.000 – 30.121 | **30.0** |
+| `zep` Zeppelin | 4.43 – 4.98 (×1.12) | 5.001 – 5.016 | **5.0** |
+
+Two cells come out exact rather than merely close, and they are the ones where
+the arithmetic has no rounding slack: `tac` vs `ac` gives `160/800 = 0.2` and
+`30 × 0.8 = 24.000`; `tac` vs `ht` gives `80/800 = 0.1` and `30 × 0.9 = 27.000`.
+
+**This is measured for air attacking ground. It is demonstrably absent in
+land-vs-land**, and the evidence is a control already in `results.jsonl`: the
+trench control has 10 infantry attacking 10 infantry, the attacker loses 25% of
+its pool, and the defender still loses exactly `4.0 × 10 = 40.0` — unattenuated.
+So either the mechanic is specific to air raids (the natural reading: ground
+fire resolves first and the survivors deliver the attack) or something else
+distinguishes the two cases. **Untested for sea, and for air defending.**
+
+Consequences worth carrying:
+
+- The air rows of `MEASURED_UNITS` were measured air-vs-air with return fire
+  present and are therefore **suspect** — they may be attenuated.
+- `report_matchups()` judges on the RAW row and consults the correction only
+  when the raw row slopes, because applying it to a non-attenuating server
+  turns a flat attacker into a target-dependent one. Do not reverse that order.
 
 ### Attack and defence are independent stats
 
 Not one number plus a global defender bonus. Seven units differ between the two,
 nine are symmetric. Infantry's 1.25 ratio is specific to infantry.
+
+**These are same-class values.** Every row was measured U-vs-U, and
+`air_vs_ground` has since shown that attack depends on the target's class: the
+Bomber is 3.0 here and 30.0 against ground. Read the `atk`/`def` columns as
+"against its own kind" until the off-diagonal is measured.
 
 | unit | class | maxHP | atk | def | def/atk |
 |---|---|---|---|---|---|
@@ -297,11 +410,49 @@ nine are symmetric. Infantry's 1.25 ratio is specific to infantry.
 | bb | sea | 200 | 40.0 | 40.0 | 1.00 |
 
 Measured by `--run unit_stats`, one request per type, reproduced identically on
-two runs an hour apart (the engine is deterministic with variance off). `maxHP`
-is derived from the displayed percentage, so its precision is capped by that —
-raw output shows `60.06`, `175.44`, `260.12` for what are plainly 60, 175, 260.
-Two are confirmed independently by the stock form, which ships `lt` at
-`525/3 = 175.0` and `ht` at `260/1 = 260.0` per unit.
+**three** runs (two an hour apart, a third on 2026-08-17) — the engine is
+deterministic with variance off.
+
+#### Max HP is a bracket, and every bracket holds one integer
+
+The `60.06 / 175.44 / 260.12` readings are not evidence of non-integral HP, and
+§9 was wrong about how to fix them. The summary table sharpens **HP lost**, and
+for these units the span's HP was already exact: a tank duel removes `300.0` of
+`1750`, the page prints `17.1%`, and `300 / 0.171 / 10 = 175.44`. **The binding
+constraint is the percentage's three significant figures.** No extra precision
+in the HP column can touch it.
+
+Both inputs are rounded, so max HP is an interval:
+
+```
+maxHP ∈ [ (lost - u) / (pct_hi * n),  (lost + u) / (pct_lo * n) ]
+
+  u        = 0.005 from the summary table, 0.05 from a span
+  pct_lo/hi = the printed percentage ± half a unit in its last significant place
+```
+
+`hp_bounds()` computes it; `sole_integer_in()` reports whether exactly one whole
+number lies inside. On the live roster **all 16 measurable units bracket exactly
+one integer, and every one is the round number above** — including `lt` at
+`174.92–175.96` and `ht` at `259.36–260.87`. `lt` and `ht` are independently
+confirmed by the stock form, which ships `525/3 = 175.0` and `260/1 = 260.0`.
+
+Two things follow for anyone extending this:
+
+- **Do not quote the midpoint to two decimals.** `175.44` is not a measurement
+  of anything; the measurement is `174.92–175.96`, and it says 175.
+- **Integrality is an inference, not a reading.** It is a strong one — 16 of 16,
+  two confirmed independently — but a unit with genuinely fractional HP would
+  present as a bracket holding no integer, and that is reported rather than
+  rounded away.
+
+Where a bracket *is* ambiguous, the sweep re-reads with the defender sized to
+lose ~90% of its pool, where 3 s.f. is worth ten times more, and **intersects**
+the two brackets rather than replacing one with the other. That ordering is
+load-bearing: a percentage that prints exactly (`37.5`) is indistinguishable
+from one that was rounded (`17.1`), so a re-read chosen on a worst-case error
+bar can land *further* from the truth than the reading it replaces. Intersecting
+brackets cannot. The live roster needed no re-reads, so this cost nothing.
 
 Note the pattern worth testing: every asymmetric unit is a land unit, and every
 air and naval unit measured is symmetric.
@@ -345,8 +496,88 @@ Also established:
 - **Fortresses do not reduce the defender's output.** The attacker loses 141.7
   at fortress level 5, identical to the no-fortress control.
 
+### Trenches — measured 2026-08-17, two separate effects
+
+`--run trenches`, 10 infantry vs 10 infantry, sweeping `B.1.trench`.
+
+| trench | defender's HP lost | defender's pool | defender's deaths | attacker's HP lost |
+|---|---|---|---|---|
+| 0 | 40.00 | 200.0 | 2 | 50.0 |
+| 1 | 40.00 | 200.0 | 2 | 62.5 (×1.25) |
+| 2 | 40.00 | 200.0 | 2 | 65.0 (×1.30) |
+| 3 | 40.00 | 200.0 | 2 | 67.5 (×1.35) |
+| 4 | 40.00 | 229.9 (×1.15) | 1 | 70.0 (×1.40) |
+| 5 | 40.00 | 239.5 (×1.20) | 1 | 70.0 (×1.40) |
+| 10 | 40.00 | 248.4 (×1.24) | 1 | 77.0 (×1.54) |
+| 15 | 40.00 | 259.7 (×1.30) | 1 | 81.0 (×1.62) |
+| 20 | 40.00 | 270.3 (×1.35) | 1 | 87.5 (×1.75) |
+
+**A trench does two independent things, on two different schedules.**
+
+1. **It enlarges the pool**, from level 4 up. Absolute HP lost never moves —
+   the attacker's `4.0 × 10 = 40.0` arrives in full at every level — so this is
+   not damage reduction, and the fortress mechanic is not what is happening.
+   The deaths column is an independent confirmation from the same requests:
+   `40 / 20 = 2` deaths at 20 HP per unit, falling to 1 once per-unit HP
+   exceeds 20.
+2. **It raises the defender's damage output**, from level 1 up, reaching ×1.75
+   at level 20. This is what the original "levels 1–3 conferred no benefit" note
+   missed: at levels 1–3 the pool genuinely does not move, but the defender is
+   already hitting 25–35% harder.
+
+The two curves are not proportional to each other and neither is smooth —
+output plateaus at ×1.40 across levels 4 and 5 while the pool keeps growing.
+Both are probably table lookups rather than formulas. `bytro.js` contains no
+trench logic at all (it is form-side only), so this has to come from readings.
+
+**The HP bonus applies while attacking; the damage bonus does not.** With the
+trench on the attacker instead, at level 20: the attacker's pool grows by the
+same ×1.3515 and its deaths fall 2 → 1, while the defender still loses exactly
+40.00, so the attacker's output is unchanged.
+
+That last line is where the first live run got it wrong. It compared the
+attacker's *absolute HP lost* — 50.0 with a trench, 50.0 without — and printed
+"no effect while attacking". The percentage had moved 25% → 18.5%. The check
+now applies the same pool-based discriminator as the sweep above.
+
 `BLDG_TAIL_RE` reads level, remaining HP and current DR straight off the page,
 so the remaining seven building types need no curve-fitting at all.
+
+### The other seven buildings — measured 2026-08-17, all combat-inert
+
+`--run buildings`, one request per type against a 30-infantry attack.
+
+| type | level | pool | top-level HP | DR clause? | defender's loss vs control |
+|---|---|---|---|---|---|
+| fortress | 3 | 150.0 | 50 | `DR: 60% → 57.5%` | **×0.400** |
+| recruiting | 1 | 5.0 | — destroyed | none | ×1.000 |
+| railway | 1 | 60.0 | 60 | none | ×1.000 |
+| workshop | 3 | 35.0 | 20 | none | ×1.000 |
+| factory | 3 | 120.0 | 40 | none | ×1.000 |
+| barracks | 2 | 80.0 | 40 | none | ×1.000 |
+| aerodrome | 1 | 60.0 | 60 | none | ×1.000 |
+| harbor | 1 | 60.0 | 60 | none | ×1.000 |
+
+**Only the fortress mitigates.** This is a real result rather than a null one,
+and the distinction is exactly what the experiment was built to make: the other
+seven *do* render a result row and *do* take the same 8.5 HP of damage, so the
+field demonstrably reached the server and had a visible effect. What is absent
+is the `DR:` clause, and its absence is a positive reading, not a silence.
+
+The fortress cell independently reproduces `m(3) = 0.40` from §4 on a third
+run, and the page prints `DR: 60%`, which is `1 - 0.40`.
+
+Two incidental findings:
+
+- **Level caps vary and the server states them.** Only the fortress reaches
+  level 5; barracks caps at 2, and recruiting, railway, aerodrome and harbor at
+  1. Asking for more returns `oops: max level for Recruiting is 1` rather than
+  clamping. `parse_max_level()` reads the cap out of that message, so the sweep
+  carries no table of caps to drift out of date.
+- **Buildings are not uniform HP per level.** Fortress is 50/level and factory
+  40/level, but a level-3 workshop has a 35 HP pool with 20 in its top level —
+  which is not `3 × 20`. Recruiting is 5 HP at level 1. Worth two requests to
+  settle if anyone cares; nothing else depends on it.
 
 ---
 
@@ -368,6 +599,12 @@ errors, and because the same failure modes will recur.
 | **A failed submit ate the test fixture** | `submit()` dumped any response with no readings to `last_response.html` — which is also the *committed capture of the real form* that all offline suites are built on. One balloon-in-air is enough: the fixture becomes a 38-byte stub, all suites fail with "page layout changed?", and the finger points at dxcalc.com when nothing about the site has changed | Failures now go to `last_failure.html` (gitignored); `test_probe_offline.py` asserts the fixture is byte-identical after a deliberate failure |
 | A bad `--run` name cost a live request | The experiment name was validated *after* `load_form()`, so a typo spent a page view and printed its complaint afterwards | Validated before the probe is constructed |
 | Saturation re-run could re-send an identical payload | At the defender-count cap the retry loop resent the same body and learned nothing | Retries only while the count actually grows |
+| `buildings` hardcoded level 3 | Five of eight types rejected with `oops: max level for X is 1` and reported as untested — a rejected request misread as a measurement | `parse_max_level()` reads the cap from the server's own message and retries once |
+| A destroyed building parsed as nothing | `- 5.0 HP (100%) destroyed` has no arrow and no LVL tail, so `DELTA_RE` missed it and the sweep printed `NO ROW` — identical to what it prints for a type the server ignored | Arrow or `destroyed` both terminate the pattern; a `destroyed` flag is recorded |
+| Attacker's trench judged on absolute HP lost | "No effect while attacking" while the percentage moved 25% → 18.5% — the original wrong conclusion, reproduced inside the experiment written to avoid it | Judges the derived pool, and reports the output effect separately |
+| Return fire read as target dependence | All three aircraft reported TARGET-DEPENDENT from a 34% spread caused entirely by how hard each target shoots back | `report_matchups()` judges the raw row, then tests whether return fire explains any slope |
+| Max HP quoted as a midpoint | `175.44` presented as a measurement when the reading only supports `174.92–175.96` | `hp_bounds()` / `sole_integer_in()`; the bracket is the result |
+| `hp_scaling` printed no fit at all | Ten raw records appended, the law worked out by hand afterwards and easy to skip | Prints the ratio table and rules on it, including the wiped-stack question |
 
 ---
 
@@ -389,9 +626,25 @@ errors, and because the same failure modes will recur.
   capped at its pool, understating the *opponent's* damage — but only for the
   coefficient read from that stack. `unit_stats` re-runs lopsided (4v20, 20v4)
   when that happens, judging each rescue by the one side it is read from.
+- **Correct for return fire before comparing damage across targets** — at least
+  in air-to-ground, where it is measured. A raw reading is the stat times the
+  share of the attacker's pool that survived, and targets vary enormously in how
+  hard they hit back, so a perfectly flat attacker still produces a sloping row.
+  Equally: do **not** apply the correction before establishing that the slope is
+  there, or you will manufacture the opposite error. Both directions have now
+  been made in this codebase.
+- **Prefer a bracket to a point estimate** for anything derived by dividing two
+  rounded numbers. Max HP is the worked example (§4): the interval says 175, the
+  midpoint says 175.44, and only one of those is a measurement.
+- **Read `results.jsonl` before designing a sweep.** Three of the 2026-08-17
+  conclusions came out of records already on disk, at zero cost to dxter. The
+  file is committed precisely so this is possible.
 - **Courtesy.** This is one person's fan site, ad-supported, no API. Default
   delay is 1.5 s and should not be lowered much. Bugs found are worth mailing to
-  dxcalc@gmail.com rather than just cataloguing.
+  dxcalc@gmail.com rather than just cataloguing. Nothing found so far is a bug
+  worth mailing: the "Bomber does 0 to heavy tanks" report that motivated
+  `air_vs_ground` is **not reproducible** — the Bomber deals 30.0 to every
+  ground unit measured.
 
 ---
 
@@ -406,6 +659,11 @@ errors, and because the same failure modes will recur.
 | Building row with no HP | Silently ignored | Always send `abb` + `lvl` + `hp` |
 | Writing to `bldg.0` | Silent no-op; looks like "buildings do nothing" | Use `bldg.1..N` |
 | Fields absent from the GET baseline | Silently dropped | Pass `create=[...]` to synthesise, as the page's JS does |
+| Building level above the type's cap | `oops: max level for X is 1`, no reading — easily filed as "type does nothing" | `parse_max_level()` reads the cap and retries |
+| Building destroyed in the round | Row text loses its arrow and LVL tail | `DELTA_RE` accepts `destroyed` as a terminator |
+| Comparing absolute HP lost across a defensive sweep | Cannot separate "bigger pool" from "no effect"; both hold HP lost constant | Compare the derived pool, and the deaths, not the loss |
+| Comparing damage across targets that differ in return fire | A flat attacker reads as target-dependent | Correct by `(1 - own fraction lost)` — but only after checking the raw row slopes |
+| Quoting a derived pool or max HP to 2 dp | Implies precision the 3 s.f. percentage does not support | `hp_bounds()`; report the bracket |
 
 ---
 
@@ -426,9 +684,16 @@ came out of the raw markup, not the numbers); `--encoding multipart`;
 
 Results append to `results.jsonl` as JSON lines, one per submission, so a crash
 mid-sweep loses nothing. **`results.jsonl` is committed deliberately** — every
-line cost a live request against someone else's server. 43 rows: 3 `semantics`,
-34 `unit_stats` (the roster twice, which is the determinism evidence), 6
-`fortress`.
+line cost a live request against someone else's server. **150 rows** as of
+2026-08-17: 68 `unit_stats` (the roster three times, which is the determinism
+evidence), 40 `air_vs_ground`, 13 `buildings`, 10 `trenches`, 10 `hp_scaling`,
+6 `fortress`, 3 `semantics`.
+
+Several conclusions in §4 were derived by **replaying rows already in this file**
+rather than by sending anything — the return-fire law, the wiped-stack answer,
+and the corrected recruiting row all came out of records already on disk. That
+is the cheapest kind of progress available here, and it is only possible because
+the file is complete. Check it before designing a sweep.
 
 The `semantics` and `unit_stats` rows were once lost — the file was committed
 containing only the last fortress run — and had to be reconstructed from a
@@ -438,6 +703,11 @@ means spending someone else's bandwidth twice for the same numbers.
 Experiments registered: `unit_stats`, `buildings`, `trenches`, `air_vs_ground`,
 `land_matrix`, `size_factor`, `hp_scaling`, `patrol`, `fortress`, `terrain`,
 `variance`. `--run` now prints the approximate request cost before it starts.
+
+Measured costs, live: `sanity` 1, `buildings` 14 (9 plus up to 5 level-cap
+retries), `trenches` 10, `air_vs_ground` 30, `unit_stats` 16–20 depending on how
+many max-HP brackets need a second read, `hp_scaling` 10. The whole 2026-08-17
+session came to about 106 requests including one repeated `buildings` run.
 
 `damage_land`, `damage_air` and `damage_sea` have been **retired** — they
 predate `unit_stats`, they sent one attacker into twenty defenders (so the
@@ -452,16 +722,16 @@ instead of "Unknown experiment":
 | `damage_sea` | `unit_stats` |
 | `damage_air` | `air_vs_ground` |
 
-### Tests — 150 checks, no network needed
+### Tests — 189 checks, no network needed
 
 ```bash
-python3 test_probe_offline.py       # 38  transport, parsing, slot association
+python3 test_probe_offline.py       # 45  transport, parsing, slot association
 python3 test_semantics_design.py    #  9  proves --semantics can discriminate
-python3 test_unit_stats.py          # 15  recovers known constants from battle output
-python3 test_fortress_row.py        # 15  bldg.1 vs the bldg.0 template
+python3 test_unit_stats.py          # 25  recovers known constants; max-HP brackets
+python3 test_fortress_row.py        # 24  bldg.1 vs the bldg.0 template; destroyed rows
 python3 test_result_table.py        # 29  the summary table, against real markup
-python3 test_trench_design.py       # 22  proves the trench sweep can discriminate
-python3 test_matchup_design.py      # 22  proves the matrix can discriminate
+python3 test_trench_design.py       # 27  proves the trench sweep can discriminate
+python3 test_matchup_design.py      # 30  proves the matrix can discriminate
 ```
 
 These serve the site's courtesy budget as much as correctness: they run against
@@ -480,6 +750,24 @@ trench moves independently of the defender's. Configuring a field the server
 never sees produces a full sweep of identical readings and a confident "does
 nothing" — which is precisely the history here.
 
+Both suites gained servers on 2026-08-17 built from the live mistakes, and they
+are the pattern to copy when adding an experiment. Each one is a server the
+*old* code passes against and the correct code distinguishes:
+
+- `test_trench_design.py` has a `pool_self` server whose absolute HP lost is
+  identical on both sides at every trench level, so a check that reads only HP
+  lost cannot pass against it.
+- `test_matchup_design.py` has three: a flat stat seen through return fire
+  (must be reported as explained), a flat stat with **no** attenuation (the
+  correction must *not* be applied to it), and a genuine target-class rule
+  (must survive the correction). The middle one exists because the first
+  attempt at this fix judged everything on the corrected figure, which turns a
+  flat attacker into a target-dependent one against a server that does not
+  attenuate — the same error in the opposite direction.
+- `test_unit_stats.py` renders percentages to three significant figures, as the
+  site does. At one decimal place a tank duel reads a clean `175.0` and the
+  whole max-HP precision problem is invisible to the suite.
+
 **`last_response.html` is a fixture, not scratch.** It is the committed capture
 of the real form, and every mock server serves it. A failed submission dumps to
 `last_failure.html` instead; if you change that, you will silently destroy the
@@ -490,50 +778,59 @@ fixture the first time a run hits a bad combination.
 ## 9. Next steps, in order
 
 Step 0 is `curl -sS -o /dev/null -w '%{http_code}\n' https://dxcalc.com/s1914`.
-Everything below needs the network; nothing below has ever run live. Four
-experiments are queued and offline-tested, so a working session should be able
-to spend its requests rather than its time.
 
-1. **`--run buildings`** — ~9 requests. Reads DR off the page for all eight
-   types and distinguishes "renders a row with DR 0%" from "renders no row at
-   all", which a bare ratio of 1.0 cannot. Settles whether the other seven
-   types are combat-relevant.
-2. **`--run trenches`** — ~10 requests. Reads HP lost and the derived pool
-   separately, so it separates the three candidate mechanics; a sweep that
-   watches only HP lost cannot tell "enlarges the pool" from "does nothing",
-   which is the likeliest reading of the old conclusion. Also asks, in one
-   extra request, whether a trench helps the side that is attacking.
-3. **`--run air_vs_ground`** — ~30 requests. The standing question: does the
-   Bomber deal 25.0 to infantry but 0.0 to heavy tanks? `unit_stats` measured
-   `tac` against `tac` and got 3.0, so the whole air column may describe
-   same-class combat only. If a plane is 0 against all armour that is a
-   target-class rule; if it is 0 against heavy tanks *specifically* while other
-   armour takes damage, that is a bug worth mailing to dxcalc@gmail.com.
-4. **Re-run `unit_stats`** — 17 requests, and now worth it: the summary table
-   sharpens every pool reading, so the max-HP column should come back as clean
-   integers instead of 60.06 / 175.44 / 260.12. It also re-confirms the roster
-   against a third independent run.
-5. **Re-verify `hp_scaling`** — the one confirmed law never re-checked since the
-   parser fixes.
-6. **`--run land_matrix`** — ~100 requests, so weigh it. Its diagonal must
-   reproduce the `atk` column of `MEASURED_UNITS`; check that before trusting
-   anything off-diagonal.
-7. **`terrain`**, then **`variance`** (60+ samples, `simulateVariance=on`) to
+Steps 1–5 of the previous list are **done** (2026-08-17): `buildings`,
+`trenches`, `air_vs_ground`, `unit_stats` re-run, `hp_scaling` re-verified.
+Results are in §4 and in `results.jsonl`. What remains:
+
+1. **`--run land_matrix`** — ~100 requests, so weigh it, but it is now the
+   single highest-value experiment left. `air_vs_ground` proved attack is
+   **per target class**, so the whole `atk` column of `MEASURED_UNITS` is a
+   diagonal of a matrix nobody has seen. Two things to check before trusting
+   any of it:
+   - its diagonal must reproduce the `atk` column of `MEASURED_UNITS`;
+   - whether land-vs-land shows the return-fire attenuation. The trench control
+     says it does not, but that is one data point from a different experiment.
+     If it does not, the raw readings are the stats directly and the matrix is
+     much easier to read than `air_vs_ground` was.
+2. **Re-measure the air roster's own stats.** The `int` / `tac` / `zep` rows of
+   `MEASURED_UNITS` were taken air-vs-air with return fire present and are
+   therefore probably attenuated — `tac` vs `tac` reads 3.0, and nobody has
+   corrected it. One `air_vs_air` matrix, or just applying the §4 correction to
+   the readings already in `results.jsonl`, would settle it. **Try the second
+   first: it costs nothing.**
+3. **Does return fire apply to sea, and to air *defending*?** Both are
+   one-experiment questions and both change how existing numbers are read.
+4. **`terrain`**, then **`variance`** (60+ samples, `simulateVariance=on`) to
    characterise whether the ±10% roll is per unit or per unit type per round.
+5. **Building damage per unit type.** Infantry deal 0.3 per effective unit to
+   buildings against 4.0 to units. One `buildings`-style run per attacker gives
+   the whole column, and nothing else in the model predicts it.
+
+Cheap and worth doing at some point:
+
+- Two requests settle the workshop's odd HP curve (35 total at level 3 with 20
+  in the top level).
+- The `hours` and resource columns are no longer entirely unexplained — see
+  §10 — but one battle with mixed unit types would confirm the reading.
 
 ---
 
 ## 10. Open questions
 
-- Are the eight buildings other than fortress combat-relevant at all, or purely
-  cosmetic in the calculator? (Step 1 answers this.)
+- **ANSWERED (2026-08-17): no.** Only the fortress mitigates damage; the other
+  seven render a row and take damage but confer no DR. See §4.
 - Every asymmetric unit is a land unit; every air and naval unit is symmetric.
-  Real rule, or an artifact of same-terrain U-vs-U pairings?
+  Real rule, or an artifact of same-terrain U-vs-U pairings? **Now suspect for
+  a second reason**: those air and naval rows were measured with return fire
+  present (§4), so a symmetric-looking pair may be two equally attenuated
+  readings rather than two equal stats.
 - Does `debark` terrain take normal rather than naval damage, as the help page
   implies? Only balloons and ferriable units may appear in debark stacks — which
   makes the balloon/air crash look like a bug in exactly that special-casing.
 - Do other units have a separate building-damage stat like infantry's 0.3? One
-  `buildings`-style run per unit would give the whole column.
+  `buildings`-style run per unit would give the whole column. Still open, and
+  now the cheapest unmeasured column in the model.
 - Heroes exist as a per-stack toggle and buff units. Every experiment leaves them
   off; if any reading looks inflated, check that first.
 - `firestorm` appears throughout `bytro.js` but is not exposed on the S1914 form
@@ -547,9 +844,21 @@ to spend its requests rather than its time.
 - What are the summary table's `hours` and resource columns? `hours` was 23 for
   a stack that lost 141.67 HP and 1 for one that lost 11.33 — not proportional,
   so it is not simply HP/rate. Repair or regeneration time is the obvious guess.
-  Every resource column was 0 in the only response captured so far; a battle
-  involving units that cost upkeep may fill them in.
-- Does a stack wiped inside the measured round still deal its full damage? Every
-  coefficient read from the *other* side assumes so, and nobody has checked. A
-  pair of runs either side of the wipe threshold would settle it, and it bears
-  on how far the lopsided re-runs in `unit_stats` can be trusted.
+  **The resource columns are no longer always zero**, which was the missing
+  clue: a 10-Fighter stack losing 14.0 HP reported `iron 466, wood 1166,
+  oil 933, cash 4666`. They are populated by the losing side and look like
+  replacement cost, so the guess is now "what it costs to rebuild what died"
+  rather than upkeep. Rows are in `results.jsonl` under `air_vs_ground`.
+- **ANSWERED (2026-08-17): a wiped stack does still deal its full damage.**
+  See §4. Kept here because the reasoning matters — it was answered for free by
+  a sweep aimed at something else, because `hp_scaling` happens to wipe its
+  attacker in 8 of 10 rounds. Worth asking of any sweep whose readings sit on
+  both sides of a threshold.
+- Are the two trench curves table lookups? Output plateaus at x1.40 across
+  levels 4 and 5 while the pool keeps growing, and neither curve is smooth.
+  `bytro.js` has no trench logic to read them off, so it would take a full
+  1..20 sweep — 20 requests for something no other result depends on.
+- Why does return fire attenuate air-to-ground but not land-to-land? The
+  sequential reading (ground fire resolves first, survivors deliver the attack)
+  fits every number and matches how an air raid would naturally be modelled,
+  but it is an interpretation of two experiments, not a measurement.
