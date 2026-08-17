@@ -127,6 +127,25 @@ check("level 5 implies 250 HP",
       dp.parse_reading("-8.5 HP (3.4%) →")["pool"] == 250.0)
 check("ascii arrow accepted too",
       dp.parse_reading("-8.5 HP (17%) ->") is not None)
+# The row continues past the arrow and names the mechanic outright.
+r = dp.parse_reading("-8.5 HP (3.4%) → LVL:5 41.5 HP; DR: 90% → 87.5%")
+check("building level read off the page", r["level"] == 5.0)
+check("top-level HP remaining read off the page", r["hp_top_level"] == 41.5)
+check("damage reduction before/after captured",
+      (r["dr_before"], r["dr_after"]) == (90.0, 87.5), str(r))
+check("page's DR agrees with the fitted law m(5)=0.10",
+      abs((100 - r["dr_before"]) / 100 - (0.85 - 0.15 * 5)) < 1e-9)
+check("DR = 0.15*(HP/50+1) reproduces the post-damage value",
+      abs(0.15 * ((250 - 8.5) / 50 + 1) * 100 - r["dr_after"]) < 0.06)
+
+# Spans nest: the arrow is wrapped in its own <span>, and stopping at that
+# inner </span> truncated the row before LVL/DR — which is where the answer was.
+s = dp.ResultScraper()
+s.feed('<div id="B.1.bldg.1"><span class="hpLeft">-8.5 HP (3.4%) '
+       '<span style="font-size:large">&#8594;</span> LVL:5 41.5 HP; '
+       'DR: 90% &#8594; 87.5%</span></div>')
+check("nested span does not truncate the reading",
+      "DR" in s.readings["B.1.bldg.1"], repr(s.readings["B.1.bldg.1"]))
 
 # A building's result row must not overwrite a unit stack's. Its id is
 # B.1.bldg.1, which the original SLOT_RE ignored, so it inherited A.1.1 and

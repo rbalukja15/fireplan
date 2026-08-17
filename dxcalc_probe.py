@@ -124,6 +124,32 @@ FORTRESS HP AND DAMAGE TO BUILDINGS — solved, and it was a parser bug
     value; DELTA_RE parses that shape. Buildings are reported per row, so this
     also means the other seven building types can be measured the same way.
 
+    The span also nests <span style=font-size:large> around its arrow, and the
+    scraper used to stop capturing at that inner </span>, truncating the row
+    before its most useful half. Counting span depth recovered the rest:
+
+        "-8.5 HP (3.4%) → LVL:5 41.5 HP; DR: 90% → 87.5%"
+
+    DR is Damage Reduction, named by the page itself, and it confirms the
+    fitted law exactly: DR 90% at level 5 is m(5) = 0.10. The pair is DR before
+    and after this round's damage, and the drop pins the formula:
+
+        DR = 0.15 * (fortressHP / 50 + 1)
+
+        full L5:  250.0 HP -> 0.15 * 6.00  = 90.00%
+        damaged:  241.5 HP -> 0.15 * 5.83  = 87.45%   (page: 87.5%)
+
+    So the "+1" discontinuity is built into the game's own formula, mitigation
+    decays continuously as the fortress is worn down, and BLDG_TAIL_RE now
+    reads level, remaining HP and current DR straight off the page — no
+    curve-fitting needed for the remaining seven building types.
+
+FORTRESSES DO NOT REDUCE THE DEFENDER'S OUTPUT
+    Recovering A.1.1 showed the attacker losing 141.7 at fortress level 5 —
+    identical to the no-fortress control. The fortress mitigates incoming
+    damage only; the defenders still hit for full. That reading was invisible
+    while the building row was overwriting it.
+
 Trenches add to the defender's HP pool rather than reducing incoming damage.
 Levels 1-3 conferred no measurable benefit at all.
 
@@ -318,6 +344,7 @@ class ResultScraper(HTMLParser):
         self.readings: dict[str, str] = {}
         self._slot: str | None = None
         self._capture = False
+        self._depth = 0
         self._buf: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
@@ -326,9 +353,16 @@ class ResultScraper(HTMLParser):
         if RESULT_SLOT_RE.match(node_id):
             self._slot = node_id
         classes = a.get("class", "").split()
-        if tag == "span" and "hpLeft" in classes:
-            self._capture = True
-            self._buf = []
+        if tag == "span":
+            # Spans nest: the building row wraps its arrow in
+            # <span style=font-size:large>. Counting depth stops the inner
+            # </span> from ending the capture early and truncating the text.
+            if self._capture:
+                self._depth += 1
+            elif "hpLeft" in classes:
+                self._capture = True
+                self._depth = 1
+                self._buf = []
 
     def handle_data(self, data: str) -> None:
         if self._capture:
@@ -336,6 +370,9 @@ class ResultScraper(HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         if tag == "span" and self._capture:
+            self._depth -= 1
+            if self._depth > 0:
+                return
             self._capture = False
             text = "".join(self._buf).strip()
             if self._slot and text:
@@ -466,6 +503,19 @@ READING_RE = re.compile(
 DELTA_RE = re.compile(
     r"(-?[\d.]+)\s*HP\s*\(\s*([\d.]+)\s*%\s*\)\s*(?:→|->)")
 
+# The building row continues past the arrow, and the tail is the most
+# informative text on the page:
+#
+#   "-8.5 HP (3.4%) → LVL:5 41.5 HP; DR: 90% → 87.5%"
+#
+# It names the mechanic outright. DR is Damage Reduction, and the pair of
+# values is DR before and after this round's damage, so one request gives the
+# building's level, its remaining HP, and the mitigation it is currently
+# conferring — no fitting required.
+BLDG_TAIL_RE = re.compile(
+    r"LVL:\s*([\d.]+)\s+([\d.]+)\s*HP\s*;\s*"
+    r"DR:\s*([\d.]+)\s*%\s*(?:→|->)\s*([\d.]+)\s*%", re.I)
+
 
 def parse_reading(text: str) -> dict[str, float] | None:
     """Full breakdown of one result span, not just the leading number."""
@@ -479,6 +529,12 @@ def parse_reading(text: str) -> dict[str, float] | None:
             out: dict[str, float] = {"lost": lost, "pct": pct, "delta": 1.0}
             if pct > 0:
                 out["pool"] = round(lost / (pct / 100), 1)
+            tail = BLDG_TAIL_RE.search(text)
+            if tail:
+                out["level"] = float(tail.group(1))
+                out["hp_top_level"] = float(tail.group(2))
+                out["dr_before"] = float(tail.group(3))
+                out["dr_after"] = float(tail.group(4))
             return out
         return None
     lost = float(m.group(1))
