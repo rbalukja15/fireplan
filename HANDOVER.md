@@ -71,11 +71,39 @@ https://www.dxcalc.com/s1914    301  ->  location: https://dxcalc.com/s1914
 ```
 
 `www` resolves, connects and answers — and then redirects straight into the
-blocked apex, so following the redirect fails anyway. **Allowing only
-`*.dxcalc.com` or `www.dxcalc.com` is not enough; the entry must be the bare
-`dxcalc.com`.** The environment in that session was a plain `Default`, not the
-`dxcalc` one described above, so the most likely cause is simply that the wrong
-environment was picked at session start.
+blocked apex, so following the redirect fails anyway.
+
+The cause was confirmed from the environment's own settings. Its allowed-domains
+list read:
+
+```
+*.dxcalc.com
+*.frame.claudeusercontent.com
+*.frame.staging.claudeusercontent.com
+```
+
+**A wildcard covers subdomains but not the apex.** `*.dxcalc.com` matches
+`www.dxcalc.com` and nothing else useful; the form lives at `dxcalc.com`. The
+list has to name the bare host explicitly:
+
+```
+dxcalc.com
+*.dxcalc.com
+```
+
+Keep the wildcard alongside it — harmless, and it covers the `www` hop.
+
+Two further traps around this, both real:
+
+- **Editing the environment does not affect a running session.** The settings
+  dialog says so outright ("Changes to your environment will apply to new
+  sessions"), and it was tried: a session provisioned at 12:45 was still being
+  denied at 15:16 after the allowlist was changed. Save, then start a NEW
+  session.
+- **There may be several environments named `Default`.** The picker shows the
+  name only, so it is easy to edit one and then start the session in the other.
+  There was no environment named `dxcalc` at all, despite the note above
+  describing one.
 
 Two ways to tell this apart from the site being down, neither of which requires
 guessing:
