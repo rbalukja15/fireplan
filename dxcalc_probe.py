@@ -1560,24 +1560,316 @@ def exp_land_matrix(p: Probe) -> None:
                  atk_terrain="land", def_terrain="land")
 
 
-def exp_patrol(p: Probe) -> None:
-    """Patrol terrain does 4 ticks of 1/4 damage per round.
+PATROL_TARGETS = ["inf", "ac", "ht"]
+PATROL_ROUNDS = ["0.25", "0.5", "0.75", "1"]
 
-    Max Rounds accepts 0.25 / 0.5 / 0.75, which is a finer measuring
-    instrument than maxRounds=1 — it isolates a single tick.
+
+def recorded_air_cells() -> dict[tuple[str, str], dict[str, float]]:
+    """The air_vs_ground cells already on disk, keyed by (attacker, target).
+
+    patrol is only interesting relative to a direct air attack, and 30 such
+    cells were already bought at 1.5s apiece. Reading them back makes the
+    comparison free instead of doubling the sweep.
+    """
+    out: dict[tuple[str, str], dict[str, float]] = {}
+    try:
+        with open(RESULTS_PATH) as fh:
+            for line in fh:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if row.get("experiment") != "air_vs_ground":
+                    continue
+                m = row.get("meta") or {}
+                det = (m.get("detail") or {})
+                a, b = det.get("A.1.1") or {}, det.get("B.1.1") or {}
+                if not a.get("pool") or b.get("lost") is None:
+                    continue
+                out[(m.get("atk"), m.get("target"))] = {
+                    "atk_lost": a["lost"], "atk_pool": a["pool"],
+                    "def_lost": b["lost"], "def_n": m.get("def_n") or 0,
+                }
+    except OSError:
+        pass
+    return out
+
+
+def _corrected_per_unit(a: dict[str, float], b: dict[str, float],
+                        atk_n: int) -> float | None:
+    """Attacker damage per unit, corrected for return fire (HANDOVER section 4)."""
+    if b.get("lost") is None or a.get("pct") is None:
+        return None
+    f = a["pct"] / 100.0
+    if f >= 0.999:
+        return None
+    return b["lost"] / effective_units(atk_n) / (1.0 - f)
+
+
+def exp_patrol(p: Probe) -> None:
+    """Is patrol a different attack, or just air with a different label?
+
+    NEVER RUN LIVE as of the 2026-08-17 session: all 30 air readings in
+    results.jsonl were flown with terrain=air, and `patrol` had not been
+    submitted once in 150 requests. Every air number in the model therefore
+    describes a direct attack only, and patrol is how these units are actually
+    flown in-game.
+
+    The previous version of this experiment sent ONE plane at twenty defenders
+    against a single target and recorded bare numbers. That is the design the
+    handover retired damage_air for: one attacker makes the reading fragile,
+    one target cannot see a target rule, and it predates the return-fire
+    correction entirely, so its numbers would have been attenuated by an
+    unknown amount and read as patrol being weaker than air.
+
+    Three questions, each with a discriminator:
+
+    1. DOES PATROL DIFFER FROM AIR? Same counts and targets as air_vs_ground,
+       terrain swapped. The air half is read back off disk rather than re-flown,
+       so this costs 9 requests instead of 18. Compared on the RETURN-FIRE
+       CORRECTED per-unit figure, because raw output moves with how hard the
+       target shoots back and the two terrains may take different fire.
+
+    2. IS IT REALLY 4 TICKS OF QUARTER DAMAGE? maxRounds accepts 0.25, so a
+       single tick can be isolated. Two hypotheses that a full round cannot
+       separate:
+           4 independent ticks     ->  damage(1.0) == 4 * damage(0.25)
+           4 ticks with attrition  ->  damage(1.0) <  4 * damage(0.25)
+       The same ladder is flown in `air` terrain as the control, because
+       nobody has checked whether a direct attack subdivides too. Without that
+       control a sublinear patrol ladder says nothing about patrol.
+
+    3. IS THE BALLOON FLYABLE IN PATROL? `bal` is the one unit in the roster
+       with no measured stats at all, because guard_payload refuses it in air
+       terrain, where it aborts the whole submission server-side. The guard
+       has never covered patrol, and nobody has tried it. If it flies, the
+       roster hole closes; if it aborts the same way, the guard should be
+       widened to cover patrol and the trap recorded.
     """
     air = roster(p, "air")
-    land = roster(p, "land")
-    target = land[0] if land else "inf"
-    for unit in air:
-        for rounds in ("0.25", "0.5", "1"):
-            ov = settings(rounds)
-            ov.update(duel(1, unit, 1, target, 20,
-                           atk_terrain="patrol", def_terrain="land"))
-            try:
-                record("patrol", {"unit": unit, "rounds": rounds}, p.submit(ov))
-            except (BareFormReturned, ValueError) as e:
-                print(f"  ! patrol {unit} @{rounds}: {e}", file=sys.stderr)
+    fliers = [u for u in air if u != "bal"]
+    if not fliers:
+        print("  ! no air units on the form.", file=sys.stderr)
+        return
+    prior = recorded_air_cells()
+    if not prior:
+        print("  ! no air_vs_ground cells on disk to compare against; patrol "
+              "will be measured but not contrasted.", file=sys.stderr)
+
+    def fly(unit: str, target: str, terrain: str, rounds: str,
+            atk_n: int = 10) -> dict[str, Any] | None:
+        def_n = defender_count(target, atk_n)
+        ov = settings(rounds)
+        ov.update(duel(1, unit, atk_n, target, def_n,
+                       atk_terrain=terrain, def_terrain="land"))
+        try:
+            p.submit(ov)
+        except (BareFormReturned, ValueError) as e:
+            print(f"  ! {unit} {terrain} vs {target} @{rounds}: {e}",
+                  file=sys.stderr)
+            record("patrol", {"unit": unit, "target": target,
+                              "terrain": terrain, "rounds": rounds,
+                              "error": str(e)}, {})
+            return None
+        d = dict(p.last_details)
+        a, b = d.get("A.1.1") or {}, d.get("B.1.1") or {}
+        per = _corrected_per_unit(a, b, atk_n)
+        record("patrol", {"unit": unit, "target": target, "terrain": terrain,
+                          "rounds": rounds, "atk_n": atk_n, "def_n": def_n,
+                          "per_unit_corrected": per, "detail": d,
+                          "summary": dict(p.last_summary),
+                          "raw": dict(p.last_raw)}, {"A.1.1": a.get("lost"),
+                                                     "B.1.1": b.get("lost")})
+        return {"a": a, "b": b, "per": per, "def_n": def_n}
+
+    # ---- 1. patrol vs the recorded air cells -----------------------------
+    print("\n  1. patrol against the same cells air_vs_ground already flew\n")
+    print(f"  {'unit':6} {'target':7} {'patrol raw':>11} {'air raw':>9} "
+          f"{'base stat':>10} {'patrol f':>9} {'implied c':>10}")
+    coeffs: list[float] = []
+    fracs: list[float] = []
+    bases: dict[str, list[float]] = {}
+    for unit in fliers:
+        for target in PATROL_TARGETS:
+            got = fly(unit, target, "patrol", "1")
+            if not got:
+                continue
+            a, b = got["a"], got["b"]
+            if b.get("lost") is None or a.get("pct") is None:
+                continue
+            praw = b["lost"] / effective_units(10)
+            pf = a["pct"] / 100.0
+            ref = prior.get((unit, target))
+            # The base stat comes from the AIR cell, where the attrition
+            # coefficient is 1.0 by construction. Patrol's coefficient is then
+            # whatever makes its own reading consistent with that same stat —
+            # which is the whole question, and it is not a free parameter.
+            base = None
+            araw = None
+            if ref and ref["atk_pool"]:
+                af = ref["atk_lost"] / ref["atk_pool"]
+                araw = ref["def_lost"] / effective_units(10)
+                if af < 0.999:
+                    base = araw / (1.0 - af)
+            if base and pf > 1e-6:
+                c = (1.0 - praw / base) / pf
+                coeffs.append(c)
+                fracs.append(pf)
+                bases.setdefault(unit, []).append(base)
+                print(f"  {unit:6} {target:7} {praw:11.3f} {araw:9.3f} "
+                      f"{base:10.3f} {pf:9.4f} {c:10.4f}")
+            else:
+                print(f"  {unit:6} {target:7} {praw:11.3f} "
+                      f"{'—':>9} {'—':>10} {pf:9.4f} {'—':>10}"
+                      f"  no air cell on disk")
+
+    # Does the attacker's stat survive the crossing at all? If the base stat
+    # recovered from the air cells is not consistent per attacker, no
+    # attrition story can rescue patrol and it genuinely needs its own matrix.
+    base_spread = None
+    if bases:
+        spreads = [max(v) / min(v) - 1 for v in bases.values() if min(v) > 0]
+        base_spread = max(spreads) if spreads else None
+
+    if coeffs:
+        # A cell only constrains c to about (reading error)/f, so a target that
+        # barely shoots back says almost nothing: at f = 0.01 a 0.1% wobble in
+        # either reading moves c by 0.1. Weighting those equally with the cells
+        # that do constrain it would manufacture a spread out of arithmetic.
+        strong = [c for c, f in zip(coeffs, fracs) if f >= 0.05]
+        pool = strong or coeffs
+        lo, hi = min(pool), max(pool)
+        mean = sum(pool) / len(pool)
+        weak = len(coeffs) - len(strong)
+        print(f"\n  Attrition coefficient c, where a stack's output is")
+        print(f"  base * E(n) * (1 - c * its_own_fraction_lost):")
+        print(f"    air     c = 1.000 by construction — that is how the base "
+              f"stat above was fitted")
+        print(f"    patrol  c = {mean:.3f}   ({lo:.3f}-{hi:.3f} over "
+              f"{len(pool)} cells)")
+        if weak:
+            print(f"    ({weak} cell(s) with f < 0.05 excluded: a target that "
+                  f"barely fires back cannot pin c.)")
+
+        bases_ok = base_spread is not None and base_spread <= 0.02
+        # An attrition coefficient outside roughly [0, 1] is not an attrition
+        # coefficient. c < 0 means patrol delivered MORE than the stat allows
+        # before any losses, and c > 1 means it lost more output than it lost
+        # stack. Either way the difference is in the stat, not the delivery,
+        # and no amount of curve-fitting on c can represent it.
+        impossible = [c for c in coeffs if c < -0.05 or c > 1.5]
+        if impossible:
+            print(f"\n  VERDICT: {len(impossible)} of {len(coeffs)} cells imply "
+                  f"an impossible attrition coefficient "
+                  f"({min(impossible):.2f}..{max(impossible):.2f}); output "
+                  f"outside [0, 1] is not attrition. Patrol is changing the "
+                  f"STAT, not the delivery, and the change depends on the "
+                  f"target. It needs its own matrix — the table above is the "
+                  f"finding, do not compress it.")
+        elif not bases_ok:
+            print(f"\n  VERDICT: the base stat itself does not survive the "
+                  f"crossing (spread {base_spread:.3f}). Patrol is not the "
+                  f"same attack seen through different attrition; it needs "
+                  f"its own matrix.")
+        elif hi - lo <= 0.05 and abs(mean - 1.0) > 0.1:
+            print(f"\n  VERDICT: SAME BASE STAT, DIFFERENT DELIVERY. Every "
+                  f"attacker's air-to-ground stat comes back unchanged; what "
+                  f"changes is how much of its own attrition is charged "
+                  f"against its output — the full fraction in a direct strike, "
+                  f"about {mean:.2f} of it on patrol. So patrol out-damages a "
+                  f"direct attack by more the harder the target shoots back, "
+                  f"and by nothing at all against one that cannot. The air "
+                  f"column DOES carry over, with this coefficient.")
+        elif abs(mean - 1.0) > 0.1:
+            print(f"\n  VERDICT: SAME BASE STAT, LIGHTER ATTRITION, "
+                  f"COEFFICIENT NOT PINNED. Every attacker's stat comes back "
+                  f"unchanged, and patrol clearly charges far less attrition "
+                  f"than a direct strike ({lo:.3f}-{hi:.3f} against 1.000). "
+                  f"But one constant does not fit all cells, and the residual "
+                  f"does not track f, so the delivery is probably discrete "
+                  f"(ticks, or whole units dying) rather than a smooth "
+                  f"fraction. Use the range, not the mean, and do not quote a "
+                  f"third decimal.")
+        else:
+            print(f"\n  VERDICT: patrol is indistinguishable from air; the "
+                  f"same attrition coefficient describes both.")
+    else:
+        print("\n  NO VERDICT on patrol vs air — no comparable cell produced "
+              "both readings.")
+
+    # ---- 2. the tick ladder, with air as the control ---------------------
+    #
+    # The obvious discriminator — is a full round four times a quarter round? —
+    # DOES NOT WORK, and the offline suite caught it before it cost a request.
+    # Return fire scales with the round count too, so over a full round the
+    # attacker eats four times the ground fire and delivers its attack with a
+    # smaller surviving fraction. A server with perfectly independent ticks
+    # still reads 3.95x on raw HP lost, and reading that as "the stack is worn
+    # down between ticks" would have been a confident wrong answer of exactly
+    # the shape this project keeps producing.
+    #
+    # Correcting each rung for the attacker's own losses removes that, and the
+    # question becomes clean: corrected damage PER ROUND is flat if the ticks
+    # are independent, and falls with the round count if they are not.
+    probe_unit = "tac" if "tac" in fliers else fliers[0]
+    print(f"\n  2. does a round subdivide? {probe_unit} vs inf, maxRounds ladder")
+    print("     (corrected per unit PER ROUND — flat means independent ticks)\n")
+    print(f"  {'terrain':8} " + " ".join(f"{r:>9}" for r in PATROL_ROUNDS)
+          + "   spread")
+    for terrain in ("patrol", "air"):
+        rate: dict[str, float] = {}
+        for rounds in PATROL_ROUNDS:
+            got = fly(probe_unit, "inf", terrain, rounds)
+            if got and got["per"] is not None:
+                rate[rounds] = got["per"] / float(rounds)
+        cells = " ".join(f"{rate[r]:9.3f}" if r in rate else f"{'—':>9}"
+                         for r in PATROL_ROUNDS)
+        vals = list(rate.values())
+        if len(vals) < 2:
+            print(f"  {terrain:8} {cells}   —")
+            print(f"    -> {terrain}: too few rungs to rule.")
+            continue
+        lo, hi = min(vals), max(vals)
+        print(f"  {terrain:8} {cells}   x{hi / lo:.4f}")
+        if hi / lo - 1 <= 0.02:
+            print(f"    -> {terrain}: flat at {sum(vals) / len(vals):.3f} per "
+                  f"unit per round. Damage is PROPORTIONAL TO maxRounds — the "
+                  f"stack keeps firing for as long as it is on station.")
+            continue
+        # A falling rate has two very different causes and they must not be
+        # merged. If the corrected damage itself is CONSTANT, maxRounds is
+        # simply being ignored and the rate falls as 1/rounds arithmetic.
+        # Only if damage grows but sublinearly is anything being worn down.
+        per_vals = [rate[r] * float(r) for r in PATROL_ROUNDS if r in rate]
+        plo, phi = min(per_vals), max(per_vals)
+        if phi / plo - 1 <= 0.02:
+            print(f"    -> {terrain}: the damage itself is CONSTANT at "
+                  f"{sum(per_vals) / len(per_vals):.3f} per unit at every "
+                  f"maxRounds. maxRounds IS IGNORED — this is a single strike, "
+                  f"not a duration. The falling rate above is just dividing a "
+                  f"constant by a growing number, and reading it as attrition "
+                  f"would be wrong.")
+        elif rate.get(PATROL_ROUNDS[-1], 0) < rate.get(PATROL_ROUNDS[0], 0):
+            print(f"    -> {terrain}: damage grows with maxRounds but "
+                  f"SUBLINEARLY (rate x{hi / lo:.4f} down), so the stack is "
+                  f"worn down between ticks, over and above the return fire "
+                  f"already corrected for.")
+        else:
+            print(f"    -> {terrain}: the rate RISES with round length "
+                  f"(x{hi / lo:.4f}) — unexplained; the row above is the "
+                  f"finding, do not compress it.")
+
+    # ---- 3. the balloon, in the one terrain nobody has tried -------------
+    if "bal" in air:
+        print("\n  3. bal in patrol — the roster's only unmeasured unit\n")
+        got = fly("bal", "inf", "patrol", "1")
+        if got and got["per"] is not None:
+            print(f"    bal FLIES IN PATROL: {got['per']:.3f} per unit against "
+                  f"infantry, return-fire corrected. The roster hole closes; "
+                  f"guard_payload only ever needed to block bal+air.")
+        else:
+            print("    bal is refused or unreadable in patrol too. Widen "
+                  "guard_payload to cover patrol and record the trap.")
 
 
 def exp_fortress(p: Probe) -> None:
@@ -2360,8 +2652,8 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
 # it is about to spend on someone else's ad-supported fan site before it starts
 # rather than after. Approximate by design: saturation re-runs add a few.
 REQUEST_ESTIMATE: dict[str, int] = {
-    "unit_stats": 20, "buildings": 14, "trenches": 10, "air_vs_ground": 30,
-    "land_matrix": 100, "size_factor": 33, "hp_scaling": 10, "patrol": 12,
+    "unit_stats": 20, "buildings": 14, "patrol": 18, "trenches": 10, "air_vs_ground": 30,
+    "land_matrix": 100, "size_factor": 33, "hp_scaling": 10,
     "fortress": 6, "terrain": 5, "variance": 60,
 }
 

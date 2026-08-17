@@ -24,6 +24,11 @@ What that session established, in one place:
   it explains a target-dependence that does not exist.
 - **`m(f) = 0.05 + 0.95f` confirmed exactly**, and a wiped stack still deals
   its full damage.
+- **Patrol is a different attack from a direct air strike**, measured after the
+  question was raised: the same base stat, but a much lighter attrition charge
+  (c ~ 0.36-0.43 against 1.000), so patrol beats a direct attack by up to 22%
+  against a target with real anti-air. And `maxRounds` scales patrol damage
+  linearly while being **ignored entirely** in `air`.
 
 **Read §1 before anything else: the next session needs to start in the right
 environment, and that cannot be fixed once it is running.**
@@ -75,8 +80,21 @@ one look at how it was computed.
   is the percentage's significant figures, not the HP's. **The handover itself
   was the defective instrument that time.**
 
-Five of those six were the rig reporting something false with confidence, not
-reporting nothing. "Treat a null result as a defect report" is too narrow.
+- `patrol` had never been run at all, so every air figure in this document
+  described a direct attack. When it did run it produced **two more wrong
+  verdicts in one sweep**: a single changed attrition coefficient read as
+  "differs, and depends on the target", and `maxRounds` being ignored in `air`
+  read as "worn down between ticks" because the per-round rate fell. A falling
+  rate is what dividing a constant by a growing number looks like.
+
+Seven of those eight were the rig reporting something false with confidence,
+not reporting nothing. "Treat a null result as a defect report" is too narrow.
+
+**And note how the patrol gap was found: someone asked whether it had been
+tested.** Nothing in the rig flagged it. `results.jsonl` had 150 rows and not
+one of them carried `terrain=patrol`; the coverage hole was invisible because
+nothing counts what was never attempted. Worth asking of any dimension of the
+form: not "what did we measure" but "what has never once been submitted".
 
 ---
 
@@ -496,6 +514,92 @@ Also established:
 - **Fortresses do not reduce the defender's output.** The attacker loses 141.7
   at fortress level 5, identical to the no-fortress control.
 
+### Patrol — measured 2026-08-17, and it is not air
+
+**Every air number in this document above was flown in `air` terrain.** In 150
+requests `patrol` had never been submitted once, so the whole air column
+described a DIRECT attack only — which is not how these units are usually
+flown. `--run patrol`, 18 requests, changed that and turned up two mechanics.
+
+#### 1. The base stat is the same; the attrition charged against it is not
+
+A stack's output is
+
+```
+dealt = base * E(n) * (1 - c * its_own_fraction_lost)
+
+    c = 1.000   direct air attack        (this is the return-fire law in the
+                                          section above, restated)
+    c ~ 0.36-0.43  patrol
+```
+
+Every attacker's air-to-ground stat comes back unchanged when read through
+patrol — `int` 5.006/5.024/5.008, `tac` 30.026/30.000/30.000, `zep`
+5.003/5.002/5.015. So the air column **does** carry over. What changes is how
+much of its own attrition is charged against its output.
+
+The practical consequence is large and one-directional: **patrol beats a direct
+attack by more the harder the target shoots back, and by nothing at all against
+a target that cannot.** Measured, at maxRounds 1:
+
+| attacker | vs `inf` (AA 0.4) | vs `ht` (AA 4.0) | vs `ac` (AA 8.0) |
+|---|---|---|---|
+| `int` | +1.4% | +9.7% | **+22.3%** |
+| `tac` | +1.0% | +7.0% | **+13.9%** |
+| `zep` | +0.6% | +3.6% | **+8.1%** |
+
+**`c` is not pinned to a single value** and should not be quoted to three
+decimals. Nine cells give 0.360–0.427, and the scatter does not track `f`, so
+it is not simply reading precision — the delivery is probably discrete (ticks,
+or whole units dying at tick boundaries) rather than a smooth fraction. The
+cells that constrain it best (`f` >= 0.05) cluster at 0.360–0.376, bracketing
+3/8. Treat 3/8 as a working value and the range as the honest statement.
+
+#### 2. `maxRounds` means different things in the two terrains
+
+```
+patrol   damage is PROPORTIONAL to maxRounds
+air      maxRounds is IGNORED — one strike, whatever you ask for
+```
+
+`tac` vs `inf`, corrected damage per unit at maxRounds 0.25 / 0.5 / 0.75 / 1:
+
+```
+patrol    7.53   15.10   22.70   30.33      (linear in rounds)
+air      30.03   30.03   30.03   30.03      (flat: the round setting does nothing)
+```
+
+This is why the quarter-round granularity exists and it is worth keeping in
+mind for every other experiment: **any sweep that varies `maxRounds` in `air`
+terrain is varying nothing.**
+
+#### 3. The balloon hole does not close
+
+`bal` is the only unit with no measured stats, because `guard_payload()`
+refuses it in `air` where it kills the whole submission. The guard never
+covered `patrol` and nobody had tried it. The server's answer:
+
+```
+oops: Can't have Balloon in the air.
+```
+
+So patrol counts as the air for that check and the hole is permanent through
+this route. Note this came back as a clean `oops` rather than the silent batch
+abort the guard was written for — worth knowing, but not worth a request to
+chase. **`guard_payload()` should be widened to cover `patrol`** so the next
+sweep does not spend a request rediscovering it.
+
+#### Two verdicts this sweep got wrong first
+
+Both are in §5, and both are the same failure as everything else in §0:
+
+- It read the per-target ratio spread (1.006–1.223) as "patrol differs AND the
+  difference depends on the target", which is precisely what a **single changed
+  coefficient** looks like through a raw ratio.
+- It read air's falling per-round rate as "worn down between ticks". The rate
+  falls because a constant is being divided by a growing number. `maxRounds` is
+  ignored in air; nothing is being worn down.
+
 ### Trenches — measured 2026-08-17, two separate effects
 
 `--run trenches`, 10 infantry vs 10 infantry, sweeping `B.1.trench`.
@@ -604,6 +708,9 @@ errors, and because the same failure modes will recur.
 | Attacker's trench judged on absolute HP lost | "No effect while attacking" while the percentage moved 25% → 18.5% — the original wrong conclusion, reproduced inside the experiment written to avoid it | Judges the derived pool, and reports the output effect separately |
 | Return fire read as target dependence | All three aircraft reported TARGET-DEPENDENT from a 34% spread caused entirely by how hard each target shoots back | `report_matchups()` judges the raw row, then tests whether return fire explains any slope |
 | Max HP quoted as a midpoint | `175.44` presented as a measurement when the reading only supports `174.92–175.96` | `hp_bounds()` / `sole_integer_in()`; the bracket is the result |
+| `patrol` never run, and its sweep sent 1 attacker at 1 target | Every air figure silently described a direct attack only; the queued experiment could not have seen a target rule or corrected for return fire | Rewritten: 10 attackers, 3 targets, reads the air half back off disk, corrects attrition |
+| Patrol ratio spread read as target dependence | One changed attrition coefficient looks exactly like a target rule through a raw ratio | Fits `c` per cell against the base stat from the air cells; an impossible `c` means it really is the stat |
+| Air's falling per-round rate read as attrition | `maxRounds` is ignored in `air`, so damage is constant and the rate falls as 1/rounds | Checks whether the damage itself is constant before calling anything attrition |
 | `hp_scaling` printed no fit at all | Ten raw records appended, the law worked out by hand afterwards and easy to skip | Prints the ratio table and rules on it, including the wiped-stack question |
 
 ---
@@ -633,6 +740,13 @@ errors, and because the same failure modes will recur.
   Equally: do **not** apply the correction before establishing that the slope is
   there, or you will manufacture the opposite error. Both directions have now
   been made in this codebase.
+- **`maxRounds` does nothing in `air` terrain.** It scales patrol damage
+  linearly and is ignored by a direct air strike, so any sweep that varies it
+  against an `air` attacker is varying nothing. Check the terrain first.
+- **Ask what has never been submitted, not just what was measured.** `patrol`
+  sat unrun through 150 requests because no experiment listed it and nothing
+  counts an untried value. `grep` the terrain/field values actually present in
+  `results.jsonl` before believing a dimension is covered.
 - **Prefer a bracket to a point estimate** for anything derived by dividing two
   rounded numbers. Max HP is the worked example (§4): the interval says 175, the
   midpoint says 175.44, and only one of those is a measurement.
@@ -664,6 +778,9 @@ errors, and because the same failure modes will recur.
 | Comparing absolute HP lost across a defensive sweep | Cannot separate "bigger pool" from "no effect"; both hold HP lost constant | Compare the derived pool, and the deaths, not the loss |
 | Comparing damage across targets that differ in return fire | A flat attacker reads as target-dependent | Correct by `(1 - own fraction lost)` — but only after checking the raw row slopes |
 | Quoting a derived pool or max HP to 2 dp | Implies precision the 3 s.f. percentage does not support | `hp_bounds()`; report the bracket |
+| Varying `maxRounds` against an `air` attacker | Every rung reads identically; looks like a flat law | `maxRounds` is ignored in `air`. Use `patrol` if you want duration |
+| Fitting a coefficient from a low-`f` cell | `c = (1 - raw/base)/f` divides a tiny difference by a tiny number; error is (reading error)/`f` | Weight or filter by `f`; `exp_patrol` drops cells below 0.05 |
+| `bal` in `patrol` | `oops: Can't have Balloon in the air` — patrol counts as the air | Widen `guard_payload()`; the roster hole is permanent by this route |
 
 ---
 
@@ -706,8 +823,13 @@ Experiments registered: `unit_stats`, `buildings`, `trenches`, `air_vs_ground`,
 
 Measured costs, live: `sanity` 1, `buildings` 14 (9 plus up to 5 level-cap
 retries), `trenches` 10, `air_vs_ground` 30, `unit_stats` 16–20 depending on how
-many max-HP brackets need a second read, `hp_scaling` 10. The whole 2026-08-17
-session came to about 106 requests including one repeated `buildings` run.
+many max-HP brackets need a second read, `hp_scaling` 10, `patrol` 18. The whole
+2026-08-17 session came to about 124 requests including one repeated `buildings`
+run.
+
+`exp_patrol` reads the `air_vs_ground` cells back off `results.jsonl` instead of
+re-flying them, which halves its cost. That pattern is worth copying: the file
+is the cheapest instrument in the project.
 
 `damage_land`, `damage_air` and `damage_sea` have been **retired** — they
 predate `unit_stats`, they sent one attacker into twenty defenders (so the
@@ -722,7 +844,7 @@ instead of "Unknown experiment":
 | `damage_sea` | `unit_stats` |
 | `damage_air` | `air_vs_ground` |
 
-### Tests — 189 checks, no network needed
+### Tests — 211 checks, no network needed
 
 ```bash
 python3 test_probe_offline.py       # 45  transport, parsing, slot association
@@ -732,6 +854,7 @@ python3 test_fortress_row.py        # 24  bldg.1 vs the bldg.0 template; destroy
 python3 test_result_table.py        # 29  the summary table, against real markup
 python3 test_trench_design.py       # 27  proves the trench sweep can discriminate
 python3 test_matchup_design.py      # 30  proves the matrix can discriminate
+python3 test_patrol_design.py       # 22  proves patrol can be told from air
 ```
 
 These serve the site's courtesy budget as much as correctness: they run against
@@ -849,6 +972,15 @@ Cheap and worth doing at some point:
   oil 933, cash 4666`. They are populated by the losing side and look like
   replacement cost, so the guess is now "what it costs to rebuild what died"
   rather than upkeep. Rows are in `results.jsonl` under `air_vs_ground`.
+- **Is `patrol`'s attrition coefficient a constant?** Nine cells give
+  0.360–0.427 and the scatter does not track `f`, so it is probably discrete —
+  ticks, or whole units dying at tick boundaries. A count sweep at fixed `f`
+  would separate those. Until then quote the range, not a mean.
+- **Does `debark` behave like `patrol` or like `air`?** It is the one terrain
+  still never submitted. The same question that found the patrol gap applies
+  to it, and the answer costs about 6 requests.
+- **Does the lighter patrol attrition apply to naval and land stacks too**, or
+  only to aircraft? Patrol is offered for every terrain on the form.
 - **ANSWERED (2026-08-17): a wiped stack does still deal its full damage.**
   See §4. Kept here because the reasoning matters — it was answered for free by
   a sweep aimed at something else, because `hp_scaling` happens to wipe its
