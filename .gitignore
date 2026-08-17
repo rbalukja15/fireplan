@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
-results.jsonl
+
+# results.jsonl is deliberately NOT ignored. It is the measurement record --
+# the only durable output of a run, and every request in it cost someone
+# else's bandwidth. It belongs in the repo.
