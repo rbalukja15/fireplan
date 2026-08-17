@@ -241,6 +241,39 @@ class ResultScraper(HTMLParser):
                 self.readings[self._slot] = text
 
 
+class SpanCensus(HTMLParser):
+    """Every span class in a response, with a sample of its text.
+
+    The parser keys on 'hpLeft', but the rendered page says "Lost N HP", so
+    there may well be a second span carrying a different quantity. This lists
+    what is actually there instead of guessing.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.classes: dict[str, list[str]] = {}
+        self._cls: str | None = None
+        self._buf: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag != "span":
+            return
+        a = {k: (v or "") for k, v in attrs}
+        self._cls = a.get("class", "(no class)")
+        self._buf = []
+
+    def handle_data(self, data):
+        if self._cls is not None:
+            self._buf.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == "span" and self._cls is not None:
+            text = "".join(self._buf).strip()
+            if text:
+                self.classes.setdefault(self._cls, []).append(text)
+            self._cls = None
+
+
 # onAttack(name, value) injects a hidden field at click time so the server can
 # recognise the POST as an attack. It is NOT in the DOM, so it never showed up
 # in a field dump — and without it the server just re-renders the empty form.
@@ -534,6 +567,65 @@ def duel(
     return payload
 
 
+def semantics(p: "Probe") -> None:
+    """Settle what the hpLeft span means, and test the attack/defend split.
+
+    Three requests. The trick is ASYMMETRY: scaling both sides equally is not a
+    discriminator, because halving every count halves the reading under either
+    reading of the span (T/2 - 5d is identically (T - 10d)/2). Changing one
+    side at a time separates them cleanly.
+
+    If the span holds HP LOST, a side's reading is damage inflicted BY THE
+    OTHER SIDE, so it depends only on the opponent's count and not at all on
+    its own. Hold the attacker at 10 and grow the defender: the defender's own
+    reading must not move. Hold the defender and grow the attacker: the
+    attacker's reading must not move.
+
+    If instead it holds HP REMAINING, every reading is drawn from that side's
+    own pool, so both must move when that side's count changes.
+    """
+    runs = [
+        ("baseline   10 atk vs 10 def", 10, 10),
+        ("more defs  10 atk vs 15 def", 10, 15),
+        ("more atks  15 atk vs 10 def", 15, 10),
+    ]
+    got: dict[str, dict[str, float]] = {}
+    for label, atk, dfn in runs:
+        payload = settings("1")
+        payload.update(duel(1, "inf", atk, "inf", dfn))
+        readings = p.submit(payload)
+        got[label] = readings
+        record("semantics", {"atk": atk, "def": dfn}, readings)
+        print(f"  {label:28} -> A.1.1={readings.get('A.1.1')}  "
+              f"B.1.1={readings.get('B.1.1')}")
+
+    census = SpanCensus()
+    census.feed(p.last_response)
+    print("\n  span classes present in the response:")
+    for cls, samples in sorted(census.classes.items()):
+        print(f"    {cls:16} x{len(samples):<4} e.g. {samples[:3]}")
+
+    base, more_d, more_a = (got[r[0]] for r in runs)
+    b_fixed = base.get("B.1.1"), more_d.get("B.1.1")
+    a_fixed = base.get("A.1.1"), more_a.get("A.1.1")
+    print(f"\n  defender's own count 10->15, its reading: {b_fixed[0]} -> {b_fixed[1]}")
+    print(f"  attacker's own count 10->15, its reading: {a_fixed[0]} -> {a_fixed[1]}")
+
+    unchanged = (b_fixed[0] == b_fixed[1] and a_fixed[0] == a_fixed[1])
+    if unchanged:
+        print("\n  VERDICT: hpLeft is HP LOST. Each side's reading tracks the "
+              "opponent's count only.")
+        atk_per = (base.get("B.1.1") or 0) / 10
+        def_per = (base.get("A.1.1") or 0) / 10
+        print(f"  infantry damage: {atk_per} per unit attacking, "
+              f"{def_per} per unit defending", end="")
+        print(f"  (ratio {def_per / atk_per:.3f})" if atk_per else "")
+    else:
+        print("\n  VERDICT: NOT pure HP-lost — a side's reading moved with its "
+              "own count. Treat readings as HP remaining, or as a mix, and "
+              "re-derive before trusting any damage number.")
+
+
 def clear_stacks(first: int, last: int) -> dict[str, str]:
     """Blank out stacks so leftovers from a previous run don't contaminate."""
     out: dict[str, str] = {}
@@ -799,6 +891,9 @@ def main() -> int:
                     help="print payloads instead of sending them")
     ap.add_argument("--insecure", action="store_true",
                     help="skip TLS verification (last resort; see the SSL hint)")
+    ap.add_argument("--semantics", action="store_true",
+                    help="3 requests that decide whether hpLeft is HP lost or "
+                         "HP remaining, and measure the attack/defend split")
     ap.add_argument("--encoding", choices=("urlencoded", "multipart"),
                     default="urlencoded",
                     help="POST body encoding. urlencoded is proven against the "
@@ -838,6 +933,15 @@ def main() -> int:
                 print(f"    contains {marker!r}: {marker in body}", file=sys.stderr)
             return 1
         print(f"SANITY OK: {readings}")
+        return 0
+
+    if args.semantics:
+        print("--- semantics: what does the hpLeft span actually hold? ---")
+        try:
+            semantics(p)
+        except BareFormReturned as e:
+            print(f"SEMANTICS FAILED: {e}", file=sys.stderr)
+            return 1
         return 0
 
     if not args.run:
