@@ -605,6 +605,19 @@ def semantics(p: "Probe") -> None:
     for cls, samples in sorted(census.classes.items()):
         print(f"    {cls:16} x{len(samples):<4} e.g. {samples[:3]}")
 
+    # Refuse to rule on absent data. Without this, every reading coming back
+    # None compares equal to every other and the "unchanged" test below passes
+    # vacuously, announcing HP-LOST with a 0.0 damage split. A confident
+    # verdict from no measurement is the worst output this could produce.
+    missing = [lbl for lbl, r in got.items()
+               if r.get("A.1.1") is None or r.get("B.1.1") is None]
+    if missing:
+        print("\n  NO VERDICT — missing readings from: " + "; ".join(missing))
+        print("  Nothing is concluded. Check the span census above: if the "
+              "classes listed are not 'hpLeft', ResultScraper is keying on "
+              "the wrong one.")
+        return
+
     base, more_d, more_a = (got[r[0]] for r in runs)
     b_fixed = base.get("B.1.1"), more_d.get("B.1.1")
     a_fixed = base.get("A.1.1"), more_a.get("A.1.1")

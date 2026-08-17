@@ -115,5 +115,27 @@ check("verdict is NOT hp-lost", "VERDICT: NOT pure HP-lost" in out, out)
 check("does not misreport a damage split",
       "per unit attacking" not in out, out)
 
+print("\n3. server that answers but yields no parseable readings")
+
+
+class Empty:
+    last_response = "<html><body>no spans here</body></html>"
+
+    def submit(self, payload):
+        return {}
+
+
+_saved, dp.RESULTS_PATH = dp.RESULTS_PATH, os.devnull
+buf = io.StringIO()
+with redirect_stdout(buf):
+    dp.semantics(Empty())
+dp.RESULTS_PATH = _saved
+out = buf.getvalue()
+check("refuses to rule", "NO VERDICT" in out, out)
+check("does NOT claim HP LOST from nothing",
+      "VERDICT: hpLeft is HP LOST" not in out, out)
+check("does NOT invent a 0.0 damage split",
+      "per unit attacking" not in out, out)
+
 print(f"\nALL {ok} CHECKS PASSED — the three requests separate the hypotheses "
       "that one request cannot.")
