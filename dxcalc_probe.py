@@ -29,8 +29,12 @@ Stack size factor, effective units from a stack of n:
 HP scaling multiplier, from a unit at hp fraction f in [0,1]:
     m(f) = 0.05 + 0.95*f          (fits exactly, not approximately)
 
-Per-unit base damage (partial):
+Per-unit base damage (partial) — PROVISIONAL, RE-RUN BEFORE USE:
     infantry 4.0 | cavalry 15 | artillery 8 | heavy tank 45
+    Collected before we noticed the stock form ships B.1.2=ac x5, B.1.3=lt x3,
+    B.1.4=ht x1 pre-filled, so any run that set only row 1 was silently
+    fighting three extra defender types. duel() now blanks rows 2-8, but these
+    numbers predate that. Treat as suspect.
 
 Trenches add to the defender's HP pool rather than reducing incoming damage.
 Levels 1-3 conferred no measurable benefit at all.
@@ -53,10 +57,26 @@ STILL OPEN
     - Variance distribution (the +/-10% roll) never sampled.
 
 ISOLATION TECHNIQUE
-    Up to 8 independent duels can share one POST if the stacks sit 10+ km
-    apart, which is beyond the 5 km melee range, so no pair interferes with
-    another. Keep terrain homogeneous within a submission (all land, or all
-    air, or all sea) — mixed-terrain multi-pair runs were unreliable.
+    Isolation is by the 'target' field, NOT by distance. A.n.target = B.n pairs
+    two stacks; target = 0 means defend. Position governs range-to-target and
+    building inheritance only.
+
+    (An earlier version of this note claimed 10 km spacing was the isolation
+    mechanism and that ranged units contaminated neighbouring pairs. That was
+    wrong. It is corrected here because it drove several experiment designs.)
+
+    bytro.js allows maxStacks = 100, so multi-pair batching can scale well past
+    the 8 pairs previously assumed — but one invalid combination aborts the
+    ENTIRE batch, so stay at one pair per submission until single-pair runs are
+    trusted.
+
+TRANSPORT
+    The form is enctype="multipart/form-data" and onAttack() ends in a native
+    form.submit(), so a browser posts multipart. Posting urlencoded means the
+    server parses nothing at all — not even the submit marker — and replies
+    with the stock default form: no results, no 'oops'. That is the SAME
+    symptom as omitting the marker, which made the two failure modes hard to
+    tell apart. Both are handled now; see encode_multipart().
 
 COURTESY
     This is one person's fan site. DEFAULT_DELAY is deliberately slow. Please
@@ -114,6 +134,7 @@ class FormScraper(HTMLParser):
         self._pending_option: tuple[str, str] | None = None
         self.form_action: str | None = None
         self.form_method: str = "post"
+        self.form_enctype: str = ""
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         a = {k: (v or "") for k, v in attrs}
@@ -121,6 +142,7 @@ class FormScraper(HTMLParser):
             if self.form_action is None:
                 self.form_action = a.get("action", "")
                 self.form_method = a.get("method", "post").lower()
+                self.form_enctype = a.get("enctype", "").lower().strip()
         elif tag == "input":
             name = a.get("name")
             if not name:
@@ -228,6 +250,39 @@ def find_submit_marker(page: str) -> tuple[str, str] | None:
     return (m.group(1), m.group(2)) if m else None
 
 
+# The form declares enctype="multipart/form-data", and onAttack() finishes with
+# a native form.submit(), which honours that enctype. So a real browser sends a
+# multipart body. Posting urlencoded instead means the server parses NOTHING —
+# not even the MainSubmitButton marker — and answers with the stock default
+# form: no results, no 'oops'. Identical symptom to the missing marker, which
+# is why the two were easy to confuse.
+MULTIPART_BOUNDARY = "----dxcalcProbeBoundary7MA4YWxkTrZu0gW"
+
+
+def encode_multipart(payload: dict[str, str],
+                     boundary: str = MULTIPART_BOUNDARY) -> tuple[bytes, str]:
+    """Encode fields as multipart/form-data. Returns (body, content_type).
+
+    Every value here is a short unit code or number, so a fixed boundary keeps
+    payloads byte-reproducible and diffable against a captured browser POST.
+    Collisions are still checked for rather than assumed away.
+    """
+    while any(boundary in v for v in payload.values()) or \
+            any(boundary in k for k in payload):
+        boundary += "x"
+    out: list[bytes] = []
+    for key, val in payload.items():
+        # Quote-escape per RFC 7578 §4.2; field names here are ASCII like
+        # "A.1.1.count", but don't assume it.
+        safe = key.replace("\\", "\\\\").replace('"', '\\"')
+        out.append(f"--{boundary}\r\n".encode())
+        out.append(
+            f'Content-Disposition: form-data; name="{safe}"\r\n\r\n'.encode())
+        out.append(str(val).encode("utf-8") + b"\r\n")
+    out.append(f"--{boundary}--\r\n".encode())
+    return b"".join(out), f"multipart/form-data; boundary={boundary}"
+
+
 OOPS_RE = re.compile(r"oops:[^<>\n]{0,200}", re.I)
 
 
@@ -283,6 +338,9 @@ class Probe:
         self.baseline: dict[str, str] = {}
         self.post_url = BASE_URL
         self.form_method = "post"
+        # Assume multipart until a GET says otherwise: that is what the live
+        # form declares, and urlencoded is the failure mode we just fixed.
+        self.form_enctype = "multipart/form-data"
         self.last_response = ""
         self.submit_marker: tuple[str, str] | None = None
         self.select_options: dict[str, list[str]] = {}
@@ -316,6 +374,12 @@ class Probe:
         self.baseline = scraper.fields
         self.post_url = urllib.parse.urljoin(BASE_URL, scraper.form_action or "")
         self.form_method = scraper.form_method
+        if scraper.form_enctype:
+            self.form_enctype = scraper.form_enctype
+        print(f"Form encoding: {self.form_enctype}")
+        if "multipart" not in self.form_enctype:
+            print("  ! Form is no longer multipart — posting urlencoded. If "
+                  "results stop parsing, check this first.", file=sys.stderr)
         self.select_options = scraper.select_options
         self.select_groups = scraper.select_groups
         self.option_labels = scraper.option_labels
@@ -342,13 +406,17 @@ class Probe:
             return {}
 
         self._throttle()
-        body = urllib.parse.urlencode(payload).encode()
+        if "multipart" in self.form_enctype:
+            body, content_type = encode_multipart(payload)
+        else:
+            body = urllib.parse.urlencode(payload).encode()
+            content_type = "application/x-www-form-urlencoded"
         req = urllib.request.Request(
             self.post_url,
             data=body,
             headers={
                 "User-Agent": UA,
-                "Content-Type": "application/x-www-form-urlencoded",
+                "Content-Type": content_type,
                 "Referer": BASE_URL,
                 "Origin": "https://dxcalc.com",
             },
