@@ -958,7 +958,143 @@ def exp_variance(p: Probe, samples: int = 60) -> None:
             print(f"  ! sample {i}: {e}", file=sys.stderr)
 
 
+def effective_units(n: int) -> float:
+    """Confirmed stack size factor. Contribution saturates at 35 effective."""
+    if n <= 20:
+        return float(n)
+    k = min(n, 50) - 20
+    return 20.0 + k * (60 - k) / 60
+
+
+TERRAIN_FOR_CLASS = {"land": "land", "air": "air", "naval": "sea"}
+
+
+def unit_roster(p: "Probe") -> dict[str, str]:
+    """unit code -> terrain, read off the form's own optgroups.
+
+    Taken from the live page rather than hardcoded, so a roster change shows
+    up as a new row instead of a silent omission.
+    """
+    out: dict[str, str] = {}
+    for name, groups in p.select_groups.items():
+        if not name.endswith(".unit"):
+            continue
+        for label, codes in groups.items():
+            terrain = TERRAIN_FOR_CLASS.get(label.strip().lower())
+            if terrain:
+                for code in codes:
+                    out.setdefault(code, terrain)
+    return out
+
+
+def _measure_pair(p: "Probe", code: str, terrain: str,
+                  atk_n: int, def_n: int) -> dict[str, Any]:
+    """One U-vs-U submission, reduced to per-unit coefficients."""
+    payload = settings("1")
+    payload.update(duel(1, code, atk_n, code, def_n,
+                        atk_terrain=terrain, def_terrain=terrain))
+    p.submit(payload)
+    detail = dict(p.last_details)
+    a, b = detail.get("A.1.1", {}), detail.get("B.1.1", {})
+    out: dict[str, Any] = {"atk_n": atk_n, "def_n": def_n, "detail": detail}
+    # A is attacking, so A's loss was inflicted by the DEFENDERS, and vice versa.
+    if "lost" in a:
+        out["dmg_defending"] = a["lost"] / effective_units(def_n)
+    if "lost" in b:
+        out["dmg_attacking"] = b["lost"] / effective_units(atk_n)
+    for slot, n, key in (("A.1.1", atk_n, "hp_from_atk"),
+                         ("B.1.1", def_n, "hp_from_def")):
+        d = detail.get(slot, {})
+        if "pool" in d and n:
+            out[key] = d["pool"] / n
+    # A stack wiped in the measured round caps its own loss at its pool, which
+    # understates the OPPONENT's damage. Track the two sides separately: each
+    # coefficient is spoiled only by the wipe of the stack it was read from.
+    #   dmg_defending comes from A's loss -> spoiled if A was wiped
+    #   dmg_attacking comes from B's loss -> spoiled if B was wiped
+    # Max HP survives either way: at exactly 100% lost, pool == lost.
+    out["sat_A"] = a.get("pct", 0) >= 99.9
+    out["sat_B"] = b.get("pct", 0) >= 99.9
+    out["saturated"] = out["sat_A"] or out["sat_B"]
+    return out
+
+
+def exp_unit_stats(p: "Probe") -> None:
+    """Max HP, attack damage and defence damage for the whole roster.
+
+    U attacking an identical stack of U is compositionally symmetric but role
+    asymmetric, so ONE submission gives both coefficients:
+
+        defender's loss / E(attacker count) = U's damage ATTACKING
+        attacker's loss / E(defender count) = U's damage DEFENDING
+
+    and either side's pool / its own count = U's max HP. Infantry checked
+    against the known result: 10v10 gives 4.0 attacking, 5.0 defending, 20.0 HP.
+
+    Counts stay at 10 so E(n) = n exactly and the size factor cannot confound
+    the reading. If a side is wiped in the measured round its loss is capped at
+    its pool, so that unit is re-run with lopsided counts to clear the ceiling.
+    """
+    roster = unit_roster(p)
+    if not roster:
+        print("  ! No unit optgroups found — cannot classify the roster.")
+        return
+    print(f"  {len(roster)} unit types from the live form\n")
+    print(f"  {'unit':8} {'terrain':8} {'maxHP':>8} {'atk/unit':>9} "
+          f"{'def/unit':>9} {'ratio':>7}  note")
+
+    for code, terrain in roster.items():
+        note = ""
+        try:
+            r = _measure_pair(p, code, terrain, 10, 10)
+            if r.get("saturated"):
+                # Lopsided counts: few attackers cannot wipe many defenders.
+                # Only re-run the coefficient that was actually spoiled, and
+                # judge each rescue by the one side it is read from.
+                note = "re-run unsaturated"
+                still = False
+                if r.get("sat_B"):          # attack coefficient was capped
+                    alt = _measure_pair(p, code, terrain, 4, 20)
+                    r["dmg_attacking"] = alt.get("dmg_attacking")
+                    r.setdefault("hp_from_def", alt.get("hp_from_def"))
+                    still = still or bool(alt.get("sat_B"))
+                if r.get("sat_A"):          # defence coefficient was capped
+                    alt = _measure_pair(p, code, terrain, 20, 4)
+                    r["dmg_defending"] = alt.get("dmg_defending")
+                    r.setdefault("hp_from_atk", alt.get("hp_from_atk"))
+                    still = still or bool(alt.get("sat_A"))
+                if still:
+                    note = "STILL SATURATED — treat as a lower bound"
+        except ValueError as e:                 # guard_payload refused it
+            print(f"  {code:8} {terrain:8} {'-':>8} {'-':>9} {'-':>9} {'-':>7}"
+                  f"  SKIPPED: {e}".rstrip())
+            record("unit_stats", {"unit": code, "terrain": terrain}, {})
+            continue
+        except BareFormReturned as e:
+            print(f"  {code:8} {terrain:8} {'-':>8} {'-':>9} {'-':>9} {'-':>7}"
+                  f"  FAILED: {e}")
+            record("unit_stats", {"unit": code, "terrain": terrain,
+                                  "error": str(e)}, {})
+            continue
+
+        hp = r.get("hp_from_def") or r.get("hp_from_atk")
+        atk, dfn = r.get("dmg_attacking"), r.get("dmg_defending")
+        ratio = (dfn / atk) if (atk and dfn) else None
+        def cell(v: Any, width: int, places: int = 2) -> str:
+            return (f"{v:{width}.{places}f}" if isinstance(v, float)
+                    else f"{'?':>{width}}")
+
+        print(f"  {code:8} {terrain:8} {cell(hp, 8)} {cell(atk, 9)} "
+              f"{cell(dfn, 9)} {cell(ratio, 7, 3)}  {note}".rstrip())
+        record("unit_stats", {"unit": code, "terrain": terrain,
+                              "max_hp": hp, "dmg_attacking": atk,
+                              "dmg_defending": dfn, "note": note},
+               {"A.1.1": (r.get("detail", {}).get("A.1.1") or {}).get("lost"),
+                "B.1.1": (r.get("detail", {}).get("B.1.1") or {}).get("lost")})
+
+
 EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
+    "unit_stats": exp_unit_stats,
     "size_factor": exp_size_factor,
     "hp_scaling": exp_hp_scaling,
     "damage_land": exp_damage_land,
