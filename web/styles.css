@@ -224,6 +224,7 @@ button, input, select { font: inherit; color: inherit; }
   grid-template-columns: 1fr;
   margin-top: var(--s4);
 }
+.builders > *, .scoreboard > * { min-width: 0; }
 @media (min-width: 760px) { .builders { grid-template-columns: 1fr 1fr; } }
 
 .stack {
@@ -516,6 +517,11 @@ input:hover, select:hover { border-color: var(--muted); }
   border-radius: var(--r-md);
   padding: var(--s3);
   background: var(--surface-2);
+  /* A grid item's automatic minimum size is its CONTENT, so the per-row table
+     inside — which is allowed to scroll in its own box — was widening the card,
+     the grid, and the page with it. Measured at 360px: 446px of document
+     against a 360px viewport. */
+  min-width: 0;
 }
 .score-attacker { border-color: var(--atk-line); }
 .score-defender { border-color: var(--def-line); }
@@ -634,7 +640,7 @@ input:hover, select:hover { border-color: var(--muted); }
   max-width: 62ch;
 }
 
-.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; min-width: 0; max-width: 100%; }
 .deriv {
   width: 100%; border-collapse: collapse; font-size: .82rem;
   min-width: 520px;

@@ -145,6 +145,18 @@ function fmtStat(v, minDp = 1) {
   return n.toFixed(Math.max(minDp, dp));
 }
 
+/**
+ * An effective-unit count, to one decimal.
+ *
+ * E(n) produces thirds — E(30) is 28.3333… — and printing all of them suggests
+ * a measurement to four decimals when the quantity is exact arithmetic over a
+ * whole number. One decimal is what the source page itself shows.
+ */
+function fmtEff(v) {
+  const n = numOrNull(v);
+  return n === null ? null : n.toFixed(1);
+}
+
 /** A general-purpose number for the derivation table: tidy, never lossy. */
 function fmtLoose(v) {
   if (v === null || v === undefined) return null;
@@ -207,6 +219,25 @@ const PATROL = DATA ? (DATA.PATROL || { observedAdvantage: {} }) : { observedAdv
 const UNIT_CODES = Object.keys(UNITS);
 const BUILDING_CODES = Object.keys(BUILDINGS);
 
+/**
+ * The canonical roster order. It is not cosmetic: the server sorts a stack's
+ * rows into this order before it computes, and each type then draws its
+ * effective units from what the types before it have already used up. Rows are
+ * displayed in it for that reason — a player who sees artillery sitting below
+ * infantry can see why the artillery is cheap.
+ */
+const ROSTER_ORDER = (DATA && Array.isArray(DATA.ROSTER_ORDER) && DATA.ROSTER_ORDER.length)
+  ? DATA.ROSTER_ORDER.filter((c) => UNITS[c])
+  : UNIT_CODES.slice();
+
+/** The server refuses a repeated type, so a stack is a SET of at most this many. */
+const MAX_ROWS = (DATA && Number(DATA.MAX_UNIT_ROWS) > 0) ? Number(DATA.MAX_UNIT_ROWS) : 8;
+
+function rosterRank(code) {
+  const i = ROSTER_ORDER.indexOf(code);
+  return i === -1 ? ROSTER_ORDER.length : i;
+}
+
 /** A unit whose own stats were never measured cannot be modelled honestly. */
 function isUnmeasuredUnit(u) {
   return !u || u.maxHP === null || u.maxHP === undefined ||
@@ -216,18 +247,115 @@ function isUnmeasuredUnit(u) {
 
 function defaultUnit() {
   if (UNITS.inf) return 'inf';
-  const firstMeasured = UNIT_CODES.find((c) => !isUnmeasuredUnit(UNITS[c]));
-  return firstMeasured || UNIT_CODES[0] || '';
+  const firstMeasured = ROSTER_ORDER.find((c) => !isUnmeasuredUnit(UNITS[c]));
+  return firstMeasured || ROSTER_ORDER[0] || UNIT_CODES[0] || '';
+}
+
+function newRow(unit, count) {
+  return {
+    unit: unit || defaultUnit(),
+    count: Number.isFinite(count) ? count : 30,
+    hpPct: 100,
+  };
 }
 
 const DEFAULT_STATE = () => ({
-  attacker: { unit: defaultUnit(), count: 30, hpPct: 100, trench: 0, buildings: [] },
-  defender: { unit: defaultUnit(), count: 30, hpPct: 100, trench: 0, buildings: [] },
+  attacker: { rows: [newRow()], trench: 0, buildings: [] },
+  defender: { rows: [newRow()], trench: 0, buildings: [] },
   rounds: 1,
   mode: 'strike',
 });
 
 let state = DEFAULT_STATE();
+
+/* --- stack helpers ------------------------------------------------------- */
+
+function rowsOf(side) {
+  const s = state[side];
+  if (!s) return [];
+  if (!Array.isArray(s.rows) || !s.rows.length) s.rows = [newRow()];
+  return s.rows;
+}
+
+/** Keep a stack in roster order, which is the order the game computes it in. */
+function sortRows(side) {
+  rowsOf(side).sort((a, b) => rosterRank(a.unit) - rosterRank(b.unit));
+}
+
+/**
+ * Unit codes this side may still add, in roster order. `exceptIndex` keeps the
+ * row's own current type available to itself — a select that excluded it would
+ * have no valid selected option.
+ */
+function availableUnits(side, exceptIndex) {
+  const used = new Set(
+    rowsOf(side).map((r, i) => (i === exceptIndex ? null : r.unit)).filter(Boolean)
+  );
+  return ROSTER_ORDER.filter((c) => !used.has(c));
+}
+
+function totalCount(cfgSide) {
+  return (cfgSide.rows || []).reduce((n, r) => n + (Number(r.count) || 0), 0);
+}
+
+function stackClasses(cfgSide) {
+  return new Set((cfgSide.rows || []).map((r) => (UNITS[r.unit] || {}).cls).filter(Boolean));
+}
+
+/** "30 x Infantry + 10 x Artillery", or a count once that gets long. */
+function stackLabel(cfgSide) {
+  const rows = cfgSide.rows || [];
+  if (!rows.length) return EM_DASH;
+  if (rows.length <= 2) {
+    return rows.map((r) => `${fmtInt(r.count)} × ${(UNITS[r.unit] || {}).label || r.unit}`).join(' + ');
+  }
+  return `${rows.length} types, ${fmtInt(totalCount(cfgSide))} units`;
+}
+
+/**
+ * Effective units per row.
+ *
+ * Preferred source is the engine's own effectiveByRow(). The fallback applies
+ * the same pinned law using the engine's E(n) — it is not a second model, and
+ * if the engine offers neither primitive the row shows an em dash rather than
+ * a number this file invented.
+ */
+function effectiveOf(rows) {
+  const plain = rows.map((r) => ({ unit: r.unit, count: Number(r.count) || 0 }));
+
+  if (ENGINE && typeof ENGINE.effectiveByRow === 'function') {
+    try {
+      const out = ENGINE.effectiveByRow(plain);
+      if (Array.isArray(out) && out.length === rows.length) {
+        return out.map((o) => numOrNull(o && o.effective));
+      }
+    } catch { /* fall through to the law below */ }
+  }
+
+  if (ENGINE && typeof ENGINE.effectiveUnits === 'function') {
+    try {
+      const order = plain.map((r, i) => ({ r, i }))
+        .sort((a, b) => rosterRank(a.r.unit) - rosterRank(b.r.unit) || a.i - b.i);
+      const eff = new Array(rows.length).fill(null);
+      let seen = 0;
+      for (const { r, i } of order) {
+        const c = Math.max(0, r.count);
+        eff[i] = ENGINE.effectiveUnits(seen + c) - ENGINE.effectiveUnits(seen);
+        seen += c;
+      }
+      return eff;
+    } catch { /* fall through */ }
+  }
+
+  return rows.map(() => null);
+}
+
+/** E(n) for a count on its own — what the row would get with no stack-mates. */
+function soloEffective(count) {
+  if (!ENGINE || typeof ENGINE.effectiveUnits !== 'function') return null;
+  try { return numOrNull(ENGINE.effectiveUnits(Math.max(0, Number(count) || 0))); }
+  catch { return null; }
+}
 
 /* --------------------------------------------------------------------------
    3. Boot
@@ -254,6 +382,10 @@ function boot() {
   $('mode').addEventListener('change', onInput);
 
   $('builders').addEventListener('click', (ev) => {
+    const addRow = ev.target.closest('[data-add-row]');
+    if (addRow) { addUnitRow(addRow.dataset.addRow); return; }
+    const rmRow = ev.target.closest('[data-remove-row]');
+    if (rmRow) { removeUnitRow(rmRow.dataset.side, Number(rmRow.dataset.index)); return; }
     const add = ev.target.closest('[data-add-bldg]');
     if (add) { addBuilding(add.dataset.addBldg); return; }
     const rm = ev.target.closest('[data-remove-bldg]');
@@ -263,8 +395,6 @@ function boot() {
   $('swap').addEventListener('click', swapSides);
   $('reset').addEventListener('click', () => {
     state = DEFAULT_STATE();
-    renderBuildings('attacker');
-    renderBuildings('defender');
     writeStateToDom();
     recompute();
   });
@@ -280,8 +410,6 @@ function boot() {
       return;
     }
     state = s;
-    renderBuildings('attacker');
-    renderBuildings('defender');
     writeStateToDom();
     recompute();
   });
@@ -333,14 +461,8 @@ function buildStack(side) {
     .replaceAll('{S}', meta.label);
   $('stack-' + side).innerHTML = tpl;
 
-  fillUnitSelect($(side + '-unit'));
   fillTrenchSelect($(side + '-trench'));
-
-  // Keep the HP number box and its slider in step, both ways.
-  const numBox = $(side + '-hp');
-  const slider = $(side + '-hp-range');
-  numBox.addEventListener('input', () => { slider.value = clampHp(numBox.value); });
-  slider.addEventListener('input', () => { numBox.value = slider.value; });
+  renderRows(side);
 }
 
 function clampHp(v) {
@@ -349,10 +471,26 @@ function clampHp(v) {
   return Math.min(100, Math.max(1, Math.round(n)));
 }
 
-function fillUnitSelect(select) {
+function clampCount(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return 1;
+  return Math.min(500, Math.max(1, Math.round(n)));
+}
+
+/**
+ * A unit select offering only the codes in `codes`.
+ *
+ * The exclusion is the point: "The same unit can't be specified twice in same
+ * stack" is server-enforced, so a duplicate is not a warning case — it is a
+ * stack the game will not field. The types already on this side simply are not
+ * in the list, which makes the illegal state unreachable rather than corrected
+ * after the fact.
+ */
+function fillUnitSelect(select, codes) {
   const byClass = new Map();
-  for (const code of UNIT_CODES) {
+  for (const code of codes) {
     const u = UNITS[code];
+    if (!u) continue;
     const cls = u.cls || 'other';
     if (!byClass.has(cls)) byClass.set(cls, []);
     byClass.get(cls).push(u);
@@ -372,6 +510,156 @@ function fillUnitSelect(select) {
       group.appendChild(opt);
     }
     select.appendChild(group);
+  }
+}
+
+/* --- unit rows ----------------------------------------------------------- */
+
+function addUnitRow(side) {
+  const rows = rowsOf(side);
+  if (rows.length >= MAX_ROWS) return;
+  const free = availableUnits(side, -1);
+  if (!free.length) return;
+  const pick = free.find((c) => !isUnmeasuredUnit(UNITS[c])) || free[0];
+  rows.push(newRow(pick, 10));
+  sortRows(side);
+  renderRows(side);
+  recompute();
+  // Land the caret on the type that was just added, wherever roster order put it.
+  const at = rowsOf(side).findIndex((r) => r.unit === pick);
+  const sel = $(`${side}-r${at}-unit`);
+  if (sel) sel.focus();
+}
+
+function removeUnitRow(side, index) {
+  const rows = rowsOf(side);
+  if (rows.length <= 1) return;            // a stack must hold something
+  rows.splice(index, 1);
+  renderRows(side);
+  recompute();
+  const btn = $(`${side}-addrow`);
+  if (btn && !btn.disabled) btn.focus();
+}
+
+/**
+ * Rebuild one side's rows. Called on structural change only — adding or
+ * removing a row, or changing a type, all of which alter what the OTHER rows
+ * may offer. Typing in a count or an HP box does not come through here, so the
+ * caret is never yanked out of a field mid-number.
+ */
+function renderRows(side) {
+  const list = $(side + '-rows');
+  if (!list) return;
+  list.textContent = '';
+
+  const rows = rowsOf(side);
+  const meta = SIDES.find((s) => s.key === side);
+
+  rows.forEach((r, i) => {
+    const li = el('li', 'urow');
+    li.dataset.index = String(i);
+    const uid = `${side}-r${i}`;
+
+    const grid = el('div', 'urow-grid');
+
+    // --- type -------------------------------------------------------------
+    const unitField = el('div', 'field field-unit');
+    const unitLabel = el('label', null, 'Unit');
+    unitLabel.htmlFor = uid + '-unit';
+    const unitSel = document.createElement('select');
+    unitSel.id = uid + '-unit';
+    unitSel.setAttribute('aria-describedby', uid + '-stats');
+    const offer = availableUnits(side, i);
+    if (!offer.includes(r.unit) && UNITS[r.unit]) offer.push(r.unit);
+    offer.sort((a, b) => rosterRank(a) - rosterRank(b));
+    fillUnitSelect(unitSel, offer);
+    unitSel.value = r.unit;
+    unitSel.addEventListener('change', () => {
+      r.unit = unitSel.value;
+      sortRows(side);
+      renderRows(side);
+      recompute();
+      const at = rowsOf(side).findIndex((x) => x.unit === r.unit);
+      const again = $(`${side}-r${at}-unit`);
+      if (again) again.focus();
+    });
+    unitField.append(unitLabel, unitSel);
+
+    // --- count ------------------------------------------------------------
+    const countField = el('div', 'field field-count');
+    const countLabel = el('label', null, 'Count');
+    countLabel.htmlFor = uid + '-count';
+    const count = document.createElement('input');
+    count.type = 'number';
+    count.id = uid + '-count';
+    count.min = '1'; count.max = '500'; count.step = '1';
+    count.inputMode = 'numeric';
+    count.value = String(r.count);
+    // The count is where saturation is felt, so both readouts describe it: a
+    // screen reader hears "25.0 effective of 40" and why, not just the number
+    // that was typed in.
+    count.setAttribute('aria-describedby', `${uid}-eff ${uid}-note`);
+    countField.append(countLabel, count);
+
+    // --- HP % -------------------------------------------------------------
+    const hpField = el('div', 'field field-hp');
+    const hpLabel = el('label', null, 'HP %');
+    hpLabel.htmlFor = uid + '-hp';
+    const hp = document.createElement('input');
+    hp.type = 'number';
+    hp.id = uid + '-hp';
+    hp.min = '1'; hp.max = '100'; hp.step = '1';
+    hp.inputMode = 'numeric';
+    hp.value = String(r.hpPct);
+    hpField.append(hpLabel, hp);
+
+    // --- remove -----------------------------------------------------------
+    const rm = el('button', 'btn btn-small btn-icon', '×');
+    rm.type = 'button';
+    rm.dataset.removeRow = '1';
+    rm.dataset.side = side;
+    rm.dataset.index = String(i);
+    const uLabel = (UNITS[r.unit] || {}).label || r.unit;
+    if (rows.length <= 1) {
+      rm.disabled = true;
+      rm.title = 'A stack has to hold at least one unit type.';
+    }
+    rm.setAttribute('aria-label', `Remove ${uLabel} from the ${meta.label.toLowerCase()} stack`);
+
+    grid.append(unitField, countField, hpField, rm);
+    li.appendChild(grid);
+
+    // --- readouts, filled by updateStackNotes() ---------------------------
+    const stats = el('p', 'urow-stats', '');
+    stats.id = uid + '-stats';
+    li.appendChild(stats);
+
+    const effWrap = el('div', 'urow-eff');
+    effWrap.id = uid + '-eff';
+    const effNum = el('span', 'eff-num', EM_DASH);
+    effNum.id = uid + '-effnum';
+    const bar = el('span', 'eff-bar');
+    bar.id = uid + '-bar';
+    bar.setAttribute('aria-hidden', 'true');
+    bar.append(el('i'), el('u'));
+    effWrap.append(effNum, bar);
+    li.appendChild(effWrap);
+
+    const note = el('p', 'urow-note', '');
+    note.id = uid + '-note';
+    li.appendChild(note);
+
+    list.appendChild(li);
+  });
+
+  const addBtn = $(side + '-addrow');
+  if (addBtn) {
+    const full = rows.length >= MAX_ROWS;
+    const noneLeft = !availableUnits(side, -1).length;
+    addBtn.disabled = full || noneLeft;
+    addBtn.title = full
+      ? `A stack holds at most ${MAX_ROWS} unit types.`
+      : (noneLeft ? 'Every unit type is already in this stack.' : '');
   }
 }
 
@@ -505,13 +793,9 @@ function renderBuildings(side) {
 
 function writeStateToDom() {
   for (const { key } of SIDES) {
-    const s = state[key];
-    const unitSel = $(key + '-unit');
-    if (UNITS[s.unit]) unitSel.value = s.unit; else s.unit = unitSel.value;
-    $(key + '-count').value = String(s.count);
-    $(key + '-hp').value = String(s.hpPct);
-    $(key + '-hp-range').value = String(s.hpPct);
-    $(key + '-trench').value = String(s.trench);
+    sortRows(key);
+    renderRows(key);
+    $(key + '-trench').value = String(state[key].trench);
   }
   $('rounds').value = String(state.rounds);
   $('mode').value = state.mode === 'patrol' ? 'patrol' : 'strike';
@@ -521,13 +805,16 @@ function writeStateToDom() {
 
 function readDomToState() {
   for (const { key } of SIDES) {
-    const s = state[key];
-    s.unit = $(key + '-unit').value;
-    const c = Number($(key + '-count').value);
-    s.count = Number.isFinite(c) ? Math.min(500, Math.max(1, Math.round(c))) : 1;
-    s.hpPct = clampHp($(key + '-hp').value);
+    rowsOf(key).forEach((r, i) => {
+      const count = $(`${key}-r${i}-count`);
+      const hp = $(`${key}-r${i}-hp`);
+      if (count) r.count = clampCount(count.value);
+      if (hp) r.hpPct = clampHp(hp.value);
+      // The type is not read here: it only ever changes through its own
+      // handler, which re-sorts and re-renders the whole side.
+    });
     const t = Number($(key + '-trench').value);
-    s.trench = Number.isFinite(t) ? Math.min(20, Math.max(0, Math.round(t))) : 0;
+    state[key].trench = Number.isFinite(t) ? Math.min(20, Math.max(0, Math.round(t))) : 0;
   }
   const r = Number($('rounds').value);
   state.rounds = Number.isFinite(r) && r > 0 ? r : 1;
@@ -556,9 +843,12 @@ function onCommit() {
 
 function writeNumbersToDom() {
   for (const { key } of SIDES) {
-    $(key + '-count').value = String(state[key].count);
-    $(key + '-hp').value = String(state[key].hpPct);
-    $(key + '-hp-range').value = String(state[key].hpPct);
+    rowsOf(key).forEach((r, i) => {
+      const count = $(`${key}-r${i}-count`);
+      const hp = $(`${key}-r${i}-hp`);
+      if (count) count.value = String(r.count);
+      if (hp) hp.value = String(r.hpPct);
+    });
   }
   $('rounds').value = String(state.rounds);
 }
@@ -615,14 +905,41 @@ function recompute() {
   announceResult(result);
 }
 
+/**
+ * A side, in the shape the engine's contract asks for: `rows`, in roster order.
+ *
+ * A one-row stack also carries the flat {unit, count, hpPct} fields the older
+ * single-unit contract used. They describe exactly the same stack, so no
+ * reading of the config can disagree with another — this is a compatibility
+ * shim for a one-row stack, not a second source of truth, and nothing above
+ * one row can be expressed that way at all.
+ */
 function cloneSide(s) {
-  return {
-    unit: s.unit,
-    count: s.count,
-    hpPct: s.hpPct,
+  const rows = (s.rows || []).map((r) => ({
+    unit: r.unit,
+    count: r.count,
+    hpPct: r.hpPct,
+  }));
+  const out = {
+    rows,
     trench: s.trench,
     buildings: s.buildings.map((b) => ({ code: b.code, level: b.level, hpPct: b.hpPct })),
   };
+  if (rows.length === 1) {
+    out.unit = rows[0].unit;
+    out.count = rows[0].count;
+    out.hpPct = rows[0].hpPct;
+  }
+  return out;
+}
+
+/** The unit code of a row the ENGINE returned, which may hold a resolved unit. */
+function rowCode(r) {
+  if (!r) return null;
+  const u = r.unit;
+  if (typeof u === 'string') return u;
+  if (u && typeof u === 'object' && u.code) return String(u.code);
+  return null;
 }
 
 function renderEngineError(err) {
@@ -642,6 +959,11 @@ function renderEngineError(err) {
   }
   $('sb-a-pct').textContent = '';
   $('sb-d-pct').textContent = '';
+  for (const p of ['a', 'd']) {
+    $(`sb-${p}-rows`).textContent = '';
+    $(`sb-${p}-rows-note`).textContent = 'No per-unit figures: the engine failed on this configuration.';
+    $(`sb-${p}-rows-note`).className = 'rowsplit-note is-warn';
+  }
   $('verdict').textContent = 'No result.';
   lastHeadline = '';
   announce('The engine could not compute this matchup. No result is shown.');
@@ -702,6 +1024,35 @@ function uiCaveatsFor(config, engineText) {
         && !engineText.includes('attacking side')) {
       out.push('A damage-reducing building was placed on the attacking side. Only fortresses on the defending side were ever measured.');
     }
+
+    // Composite stacks. The saturation law and the damage split are measured
+    // exactly — but on two-type, all-land mixtures. Going past that is
+    // arithmetic the record does not witness, and it should say so.
+    const rows = config[key].rows || [];
+    const classes = stackClasses(config[key]);
+    if (classes.size > 1 && !engineText.includes('mixes')) {
+      out.push(`The ${label.toLowerCase()} stack mixes ${[...classes]
+        .map((c) => (CLASS_LABEL[c] || c).toLowerCase()).join(' and ')} units in one stack. Every `
+        + 'mixture ever submitted was all-land, and how a stack spanning classes is treated — one '
+        + 'saturation pool or several, which coefficient each row uses — was never read.');
+    } else if (rows.length > 2 && !engineText.includes('two types')) {
+      out.push(`The ${label.toLowerCase()} stack has ${rows.length} unit types. Every mixture ever `
+        + 'submitted had exactly two, both land (infantry with artillery, four layouts). The '
+        + 'cumulative law fits all four to 0.002% and extends to more types by arithmetic, but '
+        + 'nobody has ever flown a three-type stack.');
+    }
+  }
+
+  // Both sides mixed. Every mixture in the record was a mixed DEFENDER facing a
+  // single-type infantry attacker, so a mixture has never once fought another
+  // mixture — a structural gap, and one nothing in the config panel shows.
+  const aMixed = (config.attacker.rows || []).length > 1;
+  const dMixed = (config.defender.rows || []).length > 1;
+  if (aMixed && dMixed && !engineText.includes('both sides')) {
+    out.push('Both sides are mixtures. Every composite stack ever submitted was a mixed DEFENDER '
+      + 'against a single-type infantry attacker, so a mixture has never once fought another '
+      + 'mixture. The saturation law is read off each stack separately, which is the natural '
+      + 'reading and is not a measurement of this shape.');
   }
   return out;
 }
@@ -765,10 +1116,10 @@ function renderScoreboard(result, config) {
 }
 
 function renderSide(prefix, side, cfg) {
-  const unit = UNITS[cfg.unit] || {};
+  const damaged = (cfg.rows || []).filter((r) => r.hpPct !== 100).length;
   $(`sb-${prefix}-name`).textContent =
-    `${fmtInt(cfg.count)} × ${unit.label || cfg.unit}` +
-    (cfg.hpPct !== 100 ? ` at ${cfg.hpPct}% HP` : '') +
+    stackLabel(cfg) +
+    (damaged ? (damaged === (cfg.rows || []).length ? ', damaged' : ', partly damaged') : '') +
     (cfg.trench > 0 ? `, TL ${cfg.trench}` : '');
 
   const s = side || {};
@@ -782,7 +1133,7 @@ function renderSide(prefix, side, cfg) {
   if (left === null) {
     setFig(leftEl, null);
   } else {
-    setFig(leftEl, `${fmtInt(cfg.count)} → ${left}`);
+    setFig(leftEl, `${fmtInt(totalCount(cfg))} → ${left}`);
   }
 
   const pct = fmtPct(pctOf(s));
@@ -794,6 +1145,8 @@ function renderSide(prefix, side, cfg) {
     tail = isDestroyed(s) ? ' · stack destroyed' : ' · HP pool exhausted';
   }
   pctEl.textContent = pct === null ? '' : `${pct} of the pool${tail}`;
+
+  renderRowSplit(prefix, s, cfg);
 
   // Buildings: the engine may or may not report per-building damage. Only
   // render what it actually returned.
@@ -811,6 +1164,106 @@ function renderSide(prefix, side, cfg) {
       : `−${lost} HP${r && r.destroyed ? ' · destroyed' : ''}`));
     list.appendChild(li);
   });
+}
+
+/**
+ * The per-unit-type breakdown of one side's result.
+ *
+ * The composition always comes from the config, so the reader can always see
+ * WHAT is in the stack. The numbers only ever come from the engine: if it
+ * returned no rows[], every numeric cell is an em dash and the note says the
+ * itemisation was withheld. Splitting a stack total across rows here — by pool,
+ * by count, by anything — would be this file inventing a measurement.
+ */
+function renderRowSplit(prefix, sideResult, cfg) {
+  const body = $(`sb-${prefix}-rows`);
+  const note = $(`sb-${prefix}-rows-note`);
+  if (!body || !note) return;
+  body.textContent = '';
+
+  const cfgRows = cfg.rows || [];
+  const engineRows = Array.isArray(sideResult && sideResult.rows) ? sideResult.rows : null;
+
+  // Match on the unit code: the engine sorts a stack into roster order and the
+  // config may not be in it, so pairing by index alone could mislabel a row.
+  const byCode = new Map();
+  if (engineRows) {
+    engineRows.forEach((r) => {
+      const c = rowCode(r);
+      if (c && !byCode.has(c)) byCode.set(c, r);
+    });
+  }
+
+  // The builder's own figure, used only where the engine returned no rows[]
+  // and only for the effective count — which is the engine's own law either
+  // way (effectiveByRow, or E(n) applied cumulatively).
+  const fallbackEff = effectiveOf(cfgRows);
+  let unmatched = 0;
+
+  cfgRows.forEach((r, i) => {
+    const u = UNITS[r.unit] || {};
+    const er = engineRows ? (byCode.get(r.unit) || null) : null;
+    if (engineRows && !er) unmatched += 1;
+
+    const tr = document.createElement('tr');
+
+    const name = el('td', null,
+      `${fmtInt(r.count)} × ${u.label || r.unit}${r.hpPct !== 100 ? ` @ ${r.hpPct}%` : ''}`);
+    tr.appendChild(name);
+
+    const cell = (text, extraClass) => {
+      const td = el('td', 'c-val' + (extraClass ? ' ' + extraClass : ''));
+      if (text === null) {
+        td.textContent = EM_DASH;
+        td.classList.add('row-none');
+      } else {
+        td.textContent = text;
+      }
+      return td;
+    };
+
+    const eff = er ? numOrNull(er.effective) : fallbackEff[i];
+    const solo = soloEffective(r.count);
+    const saturated = eff !== null && solo !== null && eff < solo - 1e-6;
+    tr.appendChild(cell(fmtEff(eff), saturated ? 'row-sat' : null));
+
+    tr.appendChild(cell(er ? fmt(er.hpLost) : null));
+    tr.appendChild(cell(er ? fmtInt(er.deaths) : null));
+    const leftTxt = er ? fmtInt(er.unitsLeft) : null;
+    tr.appendChild(cell(leftTxt === null ? null : `${fmtInt(r.count)} → ${leftTxt}`));
+    tr.appendChild(cell(er ? fmt(er.damageDealt) : null));
+
+    body.appendChild(tr);
+  });
+
+  if (!engineRows) {
+    note.textContent = cfgRows.length > 1
+      ? 'The engine returned this stack\'s totals but no per-row figures, so the columns above are '
+        + 'withheld rather than split up here. The effective counts are the engine\'s own size law.'
+      : 'The engine returned no per-row figures for this stack. The effective count is the engine\'s '
+        + 'own size law; the rest is withheld.';
+    note.className = 'rowsplit-note is-warn';
+    return;
+  }
+
+  if (unmatched) {
+    // The engine itemised the stack but not this row. Say which way round that
+    // is: the row is in the battle, the figures for it are simply not here.
+    note.textContent = `The engine's breakdown does not cover ${unmatched} of the `
+      + `${cfgRows.length} rows in this stack, so ${unmatched === 1 ? 'that row is' : 'those rows are'} `
+      + 'shown as em dashes. The stack totals above may therefore include damage this table does not.';
+    note.className = 'rowsplit-note is-warn';
+    return;
+  }
+
+  if (cfgRows.length > 1) {
+    note.textContent = 'Incoming damage splits by attack × count — the raw count, not the saturated '
+      + 'one (measured). Effective units are cumulative down this table.';
+    note.className = 'rowsplit-note';
+  } else {
+    note.textContent = '';
+    note.className = 'rowsplit-note';
+  }
 }
 
 /* --- 7c. Verdict --------------------------------------------------------- */
@@ -866,16 +1319,16 @@ function announceResult(result) {
 function renderVerdict(result, config) {
   const a = result.attacker || {};
   const d = result.defender || {};
-  const aUnit = UNITS[config.attacker.unit] || {};
-  const dUnit = UNITS[config.defender.unit] || {};
 
   // With no measurement behind the pairing there is no outcome to narrate.
   // The figures stay on screen, flagged; the sentence that would turn them
   // into a prediction does not get written.
   if (displayedLevel === 'unknown') {
-    const blind = [config.attacker.unit, config.defender.unit]
-      .filter((c) => isUnmeasuredUnit(UNITS[c]))
-      .map((c) => (UNITS[c] || {}).label || c);
+    const blind = [...new Set(
+      [...(config.attacker.rows || []), ...(config.defender.rows || [])]
+        .map((r) => r.unit)
+        .filter((c) => isUnmeasuredUnit(UNITS[c]))
+    )].map((c) => (UNITS[c] || {}).label || c);
     const v0 = $('verdict');
     v0.textContent = 'No outcome can be stated for this matchup.';
     const s0 = el('span', 'vsub');
@@ -892,9 +1345,9 @@ function renderVerdict(result, config) {
   if (aDead && dDead) {
     headline = 'Both stacks are destroyed.';
   } else if (dDead) {
-    headline = `The defending ${dUnit.label || ''} stack is destroyed.`.replace(/\s+/g, ' ');
+    headline = 'The defending stack is destroyed.';
   } else if (aDead) {
-    headline = `The attacking ${aUnit.label || ''} stack is destroyed. The attack fails.`.replace(/\s+/g, ' ');
+    headline = 'The attacking stack is destroyed. The attack fails.';
   } else {
     const ad = numOrNull(a.deaths), dd = numOrNull(d.deaths);
     if (ad !== null && dd !== null) {
@@ -961,21 +1414,73 @@ function renderSanity(result, config) {
   const problems = [];
   const check = (label, side, cfg) => {
     if (!side) { problems.push(`${label}: the engine returned no figures at all.`); return; }
+    const n = totalCount(cfg);
     const deaths = numOrNull(side.deaths);
     const left = numOrNull(side.unitsLeft);
     const lost = numOrNull(side.hpLost);
     const pool = numOrNull(side.pool);
-    if (deaths !== null && deaths > cfg.count) {
-      problems.push(`${label}: ${deaths} units killed out of ${cfg.count} in the stack.`);
+    if (deaths !== null && deaths > n) {
+      problems.push(`${label}: ${deaths} units killed out of ${n} in the stack.`);
     }
-    if (left !== null && (left < 0 || left > cfg.count)) {
-      problems.push(`${label}: ${left} units left out of ${cfg.count}.`);
+    if (left !== null && (left < 0 || left > n)) {
+      problems.push(`${label}: ${left} units left out of ${n}.`);
     }
-    if (deaths !== null && left !== null && deaths + left !== cfg.count) {
-      problems.push(`${label}: ${deaths} killed plus ${left} surviving does not make ${cfg.count}.`);
+    if (deaths !== null && left !== null && deaths + left !== n) {
+      problems.push(`${label}: ${deaths} killed plus ${left} surviving does not make ${n}.`);
     }
     if (lost !== null && pool !== null && lost > pool + 1e-6) {
       problems.push(`${label}: lost ${fmt(lost)} HP from a pool of ${fmt(pool)}.`);
+    }
+
+    // Per-row, where the engine itemised. A stack total that does not equal the
+    // sum of its own rows is the composite equivalent of the building row that
+    // clobbered the attacker's slot for a whole phase of this project.
+    const rows = Array.isArray(side.rows) ? side.rows : null;
+    if (rows) {
+      const seen = new Set();
+      const sum = { hpLost: 0, deaths: 0, damageDealt: 0, pool: 0 };
+      const any = { hpLost: false, deaths: false, damageDealt: false, pool: false };
+      rows.forEach((r, i) => {
+        const code = rowCode(r) || `row ${i + 1}`;
+        if (seen.has(code)) {
+          problems.push(`${label}: ${code} appears twice in the result, and the game refuses a `
+            + 'repeated unit type in one stack.');
+        }
+        seen.add(code);
+        for (const field of ['hpLost', 'deaths', 'damageDealt', 'pool']) {
+          const v = numOrNull(r[field]);
+          if (v !== null) { sum[field] += v; any[field] = true; }
+        }
+        const rd = numOrNull(r.deaths);
+        const rleft = numOrNull(r.unitsLeft);
+        const rc = numOrNull(r.count);
+        if (rd !== null && rleft !== null && rc !== null && rd + rleft !== rc) {
+          problems.push(`${label} / ${code}: ${rd} killed plus ${rleft} surviving does not make ${rc}.`);
+        }
+      });
+
+      // A row total that does not add up to the stack total is the composite
+      // version of the building row that clobbered the attacker's slot for a
+      // whole phase of this project: both readings look plausible alone. Note
+      // a row that reports 0 is CLAIMING zero — a quantity the engine cannot
+      // itemise should come back null, and null is excluded from these sums.
+      const totals = { hpLost: lost, deaths, damageDealt: numOrNull(side.damageDealt), pool };
+      const words = {
+        hpLost: 'lose {r} HP between them, but the stack says {t}',
+        deaths: 'kill {r} units between them, but the stack says {t}',
+        damageDealt: 'deal {r} damage between them, but the stack says {t}',
+        pool: 'hold {r} HP of pool between them, but the stack says {t}',
+      };
+      for (const field of ['hpLost', 'deaths', 'damageDealt', 'pool']) {
+        const t = totals[field];
+        if (!any[field] || t === null) continue;
+        const tol = field === 'deaths' ? 0 : 0.01;
+        if (Math.abs(sum[field] - t) > tol) {
+          problems.push(`${label}: the rows ` + words[field]
+            .replace('{r}', field === 'deaths' ? String(sum[field]) : fmt(sum[field]))
+            .replace('{t}', field === 'deaths' ? String(t) : fmt(t)) + '.');
+        }
+      }
     }
     // Deliberately NOT checked: `wiped` true while unitsLeft > 0. That is not
     // a contradiction — a stack at 40% HP has a pool of 0.4·n·maxHP, and the
@@ -1050,47 +1555,152 @@ function renderSticky(result) {
    8. Inline notes on the inputs
    -------------------------------------------------------------------------- */
 
+/**
+ * The per-row readouts under each unit row, and the stack's saturation line.
+ *
+ * This is the one thing this app can teach that a per-unit-type calculator
+ * cannot: a stack saturates AS A WHOLE, cumulatively, in roster order, so a
+ * type sitting low in the roster draws from the tail that the types above it
+ * have already eaten. Forty artillery beside ten infantry are worth 25
+ * effective units, not 33.3, and no reordering recovers it. If the row is
+ * paying that penalty, the row says so.
+ */
+function updateRowNotes(side) {
+  const rows = rowsOf(side);
+  const eff = effectiveOf(rows);
+
+  rows.forEach((r, i) => {
+    const u = UNITS[r.unit] || {};
+    const uid = `${side}-r${i}`;
+
+    // What the model knows about this type.
+    const stats = $(uid + '-stats');
+    if (stats) {
+      if (isUnmeasuredUnit(u)) {
+        stats.textContent = 'Nothing about this unit was ever measured — no HP, no attack, no defence.';
+        stats.className = 'urow-stats is-danger';
+      } else {
+        let m = null;
+        if (ENGINE && typeof ENGINE.hpMultiplier === 'function') {
+          try { m = ENGINE.hpMultiplier(r.hpPct / 100); } catch { m = null; }
+        }
+        const bits = [
+          `Max HP ${fmtLoose(u.maxHP)}`,
+          `atk ${fmtStat(u.atk)}`,
+          `def ${fmtStat(u.def)}`,
+        ];
+        if (r.hpPct !== 100 && m !== null) {
+          bits.push(`at ${r.hpPct}%: pool ×${(r.hpPct / 100).toFixed(2)}, output ×${fmtStat(m, 2)}`);
+        }
+        stats.textContent = bits.join(' · ');
+        stats.className = 'urow-stats';
+      }
+    }
+
+    const e = eff[i];
+    const solo = soloEffective(r.count);
+    const numEl = $(uid + '-effnum');
+    const bar = $(uid + '-bar');
+    const note = $(uid + '-note');
+
+    if (numEl) {
+      if (e === null) {
+        numEl.textContent = EM_DASH;
+        numEl.title = 'The engine did not return an effective-unit count.';
+      } else {
+        numEl.textContent = `${fmtEff(e)} effective of ${fmtInt(r.count)}`;
+        numEl.removeAttribute('title');
+      }
+    }
+
+    // The bar: filled part is what the row actually fights with, hatched part
+    // is what the stack's saturation took off it. Both are stated in words too.
+    if (bar) {
+      const fill = bar.querySelector('i');
+      const lost = bar.querySelector('u');
+      if (e === null || !r.count) {
+        if (fill) fill.style.width = '0%';
+        if (lost) lost.style.width = '0%';
+      } else {
+        const share = Math.max(0, Math.min(1, e / r.count));
+        if (fill) fill.style.width = (share * 100).toFixed(1) + '%';
+        if (lost) lost.style.width = ((1 - share) * 100).toFixed(1) + '%';
+      }
+    }
+
+    if (!note) return;
+    if (e === null) {
+      note.textContent = '';
+      note.className = 'urow-note';
+    } else if (solo !== null && e < solo - 1e-6) {
+      // The row is behind others in roster order and paying for it.
+      const ahead = rows
+        .filter((x, j) => j !== i && rosterRank(x.unit) < rosterRank(r.unit) && x.count > 0);
+      const aheadText = ahead.length <= 2
+        ? ahead.map((x) => `${fmtInt(x.count)} ${(UNITS[x.unit] || {}).label || x.unit}`).join(' and ')
+        : `the ${fmtInt(ahead.reduce((t, x) => t + x.count, 0))} units of ${ahead.length} other `
+          + 'types above it';
+      note.textContent = ahead.length
+        ? `Saturated tail: ${fmtEff(solo)} on its own, ${fmtEff(e)} sitting behind `
+          + `${aheadText}. That costs ${fmtEff(solo - e)} effective units, and reordering cannot `
+          + 'recover it — the game sorts the stack itself.'
+        : `Saturated tail: ${fmtEff(solo)} on its own, ${fmtEff(e)} inside this stack.`;
+      note.className = 'urow-note is-warn';
+    } else if (Math.abs(e - r.count) > 1e-6) {
+      note.textContent = `The stack-size factor is biting: ${fmtInt(r.count)} units fight as `
+        + `${fmtEff(e)}.`;
+      note.className = 'urow-note';
+    } else {
+      note.textContent = 'Counts in full.';
+      note.className = 'urow-note';
+    }
+  });
+
+  // Stack-wide line.
+  const sat = $(side + '-sat');
+  if (sat) {
+    sat.textContent = '';
+    const n = rows.reduce((t, r) => t + (Number(r.count) || 0), 0);
+    const total = eff.every((x) => x !== null)
+      ? eff.reduce((t, x) => t + x, 0)
+      : null;
+    if (total === null) {
+      sat.append(document.createTextNode('The engine returned no effective-unit counts for this stack.'));
+    } else {
+      const b = el('b', null, `${fmtInt(n)} units → ${fmtEff(total)} effective`);
+      sat.append(b);
+      const shortfall = n - total;
+      if (shortfall > 1e-6) {
+        sat.append(document.createTextNode(' · '));
+        sat.append(el('span', 'sat-warn',
+          `${fmtEff(shortfall)} lost to the stack-size factor`));
+      }
+      sat.append(document.createTextNode(
+        rows.length > 1
+          ? ' · the stack saturates as a whole, cumulatively, in the roster order shown above'
+          : ' · saturation starts above 20 units and caps at 35'
+      ));
+    }
+  }
+
+  // Row-block note: how many types are in play, and what limits that.
+  const rNote = $(side + '-rows-note');
+  if (rNote) {
+    const bits = [];
+    if (rows.length >= MAX_ROWS) bits.push(`A stack holds at most ${MAX_ROWS} unit types.`);
+    else if (!availableUnits(side, -1).length) bits.push('Every unit type is already in this stack.');
+    bits.push('A type can appear only once — the game refuses a repeated type outright, so each '
+      + 'select offers only what this stack does not already hold. Rows are shown in roster order, '
+      + 'which is the order the game sorts them into before it computes.');
+    rNote.textContent = bits.join(' ');
+    rNote.className = 'field-note';
+  }
+}
+
 function updateStackNotes() {
   for (const { key } of SIDES) {
     const cfg = state[key];
-    const u = UNITS[cfg.unit] || {};
-
-    // Unit note: the stats the model will actually use, with their limits.
-    const note = $(key + '-unit-note');
-    if (isUnmeasuredUnit(u)) {
-      note.textContent = 'Nothing about this unit was ever measured — no HP, no attack, no defence.';
-      note.className = 'field-note is-danger';
-    } else {
-      note.textContent =
-        `Max HP ${fmtLoose(u.maxHP)} · same-class attack ${fmtStat(u.atk)} · same-class defence ${fmtStat(u.def)}`;
-      note.className = 'field-note';
-    }
-
-    // Count note: the stack-size factor is where large stacks stop paying.
-    const cNote = $(key + '-count-note');
-    let eff = null;
-    if (ENGINE && typeof ENGINE.effectiveUnits === 'function') {
-      try { eff = ENGINE.effectiveUnits(cfg.count); } catch { eff = null; }
-    }
-    if (eff === null || eff === undefined) {
-      cNote.textContent = '';
-    } else if (Math.abs(eff - cfg.count) < 1e-9) {
-      cNote.textContent = `Counts in full: ${fmtLoose(eff)} effective.`;
-    } else {
-      cNote.textContent = `Only ${fmtLoose(eff)} effective — the stack-size factor is biting.`;
-    }
-    cNote.className = 'field-note';
-
-    // HP note: the 0.05 floor is the part people get wrong.
-    const hNote = $(key + '-hp-note');
-    let m = null;
-    if (ENGINE && typeof ENGINE.hpMultiplier === 'function') {
-      try { m = ENGINE.hpMultiplier(cfg.hpPct / 100); } catch { m = null; }
-    }
-    hNote.textContent = (m === null || m === undefined)
-      ? ''
-      : `Pool ×${(cfg.hpPct / 100).toFixed(2)}, output ×${fmtStat(m, 2)}.`;
-    hNote.className = 'field-note';
+    updateRowNotes(key);
 
     // Trench note: two effects, two different schedules, both honest.
     const tNote = $(key + '-trench-note');
@@ -1136,24 +1746,33 @@ function updateStackNotes() {
 
     // Header summary line.
     const sum = $(key + '-summary');
-    const bits = [`${cfg.count} × ${u.label || cfg.unit}`];
-    if (cfg.hpPct !== 100) bits.push(`${cfg.hpPct}% HP`);
+    const bits = [stackLabel(cfg)];
+    if (cfg.rows.some((r) => r.hpPct !== 100)) bits.push('damaged');
     if (cfg.trench > 0) bits.push(`TL ${cfg.trench}`);
     if (cfg.buildings.length) bits.push(`${cfg.buildings.length} building${cfg.buildings.length === 1 ? '' : 's'}`);
     sum.textContent = bits.join(' · ');
   }
 
-  // Air mode: only offered where both modes were actually measured.
+  // Air mode: only offered where both modes were actually measured — an air
+  // stack striking a ground one. With mixtures that means EVERY row on each
+  // side, not just the first: a stack with one land row in it is not a thing
+  // anyone ever flew as a patrol.
   const modeField = $('mode-field');
   const mNote = $('mode-note');
-  const av = UNITS[state.attacker.unit];
-  const dv = UNITS[state.defender.unit];
-  const eligible = !!(av && dv && av.cls === 'air' && dv.cls === 'land'
-                      && state.attacker.unit !== 'bal');
+  const aRows = rowsOf('attacker');
+  const dRows = rowsOf('defender');
+  const allCls = (rows, cls) => rows.length > 0
+    && rows.every((r) => (UNITS[r.unit] || {}).cls === cls);
+  const eligible = allCls(aRows, 'air') && allCls(dRows, 'land')
+    && !aRows.some((r) => r.unit === 'bal');
   modeField.hidden = !eligible;
   if (eligible) {
     if (state.mode === 'patrol') {
-      const adv = (PATROL.observedAdvantage[state.attacker.unit] || {})[state.defender.unit];
+      // The measured advantage is a per-pairing figure, so it is only quoted
+      // for the one-versus-one case it was actually read from.
+      const adv = (aRows.length === 1 && dRows.length === 1)
+        ? (PATROL.observedAdvantage[aRows[0].unit] || {})[dRows[0].unit]
+        : null;
       mNote.textContent = adv
         ? `Measured at ×${adv.toFixed(3)} of a direct strike against this target. `
           + 'The attrition band makes it an estimate.'
@@ -1305,14 +1924,38 @@ function buildLedger() {
    10. Shareable state in the URL
    -------------------------------------------------------------------------- */
 
+/**
+ * A side is `rows ~ trench ~ buildings`:
+ *
+ *     a=inf.30.100,art.10.100~5~fortress.3.100
+ *
+ * with rows and buildings each comma-separated. The two `~` are what tells the
+ * decoder this is the composite format; links minted by the single-unit version
+ * of this app have the form `inf.30.100.0~fortress.3.100` and are still read,
+ * because a link somebody saved should not stop working when the model behind
+ * it learns that a stack is a mixture.
+ */
 function encodeState(cfg) {
-  const side = (s) => {
-    let out = [s.unit, s.count, s.hpPct, s.trench].join('.');
-    for (const b of s.buildings) out += '~' + [b.code, b.level, b.hpPct].join('.');
-    return out;
-  };
+  const side = (s) => [
+    (s.rows || []).map((r) => [r.unit, r.count, r.hpPct].join('.')).join(','),
+    String(s.trench),
+    (s.buildings || []).map((b) => [b.code, b.level, b.hpPct].join('.')).join(','),
+  ].join('~');
   return `a=${side(cfg.attacker)}&d=${side(cfg.defender)}&r=${cfg.rounds}`
     + (cfg.mode === 'patrol' ? '&m=patrol' : '');
+}
+
+function decodeBuildings(str) {
+  return String(str || '').split(',').map((c) => {
+    if (!c) return null;
+    const [code, level, hpPct] = c.split('.');
+    if (!BUILDINGS[code]) return null;
+    return {
+      code,
+      level: Math.min(maxLevelOf(code), Math.max(1, Number(level) || 1)),
+      hpPct: Math.min(100, Math.max(1, Number(hpPct) || 100)),
+    };
+  }).filter(Boolean);
 }
 
 function decodeState(hash) {
@@ -1325,26 +1968,44 @@ function decodeState(hash) {
         return [kv.slice(0, i), kv.slice(i + 1)];
       })
     );
+
     const side = (str) => {
       const chunks = String(str || '').split('~');
-      const [unit, count, hp, trench] = chunks[0].split('.');
-      if (!UNITS[unit]) return null;
+
+      // Legacy single-unit link: unit.count.hp.trench ~ building ~ building
+      if (chunks.length !== 3) {
+        const [unit, count, hp, trench] = chunks[0].split('.');
+        if (!UNITS[unit]) return null;
+        return {
+          rows: [{ unit, count: clampCount(count), hpPct: clampHp(hp) }],
+          trench: Math.min(20, Math.max(0, Number(trench) || 0)),
+          buildings: chunks.slice(1).map((c) => decodeBuildings(c)).flat(),
+        };
+      }
+
+      // Composite link. Duplicate types are dropped rather than merged: the
+      // server refuses a repeated type outright, so a link carrying one does
+      // not describe a stack that can be fielded, and silently adding the
+      // counts together would compute a different battle from the one asked for.
+      const seen = new Set();
+      const rows = [];
+      for (const chunk of chunks[0].split(',')) {
+        if (!chunk) continue;
+        const [unit, count, hp] = chunk.split('.');
+        if (!UNITS[unit] || seen.has(unit)) continue;
+        seen.add(unit);
+        rows.push({ unit, count: clampCount(count), hpPct: clampHp(hp) });
+        if (rows.length >= MAX_ROWS) break;
+      }
+      if (!rows.length) return null;
+      rows.sort((x, y) => rosterRank(x.unit) - rosterRank(y.unit));
       return {
-        unit,
-        count: Math.min(500, Math.max(1, Number(count) || 1)),
-        hpPct: clampHp(hp),
-        trench: Math.min(20, Math.max(0, Number(trench) || 0)),
-        buildings: chunks.slice(1).map((c) => {
-          const [code, level, hpPct] = c.split('.');
-          if (!BUILDINGS[code]) return null;
-          return {
-            code,
-            level: Math.min(maxLevelOf(code), Math.max(1, Number(level) || 1)),
-            hpPct: Math.min(100, Math.max(1, Number(hpPct) || 100)),
-          };
-        }).filter(Boolean),
+        rows,
+        trench: Math.min(20, Math.max(0, Number(chunks[1]) || 0)),
+        buildings: decodeBuildings(chunks[2]),
       };
     };
+
     const a = side(parts.a);
     const d = side(parts.d);
     if (!a || !d) return null;

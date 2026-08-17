@@ -33,8 +33,14 @@ suite asserts all of that, so it stays true.
   `simulate()` never throws for any roster combination, and a number the record
   cannot support is flagged or withheld, never emitted as though it were
   measured.
-- `app.js` — the UI. It renders the engine's `derivation[]` array, so every
-  number on screen can be traced back to the law and the reading it came from.
+- `app.js` — the UI. Each side is a **stack of up to 8 distinct unit types**,
+  which is what an army actually is; the type already used on a side is removed
+  from every other row's list, so the duplicate the server refuses cannot be
+  entered. Rows are held in roster order and each one shows its own effective
+  unit count, so a stack whose artillery is only worth 25 of its 40 units says
+  so before the battle is fought. It renders the engine's `derivation[]` array,
+  so every number on screen can be traced back to the law and the reading it
+  came from.
 - `test/engine.test.mjs` — 580 checks. See [Verification](#verification).
 
 ---
@@ -53,6 +59,16 @@ Full detail is in `../HANDOVER.md`; this is the short version.
   ten points. The pool itself scales linearly with no floor.
 - Deaths = `floor(HP_lost / unit_max_hp)`.
 - A stack wiped inside the round still deals its full damage.
+- **A stack is a mixture of distinct types, and it saturates as a whole.**
+  `effective_i = E(units through row i) − E(units before it)`, rows taken in
+  *roster* order rather than the order they were entered, because the server
+  sorts before it computes. Fitted to 0.002% across four mixtures. The
+  consequence a player feels: a type late in the roster draws from the
+  saturated tail — 40 artillery beside 10 infantry are worth 25 effective
+  units, against 33.3 on their own, and no reordering recovers it. The same
+  type cannot appear twice in one stack; the server refuses it outright.
+- Incoming damage splits across a stack's rows in proportion to
+  attack × count — the raw count, not the saturated effective one.
 - Max HP for 16 of the 17 units — each as a bracket that contains exactly one
   integer, which is what the app displays.
 - **Same-class** attack and defence for those 16 units. The diagonal only.
