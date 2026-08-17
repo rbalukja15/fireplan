@@ -138,3 +138,13 @@
 {"ts": 1786981480.3483949, "experiment": "unit_stats", "meta": {"unit": "sub", "terrain": "sea", "max_hp": 100.0, "max_hp_bounds": [99.87390761548065, 100.12640801001251], "max_hp_integer": 100, "dmg_attacking": 40.0, "dmg_defending": 40.0, "note": "bracket 99.87-100.13 holds one integer"}, "readings": {"A.1.1": 400.0, "B.1.1": 400.0}}
 {"ts": 1786981481.8567295, "experiment": "unit_stats", "meta": {"unit": "cl", "terrain": "sea", "max_hp": 50.0, "max_hp_bounds": [49.872817955112225, 50.12781954887218], "max_hp_integer": 50, "dmg_attacking": 10.0, "dmg_defending": 10.0, "note": "bracket 49.87-50.13 holds one integer"}, "readings": {"A.1.1": 100.0, "B.1.1": 100.0}}
 {"ts": 1786981483.337852, "experiment": "unit_stats", "meta": {"unit": "bb", "terrain": "sea", "max_hp": 200.0, "max_hp_bounds": [199.498753117207, 200.50375939849624], "max_hp_integer": 200, "dmg_attacking": 40.0, "dmg_defending": 40.0, "note": "bracket 199.50-200.50 holds one integer"}, "readings": {"A.1.1": 400.0, "B.1.1": 400.0}}
+{"ts": 1786981512.0652227, "experiment": "hp_scaling", "meta": {"hp_pct": 10}, "readings": {"A.1.1": 20.0, "B.1.1": 5.8}}
+{"ts": 1786981513.9384775, "experiment": "hp_scaling", "meta": {"hp_pct": 20}, "readings": {"A.1.1": 40.0, "B.1.1": 9.6}}
+{"ts": 1786981514.9200048, "experiment": "hp_scaling", "meta": {"hp_pct": 30}, "readings": {"A.1.1": 60.0, "B.1.1": 13.4}}
+{"ts": 1786981516.4219236, "experiment": "hp_scaling", "meta": {"hp_pct": 40}, "readings": {"A.1.1": 80.0, "B.1.1": 17.2}}
+{"ts": 1786981517.9481978, "experiment": "hp_scaling", "meta": {"hp_pct": 50}, "readings": {"A.1.1": 100.0, "B.1.1": 21.0}}
+{"ts": 1786981519.4437609, "experiment": "hp_scaling", "meta": {"hp_pct": 60}, "readings": {"A.1.1": 120.0, "B.1.1": 24.8}}
+{"ts": 1786981520.9222505, "experiment": "hp_scaling", "meta": {"hp_pct": 70}, "readings": {"A.1.1": 140.0, "B.1.1": 28.6}}
+{"ts": 1786981522.4247572, "experiment": "hp_scaling", "meta": {"hp_pct": 80}, "readings": {"A.1.1": 160.0, "B.1.1": 32.4}}
+{"ts": 1786981523.9344351, "experiment": "hp_scaling", "meta": {"hp_pct": 90}, "readings": {"A.1.1": 175.0, "B.1.1": 36.2}}
+{"ts": 1786981525.5406666, "experiment": "hp_scaling", "meta": {"hp_pct": 100}, "readings": {"A.1.1": 175.0, "B.1.1": 40.0}}

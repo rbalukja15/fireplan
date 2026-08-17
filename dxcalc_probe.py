@@ -1953,13 +1953,89 @@ def exp_size_factor(p: Probe) -> None:
 
 
 def exp_hp_scaling(p: Probe) -> None:
+    """How a damaged stack's output scales, and whether a wiped one still hits.
+
+    10 infantry at a swept HP percentage attack 50 defenders. The defender's
+    loss is the attacker's output, so m(f) = output(f) / output(1.0).
+
+    The attacker's OWN loss answers a second question for free, which is why
+    both columns are printed. The 50 defenders deal 5.0 x E(50) = 175 every
+    round, far more than a damaged 10-stack can absorb, so the attacker is
+    wiped for every f up to about 0.85 and survives above it. If a stack wiped
+    inside the measured round dealt less than its full damage, the low-f points
+    would fall off the line that the high-f points sit on. HANDOVER section 10
+    lists that as unchecked, and every coefficient this project reads from the
+    opposite side of a wiped stack depends on the answer.
+    """
+    rows: list[tuple[float, float, float, float]] = []
+    # m(f) needs the full-HP reference, which is the last row, so the ratio
+    # table is printed after the sweep rather than alongside it.
+    print(f"  {'hp%':>5} {'output':>9} {'atkLost':>9} "
+          f"{'atkPool':>9}  attacker wiped?")
     for pct in range(10, 101, 10):
         ov = settings()
         ov.update(duel(1, "inf", 10, "inf", 50, atk_hp=f"{pct}%"))
         try:
-            record("hp_scaling", {"hp_pct": pct}, p.submit(ov))
+            r = p.submit(ov)
         except BareFormReturned as e:
             print(f"  ! hp={pct}%: {e}", file=sys.stderr)
+            continue
+        d = dict(p.last_details)
+        a, b = d.get("A.1.1", {}), d.get("B.1.1", {})
+        record("hp_scaling", {"hp_pct": pct, "detail": d,
+                              "summary": dict(p.last_summary)}, r)
+        out, atk_lost = b.get("lost"), a.get("lost")
+        if out is None:
+            continue
+        wiped = a.get("pct", 0) >= 99.9
+        rows.append((pct / 100.0, out, atk_lost if atk_lost else 0.0,
+                     1.0 if wiped else 0.0))
+        cell = lambda v: f"{v:9.2f}" if isinstance(v, (int, float)) else f"{'?':>9}"
+        print(f"  {pct:>5} {cell(out)} {cell(atk_lost)} "
+              f"{cell(a.get('pool'))}" + ("  YES" if wiped else "  no"))
+
+    full = next((o for f, o, _, _ in rows if abs(f - 1.0) < 1e-9), None)
+    if not full or len(rows) < 3:
+        print("\n  NO VERDICT — need the full-HP reference and at least three "
+              "points to fit anything.")
+        return
+    print(f"\n  m(f) = output(f) / output(1.0), reference output {full:.2f}")
+    worst, worst_f = 0.0, 0.0
+    for f, o, _, _ in rows:
+        m, pred = o / full, 0.05 + 0.95 * f
+        err = abs(m - pred)
+        if err > worst:
+            worst, worst_f = err, f
+        print(f"    f={f:.2f}  m={m:.4f}  0.05+0.95f={pred:.4f}  "
+              f"delta {m - pred:+.4f}")
+    if worst <= 0.002:
+        print(f"\n  CONFIRMED: m(f) = 0.05 + 0.95*f, worst deviation "
+              f"{worst:.4f} at f={worst_f:.2f}. The 0.05 floor is real — a "
+              f"stack at 10% HP still deals 14.5% of full damage, not 10%.")
+    else:
+        print(f"\n  DOES NOT FIT: worst deviation {worst:.4f} at f={worst_f:.2f}. "
+              f"The stored law m(f) = 0.05 + 0.95*f is wrong or conditional; "
+              f"the table above is the finding.")
+
+    wiped_rows = [(f, o) for f, o, _, w in rows if w]
+    alive_rows = [(f, o) for f, o, _, w in rows if not w]
+    if wiped_rows and alive_rows:
+        off = max(abs(o / full - (0.05 + 0.95 * f)) for f, o in wiped_rows)
+        if off <= 0.002:
+            print(f"\n  A WIPED STACK STILL DEALS ITS FULL DAMAGE. The "
+                  f"attacker was destroyed in {len(wiped_rows)} of these "
+                  f"{len(rows)} rounds, and those points sit on the same line "
+                  f"as the {len(alive_rows)} it survived (worst deviation "
+                  f"{off:.4f}). Coefficients read from the far side of a wiped "
+                  f"stack are therefore sound.")
+        else:
+            print(f"\n  WIPED STACKS DEAL LESS: the {len(wiped_rows)} rounds "
+                  f"where the attacker died deviate by up to {off:.4f} from "
+                  f"the line its surviving rounds define. Every coefficient "
+                  f"read opposite a wiped stack is suspect.")
+    else:
+        print("\n  Cannot rule on wiped stacks: this sweep produced only "
+              + ("wiped" if wiped_rows else "surviving") + " attackers.")
 
 
 def exp_terrain(p: Probe) -> None:
