@@ -29,12 +29,35 @@ Stack size factor, effective units from a stack of n:
 HP scaling multiplier, from a unit at hp fraction f in [0,1]:
     m(f) = 0.05 + 0.95*f          (fits exactly, not approximately)
 
-Per-unit base damage (partial) — PROVISIONAL, RE-RUN BEFORE USE:
-    infantry 4.0 | cavalry 15 | artillery 8 | heavy tank 45
+RESULT SPAN SEMANTICS — SETTLED
+    span.hpLeft holds HP *LOST*, despite the class name. The rendered text is
+    "Lost 50.0 HP (16.7%) 2 died". Confirmed by --semantics: hold one side's
+    count fixed and grow the other, and a side's reading tracks only the
+    OPPONENT's count, never its own.
+
+    The percentage is that loss as a fraction of the stack's full pool, so
+    every reading yields the pool for free:  pool = lost / pct.  Divide by the
+    unit count and you have that unit type's max HP from the same request that
+    measured damage. parse_reading() returns lost / pct / died / pool.
+
+ATTACK vs DEFENCE ARE DIFFERENT COEFFICIENTS
+    10 inf attacking 10 inf, one round:  attacker lost 50.0, defender lost 40.0.
+        infantry deal 4.0 per unit attacking
+        infantry deal 5.0 per unit defending      (ratio 1.25)
+    Every damage figure must therefore be labelled with the side it came from.
+    Any experiment that pools attacker-loss with defender-loss readings is
+    fitting two coefficients as though they were one.
+
+Infantry max HP = 20.0, derived independently from both stacks of the same
+round (299.4/15 and 200.0/10). Deaths are floor(HP_lost / 20).
+
+Per-unit base damage, other units — PROVISIONAL, RE-RUN BEFORE USE:
+    cavalry 15 | artillery 8 | heavy tank 45
     Collected before we noticed the stock form ships B.1.2=ac x5, B.1.3=lt x3,
     B.1.4=ht x1 pre-filled, so any run that set only row 1 was silently
     fighting three extra defender types. duel() now blanks rows 2-8, but these
-    numbers predate that. Treat as suspect.
+    numbers predate that, AND they carry no attack/defence label. Suspect on
+    both counts.
 
 Trenches add to the defender's HP pool rather than reducing incoming damage.
 Levels 1-3 conferred no measurable benefit at all.
@@ -327,9 +350,51 @@ def find_oops(html: str) -> list[str]:
     return [m.strip() for m in OOPS_RE.findall(html)]
 
 
+def strip_thousands(text: str) -> str:
+    """Drop thousands separators before parsing a number.
+
+    dxcalc renders decimals with a dot throughout — 1375.1, 480.5, 16.7% — so a
+    comma sitting between digits is a thousands separator, never a decimal
+    point. The previous replace(",", ".") turned "1,375.1" into "1.375.1",
+    which the number regex then read as 1.375: a silent thousandfold error on
+    any stack above 999 HP, and large stacks are exactly where the size-factor
+    sweep operates.
+    """
+    return re.sub(r"(?<=\d),(?=\d)", "", text)
+
+
 def parse_hp(text: str) -> float | None:
-    m = re.search(r"-?\d+(?:[.,]\d+)?", text.replace(",", "."))
+    m = re.search(r"-?\d+(?:\.\d+)?", strip_thousands(text))
     return float(m.group(0)) if m else None
+
+
+# The span renders e.g. "Lost 50.0 HP (16.7%) 2 died", or "all 1 died" when the
+# stack is wiped, or "no living units specified here" for a blanked row.
+#
+# The percentage is the loss as a fraction of that stack's FULL pool, so it
+# hands us the pool for nothing: pool = lost / pct. Divide by the unit count and
+# you have that unit type's max HP from the very same request that measured
+# damage. Reading only the first number threw all of that away.
+READING_RE = re.compile(
+    r"Lost\s+([\d.]+)\s*HP\s*\(\s*([\d.]+)\s*%\s*\)"
+    r"(?:\s*(?:all\s+)?(\d+)\s+died)?", re.I)
+
+
+def parse_reading(text: str) -> dict[str, float] | None:
+    """Full breakdown of one result span, not just the leading number."""
+    m = READING_RE.search(strip_thousands(text))
+    if not m:
+        return None
+    lost = float(m.group(1))
+    pct = float(m.group(2))
+    out: dict[str, float] = {"lost": lost, "pct": pct}
+    if m.group(3) is not None:
+        out["died"] = float(m.group(3))
+    if pct > 0:
+        # Rounded because the page prints the percentage to one decimal, so
+        # the implied pool carries about three significant figures.
+        out["pool"] = round(lost / (pct / 100), 1)
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -378,6 +443,7 @@ class Probe:
         self.form_enctype = ""          # what the page declares, informational
         self.encoding = encoding        # what we actually send
         self.save_response = save_response
+        self.last_details: dict[str, dict[str, float]] = {}
         self.last_response = ""
         self.submit_marker: tuple[str, str] | None = None
         self.select_options: dict[str, list[str]] = {}
@@ -477,9 +543,17 @@ class Probe:
                 "combination aborted the batch (see the balloon bug), or the "
                 "POST body is missing a field the server requires."
             )
+        # Full breakdown lives on the Probe; the return value stays a plain
+        # slot -> HP-lost mapping so existing experiments keep working.
+        self.last_details = {}
         out: dict[str, float] = {}
         for slot, text in scraper.readings.items():
-            val = parse_hp(text)
+            detail = parse_reading(text)
+            if detail is not None:
+                self.last_details[slot] = detail
+                out[slot] = detail["lost"]
+                continue
+            val = parse_hp(text)          # fallback for unrecognised phrasing
             if val is not None:
                 out[slot] = val
         return out
@@ -595,9 +669,17 @@ def semantics(p: "Probe") -> None:
         payload.update(duel(1, "inf", atk, "inf", dfn))
         readings = p.submit(payload)
         got[label] = readings
-        record("semantics", {"atk": atk, "def": dfn}, readings)
+        detail = dict(p.last_details)
+        record("semantics", {"atk": atk, "def": dfn, "detail": detail}, readings)
         print(f"  {label:28} -> A.1.1={readings.get('A.1.1')}  "
               f"B.1.1={readings.get('B.1.1')}")
+        # The loss percentage gives each stack's pool, hence max HP per unit.
+        for slot, count in (("A.1.1", atk), ("B.1.1", dfn)):
+            d = detail.get(slot, {})
+            if "pool" in d and count:
+                print(f"      {slot} pool {d['pool']:8.1f} HP / {count} units "
+                      f"= {d['pool'] / count:6.2f} HP per unit"
+                      + (f", {int(d['died'])} died" if "died" in d else ""))
 
     census = SpanCensus()
     census.feed(p.last_response)

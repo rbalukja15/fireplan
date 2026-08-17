@@ -120,6 +120,7 @@ print("\n3. server that answers but yields no parseable readings")
 
 class Empty:
     last_response = "<html><body>no spans here</body></html>"
+    last_details: dict = {}
 
     def submit(self, payload):
         return {}

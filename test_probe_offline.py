@@ -94,7 +94,31 @@ def check(label, cond, detail=""):
     print(f"  PASS  {label}" + (f"  [{detail}]" if detail else ""))
 
 
-print("1. multipart encoder round-trips through a real MIME parser")
+print("0. result-span parsing, against text observed on the live site")
+r = dp.parse_reading("Lost 50.0 HP (16.7%) 2 died")
+check("lost/pct/died recovered",
+      r == {"lost": 50.0, "pct": 16.7, "died": 2.0, "pool": 299.4}, str(r))
+check("pool implies 20 HP/infantry over 15 units",
+      abs(r["pool"] / 15 - 20.0) < 0.05, f"{r['pool'] / 15}")
+r = dp.parse_reading("Lost 60.0 HP (30%) 3 died")
+check("second stack agrees on 20 HP/infantry over 10 units",
+      abs(r["pool"] / 10 - 20.0) < 0.05, f"{r['pool'] / 10}")
+check("integer percent parses", r["pct"] == 30.0)
+check("'all N died' phrasing parses",
+      dp.parse_reading("Lost 100.0 HP (100%) all 1 died")["died"] == 1.0)
+check("missing death clause is tolerated",
+      "died" not in dp.parse_reading("Lost 12.5 HP (5%)"))
+check("blank rows yield nothing",
+      dp.parse_reading("no living units specified here") is None)
+# A comma is a thousands separator here, never a decimal point. Reading it as
+# a decimal point silently divides by 1000, and only on large stacks.
+check("thousands separator survives",
+      dp.parse_reading("Lost 1,375.1 HP (91.7%) 68 died")["lost"] == 1375.1)
+check("parse_hp fallback survives it too",
+      dp.parse_hp("Lost 1,375.1 HP") == 1375.1,
+      str(dp.parse_hp("Lost 1,375.1 HP")))
+
+print("\n1. multipart encoder round-trips through a real MIME parser")
 sample = {"A.1.1.count": "10", "A.1.1.hp": "100%", "A.1.terrain": "land",
           "MainSubmitButton": "Start Battle", "A.1.target": "B.1"}
 body, ctype = dp.encode_multipart(sample)
