@@ -30,6 +30,8 @@ import {
   BUILDING_DAMAGE_PER_EFFECTIVE_UNIT,
   FORTRESS,
   PATROL,
+  ROSTER_ORDER,
+  MAX_UNIT_ROWS,
 } from './data.js';
 
 const EPS = 1e-9;
@@ -194,6 +196,81 @@ export function patrolMode(mode, atkUnit, defUnit) {
   };
 }
 
+/**
+ * A side's configured unit rows, normalised.
+ *
+ * Accepts either the composite form {rows:[{unit,count,hpPct}]} or the old
+ * single-unit form {unit,count,hpPct}, which is exactly one row. Duplicate
+ * unit types are DROPPED rather than merged, because the server refuses them
+ * outright ("The same unit can't be specified twice in same stack") and
+ * merging would silently compute a stack the game cannot field.
+ */
+export function normaliseRows(cfg) {
+  const raw = (cfg && Array.isArray(cfg.rows) && cfg.rows.length)
+    ? cfg.rows
+    : [{ unit: cfg && cfg.unit, count: cfg && cfg.count, hpPct: cfg && cfg.hpPct }];
+  const seen = new Set();
+  const out = [];
+  for (const r of raw) {
+    if (out.length >= MAX_UNIT_ROWS) break;
+    const u = resolveUnit(r && r.unit);
+    if (!u || seen.has(u.code)) continue;
+    seen.add(u.code);
+    out.push({
+      unit: u,
+      count: Math.max(0, Math.floor(num(r && r.count, 0))),
+      hpPct: Math.min(100, Math.max(0, num(r && r.hpPct, 100))),
+    });
+  }
+  return out;
+}
+
+/**
+ * Effective units per row: the stack saturates AS A WHOLE and each type draws
+ * from what is left, in ROSTER order.
+ *
+ *     effective_i = E(units through row i) - E(units before row i)
+ *
+ * Measured to 0.002% across four mixtures. Submission order is irrelevant --
+ * the server sorts first, which is why the swapped pair returned an identical
+ * figure -- but a type late in the roster order draws from the saturated tail,
+ * and that is the whole reason this matters.
+ */
+export function effectiveByRow(rows) {
+  const list = (rows || []).map((r, i) => ({ r, i }));
+  const rank = (r) => {
+    const code = r && r.unit && (r.unit.code || r.unit);
+    const at = ROSTER_ORDER.indexOf(code);
+    return at < 0 ? ROSTER_ORDER.length : at;
+  };
+  list.sort((a, b) => rank(a.r) - rank(b.r) || a.i - b.i);
+  const eff = new Array((rows || []).length).fill(0);
+  let seen = 0;
+  for (const { r, i } of list) {
+    const c = Math.max(0, num(r && r.count, 0));
+    eff[i] = effectiveUnits(seen + c) - effectiveUnits(seen);
+    seen += c;
+  }
+  return (rows || []).map((r, i) => ({ ...r, effective: eff[i] }));
+}
+
+/**
+ * How incoming damage is split across a stack's rows: in proportion to
+ * (attack value x unit count) -- each row's raw offensive weight, ignoring the
+ * saturation that output obeys.
+ *
+ * Exact on all four measured mixtures, including the asymmetric ones where
+ * allocation by pool is off by 10.7 HP and by attack-value-alone by 26.6 in
+ * the wrong direction. It uses the unit's ATTACK stat even for a defending
+ * stack, which is not obvious and is what the readings say.
+ */
+export function allocationWeights(rows) {
+  return (rows || []).map((r) => {
+    const atk = r && r.unit && typeof r.unit.atk === 'number' ? r.unit.atk : 0;
+    return Math.max(0, atk * Math.max(0, num(r && r.count, 0)));
+  });
+}
+
 export function coverageOf(atkUnit, defUnit) {
   const a = resolveUnit(atkUnit);
   const d = resolveUnit(defUnit);
@@ -308,35 +385,93 @@ function num(v, fallback) {
 }
 
 function makeSide(cfg, role, derivation, caveats) {
-  const unit = resolveUnit(cfg && cfg.unit);
-  const n = Math.max(0, Math.floor(num(cfg && cfg.count, 0)));
-  const hpPct = Math.min(100, Math.max(0, num(cfg && cfg.hpPct, 100)));
-  const tf = trenchFactors(cfg && cfg.trench);
   const label = role === 'attacker' ? 'Attacker' : 'Defender';
+  const tf = trenchFactors(cfg && cfg.trench);
+
+  // A stack is a MIXTURE of distinct unit types. The single-unit form is one
+  // row; everything below works the same either way, and for one row the
+  // per-row arithmetic reduces exactly to what it was before.
+  const rawRows = (cfg && Array.isArray(cfg.rows) && cfg.rows.length)
+    ? cfg.rows : null;
+  const rows = effectiveByRow(normaliseRows(cfg));
+  const dropped = rawRows
+    ? rawRows.length - normaliseRows(cfg).length : 0;
+  if (dropped > 0) {
+    caveats.push(`${label}: ${dropped} unit row(s) dropped. A stack cannot hold `
+      + 'the same unit type twice — the server refuses it outright — and an '
+      + 'unrecognised unit has no constants.');
+  }
+
+  for (const r of rows) {
+    r.perUnitMaxHP = (r.unit && r.unit.maxHP !== null)
+      ? r.unit.maxHP * tf.pool : null;
+    r.poolFull = r.perUnitMaxHP === null ? null : r.count * r.perUnitMaxHP;
+    r.pool = r.poolFull === null ? null : r.poolFull * (r.hpPct / 100);
+    r.hpLost = 0;
+    r.deaths = 0;
+    r.damageDealt = 0;
+  }
+
+  const primary = rows.length ? rows[0].unit : resolveUnit(cfg && cfg.unit);
+  const n = rows.reduce((t, r) => t + r.count, 0);
+  const anyPoolUnknown = rows.some((r) => r.pool === null);
+  const poolFull = (!rows.length || anyPoolUnknown)
+    ? null : rows.reduce((t, r) => t + r.poolFull, 0);
+  const poolNow = (!rows.length || anyPoolUnknown)
+    ? null : rows.reduce((t, r) => t + r.pool, 0);
+  // The stack-level HP percentage, for the derivation and for m(f) where a
+  // stack is single-type. With mixed percentages this is the pool-weighted
+  // figure, which is what m(f) would see if it reads the whole stack.
+  const hpPct = poolFull ? (poolNow / poolFull) * 100 : 100;
+  const unit = primary;
 
   const side = {
-    role, label, unit, n0: n, n, hpPct, tf,
+    role, label, unit, rows, n0: n, n, hpPct, tf,
     perUnitMaxHP: null, poolFull: 0, pool: 0,
     hpLost: 0, deaths: 0, damageDealt: 0, outputRaw: 0, wiped: false,
     buildings: [],
     damageToBuildings: null,
   };
 
-  if (unit && unit.maxHP !== null) {
-    side.perUnitMaxHP = unit.maxHP * tf.pool;
-    side.poolFull = n * side.perUnitMaxHP;
-    side.pool = side.poolFull * (hpPct / 100);
-    derivation.push({
-      label: `${label} per-unit max HP`,
-      formula: tf.pool === 1
-        ? `${unit.label} max HP = ${unit.maxHP}`
-        : `${unit.maxHP} x trench pool ${tf.pool} = ${round4(side.perUnitMaxHP)}`,
-      value: side.perUnitMaxHP,
-    });
+  if (rows.length && !anyPoolUnknown) {
+    side.perUnitMaxHP = rows[0].perUnitMaxHP;
+    side.poolFull = poolFull;
+    side.pool = poolNow;
+    for (const r of rows) {
+      derivation.push({
+        label: `${label} row: ${r.count} x ${r.unit.label}`,
+        formula: `${r.count} units x ${round4(r.perUnitMaxHP)} HP`
+          + `${r.hpPct !== 100 ? ` x ${r.hpPct}%` : ''} = ${round4(r.pool)} pool`
+          + `; effective units ${round4(r.effective)}`
+          + (Math.abs(r.effective - r.count) > 0.01
+            ? ` (of ${r.count} — the stack has saturated)` : ''),
+        value: r.pool,
+      });
+    }
+    if (rows.length > 1) {
+      derivation.push({
+        label: `${label} stack saturation`,
+        formula: `${n} units total. Each type draws from E(${n})=`
+          + `${round4(effectiveUnits(n))} in ROSTER order, so a type listed later `
+          + `gets what is left: ${rows.map((r) => `${r.unit.code} ${round4(r.effective)}`).join(', ')}`
+          + ' (measured, worst error 0.002% over four mixtures)',
+        value: effectiveUnits(n),
+      });
+    }
     derivation.push({
       label: `${label} HP pool`,
-      formula: `${n} units x ${round4(side.perUnitMaxHP)} HP x ${hpPct}% = ${round4(side.pool)}`,
+      formula: rows.length === 1
+        ? `${n} units x ${round4(side.perUnitMaxHP)} HP x ${round4(hpPct)}% = ${round4(side.pool)}`
+        : `sum of ${rows.length} rows = ${round4(side.pool)}`,
       value: side.pool,
+    });
+  } else if (unit && unit.maxHP !== null) {
+    side.pool = null;
+    side.poolFull = null;
+    derivation.push({
+      label: `${label} HP pool`,
+      formula: 'A unit row has no measured max HP — no pool can be computed.',
+      value: null,
     });
   } else {
     derivation.push({
@@ -665,19 +800,58 @@ function runSimulation(config, derivation, caveats) {
 
     // 1. Defender's output — always from the PRE-round state (measured: a
     //    ground defender is not attenuated even losing 26% of its pool).
-    const defOutput = defCoef.value * defE * hpMultiplier(defF) * def.tf.output * patrolScale;
+    const defParts = stackOutput(def, (u) => defenceCoefficient(u, atk.unit).value);
+    const defOutput = defParts.total === null ? 0
+      : defParts.total * def.tf.output * patrolScale;
+    if (def.rows.length > 1) {
+      for (const pt of defParts.parts) {
+        derivation.push({
+          label: `${tag}Defender output: ${pt.row.unit.label}`,
+          formula: `${pt.coef} x ${round4(pt.row.effective)} effective x `
+            + `m(${round4(pt.row.hpPct / 100)})=${round4(pt.mul)} = ${round4(pt.out)}`,
+          value: pt.out,
+        });
+      }
+    }
     derivation.push({
       label: `${tag}Defender output`,
-      formula: `${defCoef.value} x E(${def.n})=${round4(defE)} x m(${round4(defF)})=`
-        + `${round4(hpMultiplier(defF))}${def.tf.output !== 1 ? ` x trench ${def.tf.output}` : ''}`
-        + `${patrolScale !== 1 ? ` x ${round4(patrolScale)} rounds on station` : ''} = ${round4(defOutput)}`,
+      formula: def.rows.length > 1
+        ? `sum of ${def.rows.length} rows`
+          + `${def.tf.output !== 1 ? ` x trench ${def.tf.output}` : ''}`
+          + `${patrolScale !== 1 ? ` x ${round4(patrolScale)} rounds` : ''} = ${round4(defOutput)}`
+        : `${defCoef.value} x E(${def.n})=${round4(defE)} x m(${round4(defF)})=`
+          + `${round4(hpMultiplier(defF))}${def.tf.output !== 1 ? ` x trench ${def.tf.output}` : ''}`
+          + `${patrolScale !== 1 ? ` x ${round4(patrolScale)} rounds on station` : ''} = ${round4(defOutput)}`,
       value: defOutput,
     });
 
     // 2. Attacker takes it. No fortress on the attacking side does anything
     //    in this model, because nobody has measured one.
     const atkLostThis = Math.min(defOutput, atk.pool);
-    const atkDeathsThis = Math.floor(atkLostThis / atk.perUnitMaxHP);
+    // Deaths come from the per-row split, because a mixture's rows have
+    // different per-unit HP and a stack-level division would be meaningless.
+    const atkAlloc = allocate(atk, atkLostThis);
+    let atkDeathsThis = 0;
+    for (const pt of atkAlloc.parts) {
+      const d = pt.row.perUnitMaxHP ? Math.floor(pt.share / pt.row.perUnitMaxHP) : 0;
+      pt.row.hpLost += pt.share;
+      pt.row.deaths += d;
+      atkDeathsThis += d;
+    }
+    if (atk.rows.length > 1) {
+      derivation.push({
+        label: `${tag}Attacker damage split across rows`,
+        formula: 'in proportion to (attack value x count) — measured exactly on '
+          + `four mixtures: ${atkAlloc.parts.map((pt) => `${pt.row.unit.code} `
+            + `${round4(pt.share)}`).join(', ')}`,
+        value: atkLostThis,
+      });
+      if (atkAlloc.overflow) {
+        caveats.push('A unit row was destroyed and the surplus damage was passed '
+          + 'to the others. No measured mixture ever saturated a single row, so '
+          + 'what the game really does with the remainder is unknown.');
+      }
+    }
     if (atkLostThis < defOutput - EPS) {
       derivation.push({
         label: `${tag}Attacker loss capped by pool`,
@@ -757,7 +931,18 @@ function runSimulation(config, derivation, caveats) {
         }
       }
     } else {
-      atkOutput = atkCoef.value * atkE * hpMultiplier(atkF);
+      const atkParts = stackOutput(atk, (u) => attackCoefficient(u, def.unit).value);
+      atkOutput = atkParts.total === null ? null : atkParts.total;
+      if (atk.rows.length > 1 && atkOutput !== null) {
+        for (const pt of atkParts.parts) {
+          derivation.push({
+            label: `${tag}Attacker output: ${pt.row.unit.label}`,
+            formula: `${pt.coef} x ${round4(pt.row.effective)} effective x `
+              + `m(${round4(pt.row.hpPct / 100)})=${round4(pt.mul)} = ${round4(pt.out)}`,
+            value: pt.out,
+          });
+        }
+      }
       derivation.push({
         label: `${tag}Attacker output (pre-round)`,
         formula: `${atkCoef.value} x E(${atk.n})=${round4(atkE)} x m(${round4(atkF)})=`
@@ -804,7 +989,28 @@ function runSimulation(config, derivation, caveats) {
         value: null,
       });
     }
-    const defDeathsThis = Math.floor(defLostThis / def.perUnitMaxHP);
+    const defAlloc = allocate(def, defLostThis);
+    let defDeathsThis = 0;
+    for (const pt of defAlloc.parts) {
+      const d = pt.row.perUnitMaxHP ? Math.floor(pt.share / pt.row.perUnitMaxHP) : 0;
+      pt.row.hpLost += pt.share;
+      pt.row.deaths += d;
+      defDeathsThis += d;
+    }
+    if (def.rows.length > 1 && !def.withheldLoss) {
+      derivation.push({
+        label: `${tag}Defender damage split across rows`,
+        formula: 'in proportion to (attack value x count) — measured exactly on '
+          + `four mixtures: ${defAlloc.parts.map((pt) => `${pt.row.unit.code} `
+            + `${round4(pt.share)}`).join(', ')}`,
+        value: defLostThis,
+      });
+      if (defAlloc.overflow) {
+        caveats.push('A defending unit row was destroyed and the surplus damage '
+          + 'was passed to the others. No measured mixture ever saturated a '
+          + 'single row, so the remainder rule is unknown.');
+      }
+    }
     derivation.push({
       label: `${tag}Defender deaths`,
       formula: def.withheldLoss
@@ -888,10 +1094,69 @@ function runSimulation(config, derivation, caveats) {
   };
 }
 
+/**
+ * A stack's output, summed over its rows. Each row contributes
+ *     coefficient(row unit vs opponent) x effective_i x m(row HP fraction)
+ * with effective_i already carrying the cumulative roster-order saturation.
+ * For a single row this is exactly coefficient x E(n) x m(f), unchanged.
+ */
+function stackOutput(side, coefFor, mulEach) {
+  let total = 0;
+  const parts = [];
+  for (const r of side.rows) {
+    const c = coefFor(r.unit);
+    if (c === null || c === undefined) return { total: null, parts: [] };
+    const m = mulEach ? mulEach(r) : hpMultiplier(r.hpPct / 100);
+    const out = c * r.effective * m;
+    r.damageDealt = out;
+    total += out;
+    parts.push({ row: r, coef: c, mul: m, out });
+  }
+  return { total, parts };
+}
+
+/**
+ * Split incoming damage across a stack's rows in proportion to
+ * (attack value x count), then take deaths per row from that row's own
+ * per-unit HP. Measured exactly across four mixtures; allocation by pool or
+ * by attack-value-alone both fail, the latter in the wrong direction.
+ */
+function allocate(side, incoming) {
+  const w = allocationWeights(side.rows);
+  const sum = w.reduce((a, b) => a + b, 0);
+  const out = [];
+  let spare = 0;
+  side.rows.forEach((r, i) => {
+    const want = sum > 0 ? incoming * (w[i] / sum) : incoming / (side.rows.length || 1);
+    const got = Math.min(want, r.pool === null ? want : r.pool);
+    spare += want - got;
+    out.push({ row: r, share: got });
+  });
+  // A row that cannot absorb its share passes the remainder on. Unmeasured --
+  // no measured mixture ever saturated a single row -- so it is flagged.
+  if (spare > EPS) {
+    for (const o of out) {
+      if (spare <= EPS) break;
+      const room = (o.row.pool === null) ? 0 : o.row.pool - o.share;
+      const take = Math.min(room, spare);
+      o.share += take;
+      spare -= take;
+    }
+  }
+  return { parts: out, overflow: spare > EPS };
+}
+
 function sideResult(side, withheld) {
   const poolStart = side.poolFull === null ? null : side.poolFull * (side.hpPct / 100);
   if (withheld) {
     return {
+      rows: (side.rows || []).map((r) => ({
+        unit: r.unit ? r.unit.code : null,
+        label: r.unit ? r.unit.label : null,
+        count: r.count, hpPct: r.hpPct, effective: r.effective, pool: r.pool,
+        hpLost: null, deaths: null, unitsLeft: null, damageDealt: null,
+        saturated: Math.abs(r.effective - r.count) > 0.01,
+      })),
       pool: poolStart, hpLost: null, pctLost: null, deaths: null,
       unitsLeft: null, damageDealt: null, wiped: false,
       outputRaw: null, damageToBuildings: null,
@@ -901,7 +1166,21 @@ function sideResult(side, withheld) {
   // A side whose loss could not be computed reports null, never 0. Zero would
   // be the engine asserting it took no damage, which is an invention.
   const lossUnknown = !!side.withheldLoss;
+  const rowsOut = (side.rows || []).map((r) => ({
+    unit: r.unit ? r.unit.code : null,
+    label: r.unit ? r.unit.label : null,
+    count: r.count,
+    hpPct: r.hpPct,
+    effective: r.effective,
+    pool: r.pool,
+    hpLost: lossUnknown ? null : r.hpLost,
+    deaths: lossUnknown ? null : r.deaths,
+    unitsLeft: lossUnknown ? null : Math.max(0, r.count - r.deaths),
+    damageDealt: side.withheldDealt ? null : r.damageDealt,
+    saturated: Math.abs(r.effective - r.count) > 0.01,
+  }));
   return {
+    rows: rowsOut,
     pool: poolStart,
     hpLost: lossUnknown ? null : side.hpLost,
     pctLost: lossUnknown ? null : (poolStart ? (side.hpLost / poolStart) * 100 : 0),

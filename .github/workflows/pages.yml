@@ -112,26 +112,19 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
 
-    # A job-level block REPLACES the workflow-level one rather than adding to
-    # it, so `contents: read` has to be restated here. `pages: read` is what
-    # configure-pages needs: it calls GET /repos/{owner}/{repo}/pages, and with
-    # the Pages scope at `none` that returns 403 and the step fails — the build
-    # would break on a permission, not on anything about the site.
-    permissions:
-      contents: read
-      pages: read
-
     steps:
       - name: Check out the repository
         uses: actions/checkout@v4
 
-      # Not needed to produce the artifact — the app uses relative paths only
-      # and there is no static-site generator to configure. It is here because
-      # it fails loudly and early if Pages was never switched to "GitHub
-      # Actions", which is the one manual step this workflow cannot perform.
-      - name: Configure Pages
-        uses: actions/configure-pages@v5
-
+      # There is deliberately no `actions/configure-pages` step. It exists to
+      # hand a base URL to a static-site generator, and this app has neither —
+      # every path in index.html is relative, which is also why the same files
+      # work from a subdirectory, from localhost and from a Pages URL. Running
+      # it here would cost the build job a `pages: read` permission it does not
+      # otherwise need, and would fail every push with a 404 until the one
+      # manual Pages setting is flipped. `actions/deploy-pages` reports that
+      # same missing setting, at the point where it actually matters.
+      #
       # web/ is uploaded verbatim: the thing that is deployed is byte-identical
       # to the thing that was tested and to the thing you serve locally. That
       # includes web/test/, which is a few KB of inert text — worth the

@@ -682,25 +682,95 @@ console.log('\n11. patrol — replayed as an explicitly estimated band');
 }
 
 // ===========================================================================
-console.log('\n12. coverage of the record itself');
+console.log('\n12. composite stacks — replayed against the four measured mixtures');
+// ===========================================================================
+// A stack is a MIXTURE. Both halves of the law are asserted here against the
+// real readings: the cumulative roster-order saturation that sets each row's
+// effective units, and the (attack x count) split that decides who takes the
+// damage. Neither is visible in any single-type measurement.
+{
+  let cells = 0;
+  for (const r of rows) {
+    const m = r.meta || {};
+    if (r.experiment !== 'mixed_stacks' || m.error) continue;
+    if (!Array.isArray(m.rows) || m.rows.length < 2) continue;
+    const d = m.detail || {};
+    const obsOut = (d['A.1.1'] || {}).lost;
+    if (obsOut == null) continue;
+    cells += 1;
+    const res = simulate({
+      attacker: { unit: 'inf', count: m.atk_n, hpPct: 100 },
+      defender: { rows: m.rows.map(([unit, count]) => ({ unit, count, hpPct: 100 })) },
+      rounds: 1,
+    });
+    check(`${m.label}: defender output ${res.attacker.hpLost.toFixed(2)} vs measured ${obsOut}`,
+      Math.abs(res.attacker.hpLost - obsOut) <= 0.05,
+      `${(res.attacker.hpLost - obsOut).toFixed(3)} off`);
+    // Per-row damage split, itemised straight off the page.
+    m.rows.forEach(([unit], i) => {
+      const obs = (d[`B.1.${i + 1}`] || {}).lost;
+      if (obs == null) return;
+      const got = res.defender.rows[i];
+      check(`${m.label}: ${unit} row took ${got.hpLost.toFixed(2)} vs measured ${obs}`,
+        Math.abs(got.hpLost - obs) <= 0.05, `${(got.hpLost - obs).toFixed(3)} off`);
+    });
+  }
+  check('all four measured mixtures were replayed', cells >= 4, String(cells));
+
+  // Submission order must not change the answer: the server sorts first.
+  const a = simulate({ attacker: { unit: 'inf', count: 20 },
+    defender: { rows: [{ unit: 'inf', count: 25 }, { unit: 'art', count: 25 }] } });
+  const b = simulate({ attacker: { unit: 'inf', count: 20 },
+    defender: { rows: [{ unit: 'art', count: 25 }, { unit: 'inf', count: 25 }] } });
+  check('submission order does not change the stack output',
+    Math.abs(a.attacker.hpLost - b.attacker.hpLost) < 1e-9,
+    `${a.attacker.hpLost} vs ${b.attacker.hpLost}`);
+
+  // The finding that matters to a player.
+  const alone = simulate({ attacker: { unit: 'inf', count: 20 },
+    defender: { rows: [{ unit: 'art', count: 40 }] } });
+  const behind = simulate({ attacker: { unit: 'inf', count: 20 },
+    defender: { rows: [{ unit: 'inf', count: 10 }, { unit: 'art', count: 40 }] } });
+  check('a type behind others draws from the saturated tail (40 art: 33.3 -> 25 effective)',
+    Math.abs(alone.defender.rows[0].effective - effectiveUnits(40)) < 1e-9
+    && Math.abs(behind.defender.rows[1].effective - 25) < 1e-9,
+    `${alone.defender.rows[0].effective} vs ${behind.defender.rows[1].effective}`);
+  check('and the engine flags that row as saturated',
+    behind.defender.rows[1].saturated === true);
+
+  // The server refuses a repeated type; the engine must not compute one.
+  const dup = simulate({ attacker: { unit: 'inf', count: 10 },
+    defender: { rows: [{ unit: 'inf', count: 25 }, { unit: 'inf', count: 25 }] } });
+  check('a duplicated unit type is dropped, not merged',
+    dup.defender.rows.length === 1, `${dup.defender.rows.length} rows`);
+  check('and the reason is stated as a caveat',
+    dup.coverage.caveats.some((c) => /same unit type twice/.test(c)),
+    dup.coverage.caveats.join(' | '));
+
+  // Single-row configs must be untouched by any of this.
+  const single = simulate({ attacker: { unit: 'inf', count: 30 },
+    defender: { unit: 'inf', count: 30 } });
+  check('a single-type stack still gives the measured control exactly',
+    Math.abs(single.attacker.hpLost - 141.67) < 0.01
+    && Math.abs(single.defender.hpLost - 113.33) < 0.01,
+    `${single.attacker.hpLost} / ${single.defender.hpLost}`);
+}
+
+// ===========================================================================
+console.log('\n13. coverage of the record itself');
 // ===========================================================================
 {
   const counts = {};
   for (const r of rows) counts[r.experiment] = (counts[r.experiment] || 0) + 1;
-  const replayed = ['semantics', 'unit_stats', 'hp_scaling', 'air_vs_ground', 'trenches', 'fortress', 'buildings', 'patrol'];
+  const replayed = ['semantics', 'unit_stats', 'hp_scaling', 'air_vs_ground', 'trenches', 'fortress', 'buildings', 'patrol', 'mixed_stacks'];
   const notReplayed = Object.keys(counts).filter((e) => !replayed.includes(e));
   console.log(`  note  replayed: ${replayed.map((e) => `${e} ${counts[e] || 0}`).join(', ')}`);
   console.log(`  note  NOT replayed: ${notReplayed.map((e) => `${e} ${counts[e]}`).join(', ') || 'none'}`);
-  // mixed_stacks is measured and its law is known exactly, but the engine
-  // models a SINGLE-TYPE stack per side and cannot express a mixture yet.
-  // Recorded as a known omission rather than quietly dropped -- the app's
-  // single-type figures remain correct, they are just not the whole game.
-  check('the only unreplayed experiment is mixed_stacks, and the engine says why',
-    notReplayed.length === 1 && notReplayed[0] === 'mixed_stacks',
-    notReplayed.join(', ') || 'none');
-  check('composite stacks are recorded as measured-but-unimplemented',
-    PROVENANCE['STACK.composition'].confidence === 'measured'
-    && /does not model one yet/.test(PROVENANCE['STACK.composition'].note));
+  check('every experiment in the record is replayed by the engine',
+    notReplayed.length === 0, notReplayed.join(', ') || 'none');
+  check('composite saturation and allocation are both recorded as measured',
+    PROVENANCE['STACK.saturation'].confidence === 'measured'
+    && PROVENANCE['STACK.allocation'].confidence === 'measured');
   check('and the patrol attrition band is recorded as estimated, not measured',
     PROVENANCE['PATROL.attrition'].confidence === 'estimated');
   check('while the patrol maxRounds behaviour is recorded as measured',

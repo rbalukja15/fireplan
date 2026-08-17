@@ -133,6 +133,29 @@
             <dd class="figure figure-small" id="sb-a-pool">&mdash;</dd>
           </div>
         </dl>
+
+        <!-- Per-row itemisation. A stack is a mixture, so the totals above are
+             a sum over these; damage is split by (attack x count). -->
+        <div class="rowsplit">
+          <h4 class="rowsplit-h" id="sb-a-rows-h">By unit type</h4>
+          <div class="table-scroll">
+            <table class="rowsplit-table" aria-labelledby="sb-a-rows-h">
+              <thead>
+                <tr>
+                  <th scope="col">Unit</th>
+                  <th scope="col" class="c-val">Effective</th>
+                  <th scope="col" class="c-val">HP lost</th>
+                  <th scope="col" class="c-val">Killed</th>
+                  <th scope="col" class="c-val">Left</th>
+                  <th scope="col" class="c-val">Dealt</th>
+                </tr>
+              </thead>
+              <tbody id="sb-a-rows"></tbody>
+            </table>
+          </div>
+          <p class="rowsplit-note" id="sb-a-rows-note"></p>
+        </div>
+
         <ul class="score-buildings" id="sb-a-bldg"></ul>
       </article>
 
@@ -161,6 +184,27 @@
             <dd class="figure figure-small" id="sb-d-pool">&mdash;</dd>
           </div>
         </dl>
+
+        <div class="rowsplit">
+          <h4 class="rowsplit-h" id="sb-d-rows-h">By unit type</h4>
+          <div class="table-scroll">
+            <table class="rowsplit-table" aria-labelledby="sb-d-rows-h">
+              <thead>
+                <tr>
+                  <th scope="col">Unit</th>
+                  <th scope="col" class="c-val">Effective</th>
+                  <th scope="col" class="c-val">HP lost</th>
+                  <th scope="col" class="c-val">Killed</th>
+                  <th scope="col" class="c-val">Left</th>
+                  <th scope="col" class="c-val">Dealt</th>
+                </tr>
+              </thead>
+              <tbody id="sb-d-rows"></tbody>
+            </table>
+          </div>
+          <p class="rowsplit-note" id="sb-d-rows-note"></p>
+        </div>
+
         <ul class="score-buildings" id="sb-d-bldg"></ul>
       </article>
     </div>
@@ -206,6 +250,10 @@
         both are modelled &mdash; but patrol's attrition coefficient is a <em>band</em>
         (0.360&ndash;0.427 over nine cells), not a number, so every patrol result is an estimate.
         Debark has never been submitted, and no other terrain modifier was measured.</li>
+      <li><strong>Mixed stacks beyond two types.</strong> That a stack saturates as a whole in roster
+        order, and that incoming damage splits by attack&nbsp;&times;&nbsp;count, are both measured
+        exactly &mdash; but on <em>two-type land mixtures only</em> (infantry with artillery, four
+        layouts). Three types, or a mixture spanning classes, was never submitted.</li>
       <li><strong>Multi-round battles.</strong> Every measurement used exactly one round.</li>
       <li><strong>Variance.</strong> The game rolls roughly &plusmn;10%. Nothing here is rolled;
         these are the variance-off figures.</li>
@@ -271,6 +319,12 @@
 <!-- ---------------------------------------------------------------------- -->
 <!-- STACK BUILDER TEMPLATE. {s} is replaced with the side key by app.js so  -->
 <!-- every id/for pair stays unique and every control keeps a real label.    -->
+<!--                                                                        -->
+<!-- A stack is a MIXTURE of distinct unit types, not one type: 25 infantry, -->
+<!-- 10 artillery and 3 tanks fight as one stack, and the size factor        -->
+<!-- saturates across the whole of it. The unit rows below are built by      -->
+<!-- app.js, because how many there are and which types each may offer both  -->
+<!-- depend on what the rest of the stack already holds.                     -->
 <!-- ---------------------------------------------------------------------- -->
 <template id="stack-tpl">
   <section class="stack stack-{s}" aria-labelledby="{s}-h">
@@ -279,30 +333,22 @@
       <p class="stack-summary" id="{s}-summary"></p>
     </header>
 
+    <div class="rows-block">
+      <div class="rows-head">
+        <h3 id="{s}-rows-h">Units in this stack</h3>
+        <button type="button" class="btn btn-small" id="{s}-addrow" data-add-row="{s}">+ Add unit</button>
+      </div>
+
+      <ul class="urows" id="{s}-rows" aria-labelledby="{s}-rows-h"></ul>
+
+      <p class="field-note" id="{s}-rows-note"></p>
+
+      <!-- Stack-wide saturation readout. The one thing this app can teach that
+           a per-unit calculator cannot: the whole stack saturates together. -->
+      <p class="sat-line" id="{s}-sat"></p>
+    </div>
+
     <div class="stack-body">
-      <div class="field field-unit">
-        <label for="{s}-unit">Unit</label>
-        <select id="{s}-unit" name="{s}-unit" aria-describedby="{s}-unit-note"></select>
-        <p class="field-note" id="{s}-unit-note"></p>
-      </div>
-
-      <div class="field field-count">
-        <label for="{s}-count">Count</label>
-        <input type="number" id="{s}-count" name="{s}-count" min="1" max="500" step="1" value="30" inputmode="numeric" aria-describedby="{s}-count-note">
-        <p class="field-note" id="{s}-count-note"></p>
-      </div>
-
-      <div class="field field-hp">
-        <label for="{s}-hp">Stack HP</label>
-        <div class="hp-row">
-          <input type="number" id="{s}-hp" name="{s}-hp" min="1" max="100" step="1" value="100" inputmode="numeric" aria-describedby="{s}-hp-note">
-          <span class="unit-suffix" aria-hidden="true">%</span>
-          <input type="range" id="{s}-hp-range" min="1" max="100" step="1" value="100"
-                 aria-label="{S} stack HP percent (slider)">
-        </div>
-        <p class="field-note" id="{s}-hp-note"></p>
-      </div>
-
       <div class="field field-trench">
         <label for="{s}-trench">Trench level</label>
         <select id="{s}-trench" name="{s}-trench" aria-describedby="{s}-trench-note"></select>

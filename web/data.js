@@ -319,6 +319,46 @@ export const PATROL = {
   provenance: 'PATROL.attrition',
 };
 
+// ---------------------------------------------------------------------------
+// STACK COMPOSITION
+// ---------------------------------------------------------------------------
+// A stack is a MIXTURE of distinct unit types, and it saturates as a whole.
+// Measured 2026-08-17, 8 requests, four mixtures plus their single-type
+// controls. Worst error 0.002%.
+//
+//     effective_i = E(units through row i) - E(units before row i)
+//     output      = sum over rows of  coefficient_i * effective_i
+//
+// with rows taken in ROSTER order, not the order they were submitted -- the
+// swapped pair returns the identical figure, which is how we know the server
+// sorts before it computes. The consequence a player actually feels: a type
+// late in the roster order draws from the SATURATED TAIL. Forty artillery
+// beside ten infantry get E(50)-E(10) = 25 effective units, against E(40) =
+// 33.3 on their own, and no reordering can recover it.
+export const ROSTER_ORDER = [
+  'inf', 'cav', 'ac', 'lart', 'art', 'rrg', 'lt', 'ht', 'convoy', 'st',
+  'bal', 'int', 'tac', 'zep',
+  'sub', 'cl', 'bb',
+];
+
+// The server refuses a repeated unit type in one stack:
+//     "oops: The same unit can't be specified twice in same stack."
+// So a stack is a SET of types, each with a count. This is a hard constraint
+// on the input model, not a validation nicety.
+export const MAX_UNIT_ROWS = 8;
+export const DUPLICATE_UNITS_ALLOWED = false;
+
+// Incoming damage is split across rows in proportion to (attack value x unit
+// count) -- each row's raw offensive weight, ignoring saturation entirely.
+// Exact across all four measured mixtures, including both asymmetric ones,
+// where allocation by pool, by count, or by attack-value-alone all fail badly:
+//
+//   40 inf + 10 art, 80.0 incoming -> observed 53.3 / 26.7
+//       by pool           64.0 / 16.0     off by 10.7
+//       by attack alone   26.7 / 53.3     off by 26.6   (inverted!)
+//       by attack x count 53.3 / 26.7     exact
+export const DAMAGE_ALLOCATION = 'attack_times_count';
+
 export const FORM_DOMAINS = {
   terrain: ['land', 'sea', 'air', 'patrol', 'debark'],
   positionKm: [0, 1, 2, 3, 10, 20, 30, 40, 50, 75, 150],
@@ -555,14 +595,30 @@ export const PROVENANCE = {
     confidence: 'measured',
     source: 'results.jsonl, experiment=mixed_stacks: 8 rows, four distinct mixtures plus '
       + 'their single-type controls.',
-    note: 'A REAL STACK IS A MIXTURE, and this app does not model one yet. The law is now '
+    note: 'A REAL STACK IS A MIXTURE, and the app now models one. The law is '
       + 'known exactly: a stack saturates as a whole, and each unit type draws from what is '
       + 'left in ROSTER order -- effective_i = E(units through i) - E(units before i). All '
       + 'four measured mixtures fit to 0.002%. Submission order is irrelevant (the server '
       + 'sorts first), but a type late in the roster order draws from the saturated tail: 40 '
       + 'artillery beside 10 infantry get 25 effective units against 33.3 on their own. The '
-      + 'server also refuses a repeated unit type in one stack. Until the engine implements '
-      + 'this, every figure this app produces is for a SINGLE-TYPE stack and says so.',
+      + 'server also refuses a repeated unit type in one stack, so a stack is a SET of types. '
+      + 'See STACK.saturation and STACK.allocation.',
+  },
+  'STACK.saturation': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=mixed_stacks: four mixtures (25+25 both orders, '
+      + '40+10, 10+40) plus 50-, 25- and 25-unit single-type controls.',
+    note: 'effective_i = E(units through row i) - E(units before it), rows in ROSTER order. '
+      + 'Worst error 0.002%, against 25.3% for per-type saturation and 10.8% for one '
+      + 'saturation split by count share. Submission order is irrelevant; the server sorts.',
+  },
+  'STACK.allocation': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=mixed_stacks: the per-row spans of four mixtures.',
+    note: 'Incoming damage splits in proportion to (attack value x count). Exact on all four, '
+      + 'including the asymmetric splits where allocation by pool or by attack value alone is '
+      + 'off by 10.7 and 26.6 HP respectively. Note it uses the RAW count, not the saturated '
+      + 'effective count -- allocation ignores the size factor that output obeys.',
   },
   'integrity': {
     confidence: 'measured',

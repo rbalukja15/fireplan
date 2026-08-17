@@ -233,6 +233,13 @@ button, input, select { font: inherit; color: inherit; }
   border-radius: var(--r-lg);
   padding: var(--s4);
   box-shadow: var(--shadow-sm);
+  /* The unit rows lay themselves out against the CARD, not the viewport: at
+     760px the two cards are each about as narrow as a 360px phone, so a
+     viewport media query would give the widest layout exactly where there is
+     least room for it. Without container-query support the rows fall back to
+     the stacked layout, which fits everywhere. */
+  container-type: inline-size;
+  container-name: stack;
 }
 .stack-attacker { border-top-color: var(--atk); }
 .stack-defender { border-top-color: var(--def); }

@@ -23,7 +23,9 @@ What that session established, in one place:
   in air-to-ground. This one is new, it is not present in land-to-land, and
   it explains a target-dependence that does not exist.
 - **`m(f) = 0.05 + 0.95f` confirmed exactly**, and a wiped stack still deals
-  its full damage.
+  its full damage. It also turns out to explain air-to-ground entirely, when
+  applied post-fire — what was recorded as a separate "return fire" law is
+  just `m(f)` evaluated at the right moment, and fits 44x better.
 - **A stack is a MIXTURE, and mixtures saturate cumulatively in roster order.**
   Measured exactly (0.002%). Every earlier experiment was single-type, so this
   was invisible; it is the most consequential finding here for a real player.
@@ -361,15 +363,36 @@ Note this does *not* license ignoring saturation. A wiped stack's own **loss**
 is still capped at its pool, so the coefficient read *from* it is still a lower
 bound. What is now known is that the reading from the *other* side is clean.
 
-### Return fire: output scales with what survives — air-to-ground
+### Air-to-ground output is evaluated POST-FIRE — there is no separate law
 
-**New, and the most consequential finding of the 2026-08-17 session.** In an
-air-attacks-ground battle, a stack's delivered damage is scaled by the share of
-its own pool that survived the round:
+**Corrected 2026-08-17, after first being recorded as a new mechanic.** The
+original reading was that air-to-ground output is scaled by the attacker's own
+losses:
 
 ```
-dealt = base_stat * E(n) * (1 - own_fraction_lost)
+dealt = base_stat * E(n) * (1 - own_fraction_lost)      worst error 0.443%
 ```
+
+That is an approximation, and its residual is systematic — all 30 cells biased
+the same way, which is the signature of a wrong functional form rather than
+rounding. The law that actually fits introduces **no new constant at all**. It
+is `m(f)` from the section above, evaluated on the attacker's state *after* the
+round's incoming fire:
+
+```
+deaths  = floor(HP_lost / maxHP)
+n_alive = n - deaths
+f_after = (pool - HP_lost) / (n_alive * maxHP)
+dealt   = base_stat * E(n_alive) * m(f_after)           worst error 0.0101%
+```
+
+44x better, and it **removes** a mechanic rather than adding one: there is no
+"return fire attenuation", only the ordinary HP-scaling rule applied at the
+right moment. Attenuation is one-sided — the ground defender is never
+evaluated post-fire, even losing 26% of its pool in the round.
+
+The older form is kept below because the *consequences* it was used to derive
+are unchanged and the table is still the clearest way to see the effect:
 
 Measured across all 30 cells of `air_vs_ground`. Correcting for it collapses
 each aircraft's apparent target dependence onto a single flat stat:
@@ -394,8 +417,13 @@ distinguishes the two cases. **Untested for sea, and for air defending.**
 
 Consequences worth carrying:
 
-- The air rows of `MEASURED_UNITS` were measured air-vs-air with return fire
-  present and are therefore **suspect** — they may be attenuated.
+- **RESOLVED at zero request cost:** the air and naval diagonals are *not*
+  attenuated. Read under both hypotheses, the unattenuated figures are round
+  numbers (`int` 20.00, `tac` 3.00, `zep` 5.00, `sub` 40.00, `cl` 10.00,
+  `bb` 40.00) and the attenuated ones are not (29.925, 3.111, 5.176, 66.667,
+  12.500, 50.000). Every one of the 19 distinct stats measured in this project
+  is a round number. The suspect flag on those rows is lifted — this is an
+  inference, but a strong one.
 - `report_matchups()` judges on the RAW row and consults the correction only
   when the raw row slopes, because applying it to a non-attenuating server
   turns a flat attacker into a target-dependent one. Do not reverse that order.
