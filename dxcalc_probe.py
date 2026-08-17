@@ -710,6 +710,30 @@ def find_oops(html: str) -> list[str]:
     return [m.strip() for m in OOPS_RE.findall(html)]
 
 
+MAX_LEVEL_RE = re.compile(r"max level for\s+(.+?)\s+is\s+(\d+)", re.I)
+
+
+def parse_max_level(messages: list[str]) -> int | None:
+    """Read the cap out of 'oops: max level for Recruiting is 1'.
+
+    Only the fortress goes to level 5. Every other building type is capped
+    lower, and the server states the cap rather than clamping to it — so a
+    sweep with a hardcoded level gets a rejection, not a reading. Taking the
+    number from the message means the sweep never carries a table of caps that
+    can drift out of date against the site.
+    """
+    for m in messages:
+        hit = MAX_LEVEL_RE.search(m)
+        if hit:
+            try:
+                lvl = int(hit.group(2))
+            except ValueError:
+                continue
+            if lvl >= 1:
+                return lvl
+    return None
+
+
 def strip_thousands(text: str) -> str:
     """Drop thousands separators before parsing a number.
 
@@ -820,7 +844,15 @@ def build_ssl_context(insecure: bool = False) -> ssl.SSLContext:
 
 
 class BareFormReturned(RuntimeError):
-    """Server handed back the empty input form: no results, no error."""
+    """Server handed back the empty input form: no results, no error.
+
+    Carries the server's own `oops:` lines when there were any, so a caller can
+    act on what the server said instead of re-parsing the message text.
+    """
+
+    def __init__(self, message: str, oops: list[str] | None = None) -> None:
+        super().__init__(message)
+        self.oops = oops or []
 
 
 class Probe:
@@ -947,7 +979,7 @@ class Probe:
 
         oops = find_oops(html)
         if oops:
-            raise BareFormReturned("server said -> " + " | ".join(oops[:4]))
+            raise BareFormReturned("server said -> " + " | ".join(oops[:4]), oops)
         scraper = ResultScraper()
         scraper.feed(html)
         if not scraper.readings:
@@ -1767,17 +1799,33 @@ def exp_buildings(p: Probe) -> None:
           f"{'topHP':>7}  row rendered?")
 
     for t in types:
-        ov = dict(settings(), **{abb: t, lvl: "3", hp: "100%"})
-        ov.update(duel(1, "inf", 30, "inf", 30))
-        try:
-            r = p.submit(ov, create=new_row)
-        except BareFormReturned as e:
-            print(f"  ! {t}: {e}", file=sys.stderr)
+        level = 3
+        r = None
+        for attempt in range(2):
+            ov = dict(settings(), **{abb: t, lvl: str(level), hp: "100%"})
+            ov.update(duel(1, "inf", 30, "inf", 30))
+            try:
+                r = p.submit(ov, create=new_row)
+                break
+            except BareFormReturned as e:
+                # Only the fortress reaches level 3. The server names each
+                # type's cap instead of clamping, so a rejection here is the
+                # sweep's own level choice, not a fact about the building.
+                cap = parse_max_level(e.oops)
+                if cap is not None and attempt == 0 and cap != level:
+                    print(f"  . {t}: level {level} rejected, "
+                          f"server caps it at {cap}; retrying", file=sys.stderr)
+                    level = cap
+                    continue
+                print(f"  ! {t}: {e}", file=sys.stderr)
+                r = None
+                break
+        if r is None:
             continue
         bldg = next((d for slot, d in p.last_details.items() if "bldg" in slot), {})
         got = r.get("B.1.1")
         ratio = (got / ref) if (ref and got is not None) else None
-        record("buildings", {"type": t, "label": labels.get(t, t), "level": 3,
+        record("buildings", {"type": t, "label": labels.get(t, t), "level": level,
                              "ratio": ratio, "bldg": bldg,
                              "raw": dict(p.last_raw)}, r)
         cell = lambda v: f"{v:7.2f}" if isinstance(v, (int, float)) else f"{'—':>7}"
@@ -1989,7 +2037,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
 # it is about to spend on someone else's ad-supported fan site before it starts
 # rather than after. Approximate by design: saturation re-runs add a few.
 REQUEST_ESTIMATE: dict[str, int] = {
-    "unit_stats": 17, "buildings": 9, "trenches": 10, "air_vs_ground": 30,
+    "unit_stats": 17, "buildings": 14, "trenches": 10, "air_vs_ground": 30,
     "land_matrix": 100, "size_factor": 33, "hp_scaling": 10, "patrol": 12,
     "fortress": 6, "terrain": 5, "variance": 60,
 }

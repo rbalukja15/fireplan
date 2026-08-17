@@ -217,5 +217,26 @@ check("and the failure went to its own file",
       os.path.exists(os.path.join(os.getcwd(), dp.FAILURE_PATH))
       or dp.FAILURE_PATH != "last_response.html")
 
+print("\n7. REGRESSION: the level cap is read from the server, not guessed")
+# The first live buildings sweep asked for level 3 on all eight types. Only the
+# fortress goes that high, so five types came back "oops: max level for X is 1"
+# and were reported as untested. The server states the cap; the sweep must use
+# it rather than carry a table that can drift.
+check("reads the cap out of the oops line",
+      dp.parse_max_level(["oops: max level for Recruiting is 1"]) == 1)
+check("reads a two-level cap",
+      dp.parse_max_level(["oops: max level for Barracks is 2"]) == 2)
+check("finds it among several messages",
+      dp.parse_max_level(["oops: something else",
+                          "oops: max level for Harbor is 1"]) == 1)
+check("returns None when no cap is stated — no silent retry at level 0",
+      dp.parse_max_level(["oops: balloons cannot be in air terrain"]) is None)
+check("returns None on an empty list", dp.parse_max_level([]) is None)
+check("the exception carries the server's own lines",
+      dp.BareFormReturned("m", ["oops: max level for Railway is 1"]).oops
+      == ["oops: max level for Railway is 1"])
+check("and defaults to an empty list, never None",
+      dp.BareFormReturned("m").oops == [])
+
 print(f"\nALL {ok} CHECKS PASSED")
 srv.shutdown()
