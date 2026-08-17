@@ -1122,6 +1122,62 @@ def exp_fortress(p: Probe) -> None:
             print(f"      {slot}: {text!r}")
 
 
+def exp_buildings(p: Probe) -> None:
+    """All eight building types — one request each, no curve-fitting.
+
+    The building's own result row prints its Damage Reduction outright:
+
+        "-8.5 HP (3.4%) → LVL:5 41.5 HP; DR: 90% → 87.5%"
+
+    so a single submission per type reads off level, HP pool and DR. The
+    fortress sweep needed six requests and a fitted line to learn less than
+    this does in one, because it was reading a truncated span.
+
+    Answers the open question of whether the other seven types are combat
+    relevant at all, or purely cosmetic in the calculator: a type that confers
+    no mitigation should report DR 0%, or render no building row at all.
+    """
+    types = p.select_options.get("B.1.bldg.0.abb") or []
+    if not types:
+        print("  ! no building types on the form.", file=sys.stderr)
+        return
+    labels = p.option_labels.get("B.1.bldg.0.abb", {})
+    abb, lvl, hp = "B.1.bldg.1.abb", "B.1.bldg.1.lvl", "B.1.bldg.1.hp"
+    new_row = (abb, lvl, hp)
+
+    base = settings()
+    base.update(duel(1, "inf", 30, "inf", 30))
+    try:
+        control = p.submit(base)
+    except BareFormReturned as e:
+        print(f"  ! control: {e}", file=sys.stderr)
+        return
+    ref = control.get("B.1.1")
+    record("buildings", {"type": None, "note": "control, no bldg row"}, control)
+    print(f"  control (no building): defender lost {ref}\n")
+    print(f"  {'type':12} {'defLost':>8} {'ratio':>7} {'DR%':>7} {'lvl':>4} "
+          f"{'topHP':>7}  row rendered?")
+
+    for t in types:
+        ov = dict(settings(), **{abb: t, lvl: "3", hp: "100%"})
+        ov.update(duel(1, "inf", 30, "inf", 30))
+        try:
+            r = p.submit(ov, create=new_row)
+        except BareFormReturned as e:
+            print(f"  ! {t}: {e}", file=sys.stderr)
+            continue
+        bldg = next((d for slot, d in p.last_details.items() if "bldg" in slot), {})
+        got = r.get("B.1.1")
+        ratio = (got / ref) if (ref and got is not None) else None
+        record("buildings", {"type": t, "label": labels.get(t, t), "level": 3,
+                             "ratio": ratio, "bldg": bldg,
+                             "raw": dict(p.last_raw)}, r)
+        cell = lambda v: f"{v:7.2f}" if isinstance(v, (int, float)) else f"{'—':>7}"
+        print(f"  {t:12} {cell(got)} {cell(ratio)} {cell(bldg.get('dr_before'))} "
+              f"{cell(bldg.get('level'))} {cell(bldg.get('hp_top_level'))}"
+              f"  {'yes' if bldg else 'NO ROW'}")
+
+
 def exp_size_factor(p: Probe) -> None:
     """Re-verify E(n). Should reproduce the quadratic and the cap at 35."""
     for n in list(range(1, 26)) + [30, 35, 40, 45, 50, 60, 80, 100]:
@@ -1309,6 +1365,7 @@ def exp_unit_stats(p: "Probe") -> None:
 
 EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "unit_stats": exp_unit_stats,
+    "buildings": exp_buildings,
     "size_factor": exp_size_factor,
     "hp_scaling": exp_hp_scaling,
     "damage_land": exp_damage_land,
