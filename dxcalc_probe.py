@@ -1763,17 +1763,49 @@ def exp_trenches(p: Probe) -> None:
 
     # Does a trench help the side that is attacking? The fortress protects the
     # defender only, and one request settles whether this is the same.
+    #
+    # This must apply the SAME discriminator as the sweep above. Reading only
+    # absolute HP lost is exactly the blunt test that turned "enlarges the pool"
+    # into "no measurable benefit" for the defender, and the first live run of
+    # this experiment repeated the mistake here: the attacker lost 50.0 with and
+    # without a trench, so it printed "no effect while attacking" — while the
+    # percentage moved 25% -> 18.5%, the same x1.35 pool growth the defender
+    # gets, and the attacker's deaths fell from 2 to 1.
     if levels:
         top = levels[-1]
         got = one(f"attacker trench {top}, defender 0", atk_trench=top)
         if got:
-            a = (got["detail"].get("A.1.1") or {}).get("lost")
+            a_det = got["detail"].get("A.1.1") or {}
+            a, a_pool = a_det.get("lost"), a_det.get("pool")
+            atk_pool0 = (control["detail"].get("A.1.1") or {}).get("pool")
+            b_det = got["detail"].get("B.1.1") or {}
+            print(f"\n  attacker trench L{top}:")
             if a is not None and atk0:
-                same = abs(a / atk0 - 1) <= MOVED_LOST
-                print(f"\n  attacker trench L{top}: attacker lost {a:.2f} vs "
-                      f"{atk0:.2f} with no trench — "
-                      + ("no effect while attacking."
-                         if same else "it protects the attacker too."))
+                print(f"    attacker HP lost  {a:.2f} vs {atk0:.2f} control"
+                      f"  (x{a / atk0:.4f})")
+            if a_pool is not None and atk_pool0:
+                ratio = a_pool / atk_pool0
+                print(f"    attacker pool     {a_pool:.1f} vs {atk_pool0:.1f}"
+                      f" control  (x{ratio:.4f})")
+                if abs(ratio - 1) > MOVED_POOL:
+                    print("    -> the HP bonus applies while ATTACKING too: "
+                          "the pool grew even though absolute HP lost did not. "
+                          "Judging this on HP lost alone would have reported "
+                          "'no effect'.")
+                else:
+                    print("    -> no pool growth while attacking; the HP bonus "
+                          "is defence-only.")
+            # The defender's loss here is the ATTACKER's output, so this says
+            # whether a trench boosts damage when its owner is attacking.
+            if b_det.get("lost") is not None and lost0:
+                r = b_det["lost"] / lost0
+                print(f"    attacker OUTPUT   defender lost "
+                      f"{b_det['lost']:.2f} vs {lost0:.2f} control"
+                      f"  (x{r:.4f})")
+                print("    -> " + ("output bonus applies while attacking."
+                                   if abs(r - 1) > MOVED_LOST else
+                                   "no output bonus while attacking — the "
+                                   "damage half of the trench is defence-only."))
 
 
 def exp_buildings(p: Probe) -> None:

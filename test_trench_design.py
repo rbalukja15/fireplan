@@ -96,11 +96,20 @@ def make_handler(model):
             d = int(f.get("B.1.1.count") or 0)
             t = int(f.get("B.1.trench") or 0)
 
+            at = int(f.get("A.1.trench") or 0)
+
             a_pool, d_pool = a * UNIT_HP, d * UNIT_HP
             a_lost = DEF_DMG * dp.effective_units(d)      # dealt by defenders
             d_lost = ATK_DMG * dp.effective_units(a)      # dealt by attackers
             if model == "pool":
                 d_pool *= 1 + POOL_PER_LEVEL * t
+            elif model == "pool_self":
+                # What the live site actually does: the HP bonus follows the
+                # stack that owns the trench, attacking or defending. Absolute
+                # HP lost never moves on either side, so a check that reads
+                # only HP lost calls this "no effect while attacking".
+                d_pool *= 1 + POOL_PER_LEVEL * t
+                a_pool *= 1 + POOL_PER_LEVEL * at
             elif model == "dr":
                 d_lost *= max(0.0, 1 - DR_PER_LEVEL * t)
             self._send(render([("A.1", [("A.1.1", a_lost, a_pool)]),
@@ -185,10 +194,29 @@ check("attacker's trench is separate and stays 0 during the defender sweep",
 check("the final request moves the ATTACKER's trench instead",
       int(SEEN[-1]["A.1.trench"]) == 20 and int(SEEN[-1]["B.1.trench"]) == 0,
       f"A={SEEN[-1]['A.1.trench']} B={SEEN[-1]['B.1.trench']}")
-check("and it is reported as no help while attacking",
-      "no effect while attacking" in out, out)
+check("and against an inert server it is reported as no help while attacking",
+      "the HP bonus is defence-only" in out, out)
 check("total cost matches the published estimate",
       len(SEEN) == dp.REQUEST_ESTIMATE["trenches"], f"{len(SEEN)} requests")
+
+print("\n4b. the attacker probe judges on the POOL, not on absolute HP lost")
+# The first live run printed "no effect while attacking" because the attacker
+# lost 50.0 HP with and without a trench. The percentage had moved 25% -> 18.5%
+# — the same x1.35 pool growth the defender gets — and the deaths fell from 2
+# to 1. Reading only HP lost is the identical blunt test that turned "enlarges
+# the pool" into "levels 1-3 conferred no benefit" for the defender.
+out, _ = run("pool_self")
+atk_block = out.split("attacker trench L20:")[-1]
+check("the attacker's absolute HP lost really is unchanged — the trap",
+      "x1.0000" in atk_block, atk_block)
+check("but the pool growth is seen anyway",
+      "applies while ATTACKING too" in atk_block, atk_block)
+check("does NOT report no-effect",
+      "the HP bonus is defence-only" not in atk_block, atk_block)
+check("+10%/level for 20 levels shows as a tripling of the attacker's pool",
+      "x3.00" in atk_block, atk_block)
+check("and the attacker's OUTPUT is separately reported as unchanged",
+      "no output bonus while attacking" in atk_block, atk_block)
 
 print("\n5. refuses to rule when the readings are not there")
 out, _ = run("silent")
