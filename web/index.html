@@ -34,16 +34,35 @@
   </div>
 </div>
 
+<noscript>
+  <div class="wrap">
+    <div class="banner banner-unknown">
+      <p class="banner-title">This calculator needs JavaScript</p>
+      <p class="banner-body">
+        The whole model runs in your browser — there is no server to compute it instead, by
+        design. With scripting off there is nothing to show, so the page shows nothing rather
+        than a form that silently does not work.
+      </p>
+    </div>
+  </div>
+</noscript>
+
 <main class="wrap" id="app" hidden>
 
   <!-- ------------------------------------------------------------------ -->
   <!-- CONFIDENCE BANNER: the integrity feature. Driven by coverage.level. -->
   <!-- ------------------------------------------------------------------ -->
-  <div id="coverage" class="banner" role="status" aria-live="polite">
+  <div id="coverage" class="banner">
     <p class="banner-title"><span class="banner-icon" aria-hidden="true"></span><span id="coverage-headline"></span></p>
     <p class="banner-body" id="coverage-reason"></p>
     <ul class="caveats" id="coverage-caveats"></ul>
   </div>
+
+  <!-- The page's only live region. The banner and the verdict are both rewritten
+       on every keystroke; announcing both, in full, would read two paragraphs of
+       prose aloud each time a digit changes. app.js posts one short debounced
+       line here instead — confidence level first, then the outcome. -->
+  <p id="live" class="visually-hidden" role="status" aria-live="polite"></p>
 
   <!-- ------------------------------------------------------------------ -->
   <!-- STACK BUILDERS                                                     -->
@@ -56,7 +75,7 @@
   <div class="global-row">
     <div class="field field-mode" id="mode-field" hidden>
       <label for="mode">Air mode</label>
-      <select id="mode" name="mode">
+      <select id="mode" name="mode" aria-describedby="mode-note">
         <option value="strike">Direct strike</option>
         <option value="patrol">Patrol</option>
       </select>
@@ -64,7 +83,7 @@
     </div>
     <div class="field field-rounds">
       <label for="rounds">Rounds</label>
-      <input type="number" id="rounds" name="rounds" value="1" min="0.25" max="1000" step="0.25" inputmode="decimal">
+      <input type="number" id="rounds" name="rounds" value="1" min="0.25" max="1000" step="0.25" inputmode="decimal" aria-describedby="rounds-note">
       <p class="field-note" id="rounds-note">Every measurement behind this model used exactly one round.</p>
     </div>
     <div class="global-actions">
@@ -83,7 +102,7 @@
       <span class="conf-chip" id="result-chip"></span>
     </div>
 
-    <p class="verdict" id="verdict" aria-live="polite"></p>
+    <p class="verdict" id="verdict"></p>
 
     <!-- Raised only when the engine's own figures contradict each other. -->
     <p class="sanity" id="sanity" role="alert" hidden></p>
@@ -263,13 +282,13 @@
     <div class="stack-body">
       <div class="field field-unit">
         <label for="{s}-unit">Unit</label>
-        <select id="{s}-unit" name="{s}-unit"></select>
+        <select id="{s}-unit" name="{s}-unit" aria-describedby="{s}-unit-note"></select>
         <p class="field-note" id="{s}-unit-note"></p>
       </div>
 
       <div class="field field-count">
         <label for="{s}-count">Count</label>
-        <input type="number" id="{s}-count" name="{s}-count" min="1" max="500" step="1" value="30" inputmode="numeric">
+        <input type="number" id="{s}-count" name="{s}-count" min="1" max="500" step="1" value="30" inputmode="numeric" aria-describedby="{s}-count-note">
         <p class="field-note" id="{s}-count-note"></p>
       </div>
 
@@ -286,7 +305,7 @@
 
       <div class="field field-trench">
         <label for="{s}-trench">Trench level</label>
-        <select id="{s}-trench" name="{s}-trench"></select>
+        <select id="{s}-trench" name="{s}-trench" aria-describedby="{s}-trench-note"></select>
         <p class="field-note" id="{s}-trench-note"></p>
       </div>
     </div>
@@ -303,5 +322,27 @@
 </template>
 
 <script type="module" src="./app.js"></script>
+
+<!-- A classic script, deliberately: it runs in the one case app.js cannot.
+     Opened straight off disk, browsers refuse to load an ES module at all
+     (CORS, origin "null"), so nothing in app.js executes — including the
+     file:// explanation showFatal() carries, which could only ever appear if
+     app.js had already run. Without this the page is a header above an empty
+     space with no clue why. -->
+<script>
+window.addEventListener('load', function () {
+  setTimeout(function () {
+    if (window.__appBooted) return;
+    var app = document.getElementById('app');
+    var fatal = document.getElementById('fatal');
+    var body = document.getElementById('fatal-body');
+    if (!app || !fatal || !body || !app.hidden || !fatal.hidden) return;
+    body.textContent = location.protocol === 'file:'
+      ? 'The page was opened directly from disk. Browsers refuse to load JavaScript modules over file://, so app.js never ran and nothing here was computed. Serve the folder over HTTP instead — "python3 -m http.server" inside this directory, then open http://localhost:8000/.'
+      : 'app.js did not run, so nothing on this page was computed. The usual cause is that one of the three files — app.js, engine.js, data.js — is missing or was served with the wrong content type. Rather than leave a form that silently does nothing, the calculator says so.';
+    fatal.hidden = false;
+  }, 2500);
+});
+</script>
 </body>
 </html>

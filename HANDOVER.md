@@ -24,6 +24,9 @@ What that session established, in one place:
   it explains a target-dependence that does not exist.
 - **`m(f) = 0.05 + 0.95f` confirmed exactly**, and a wiped stack still deals
   its full damage.
+- **A stack is a MIXTURE, and mixtures saturate cumulatively in roster order.**
+  Measured exactly (0.002%). Every earlier experiment was single-type, so this
+  was invisible; it is the most consequential finding here for a real player.
 - **Patrol is a different attack from a direct air strike**, measured after the
   question was raised: the same base stat, but a much lighter attrition charge
   (c ~ 0.36-0.43 against 1.000), so patrol beats a direct attack by up to 22%
@@ -514,6 +517,74 @@ Also established:
 - **Fortresses do not reduce the defender's output.** The attacker loses 141.7
   at fortress level 5, identical to the no-fortress control.
 
+### Composite stacks — measured 2026-08-17, and the law is exact
+
+**Every experiment before this one put one unit type in one row.** `duel()`
+blanks rows 2–8 deliberately, to vary one thing at a time. That is a
+*measurement* choice, and it had quietly become the project's *model of the
+game*: a real stack is a mixture, and the form has always had the rows for it.
+
+Three findings, from 8 requests.
+
+#### 1. A stack cannot contain the same unit type twice
+
+```
+oops: The same unit can't be specified twice in same stack.
+```
+
+Server-enforced. A stack is a set of **distinct** types, each with a count. This
+kills the obvious control (25 inf + 25 inf against 50 inf) outright, and it is
+a hard constraint on any data model built on top.
+
+#### 2. The size factor saturates per STACK, cumulatively, in ROSTER order
+
+```
+effective_i = E(units through row i) - E(units before row i)
+output      = sum over rows of  coefficient_i * effective_i
+
+    rows taken in the order the ROSTER lists them, NOT as submitted
+```
+
+| layout | measured | per-type | shared | this law |
+|---|---|---|---|---|
+| 25 inf + 25 art | 151.04 | 189.29 | 134.75 | **151.04** |
+| 25 art + 25 inf | 151.04 | 189.29 | 134.75 | **151.04** |
+| 40 inf + 10 art | 171.17 | 193.67 | 158.90 | **171.17** |
+| 10 inf + 40 art | 117.50 | 140.00 | 110.60 | **117.50** |
+
+Worst error **0.002%** across all four, against 25% and 11% for the rivals.
+
+**Submission order is irrelevant** — the swapped pair returns the identical
+figure, which is what says the server sorts before computing. What matters is
+that a type sitting late in the roster order draws from the *saturated tail*:
+40 artillery beside 10 infantry get `E(50) - E(10) = 25` effective units,
+against `E(40) = 33.3` on their own. **Mixing costs the later type, and you
+cannot reorder your way out of it.**
+
+This is the single most consequential thing in §4 for an actual player, and it
+was invisible for the whole project because every measurement was single-type,
+so `E(n)`'s argument was simultaneously "units of this type" and "units in this
+stack" and nothing could separate them.
+
+#### 3. Incoming damage is not split in proportion to pool
+
+25 inf + 25 art, near-identical pools (500.9 and 498.1), took **26.70 and
+53.30** of an 80.00 total — exactly 1:2, matching their attack values 4.0 and
+8.0. One observation only, so treat "allocation follows the attack stat" as the
+leading hypothesis rather than a law; two more mixtures would settle it.
+
+#### What the design got wrong first, twice
+
+- The first draft used **10 attacking infantry (pool 200)**. Per-type predicts a
+  defender output of 245.8, which the attacker cannot absorb, so the reading was
+  capped at its pool and every model read alike. The offline suite caught it
+  before it cost a request; live it would have printed a confident "NEITHER".
+- The first live run then *did* print "none of the three fits", because the
+  cumulative candidate walked rows in **submission** order. It matched three of
+  four cells exactly and failed only the swapped pair — which is the signature
+  of a right law with a wrong ordering, not a wrong law. Reporting "no fit"
+  rather than taking the least-bad at 10.79% is what made that visible.
+
 ### Patrol — measured 2026-08-17, and it is not air
 
 **Every air number in this document above was flown in `air` terrain.** In 150
@@ -844,7 +915,7 @@ instead of "Unknown experiment":
 | `damage_sea` | `unit_stats` |
 | `damage_air` | `air_vs_ground` |
 
-### Tests — 211 checks, no network needed
+### Tests — 232 checks, no network needed
 
 ```bash
 python3 test_probe_offline.py       # 45  transport, parsing, slot association
@@ -855,6 +926,7 @@ python3 test_result_table.py        # 29  the summary table, against real markup
 python3 test_trench_design.py       # 27  proves the trench sweep can discriminate
 python3 test_matchup_design.py      # 30  proves the matrix can discriminate
 python3 test_patrol_design.py       # 22  proves patrol can be told from air
+python3 test_mixed_stacks_design.py # 21  proves composite saturation can be read
 ```
 
 These serve the site's courtesy budget as much as correctness: they run against

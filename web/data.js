@@ -551,6 +551,19 @@ export const PROVENANCE = {
       + 'round). A direct strike IGNORES maxRounds: 30.03 per unit at every rung. This is why the '
       + 'app offers fractional rounds for patrol and not for a strike.',
   },
+  'STACK.composition': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=mixed_stacks: 8 rows, four distinct mixtures plus '
+      + 'their single-type controls.',
+    note: 'A REAL STACK IS A MIXTURE, and this app does not model one yet. The law is now '
+      + 'known exactly: a stack saturates as a whole, and each unit type draws from what is '
+      + 'left in ROSTER order -- effective_i = E(units through i) - E(units before i). All '
+      + 'four measured mixtures fit to 0.002%. Submission order is irrelevant (the server '
+      + 'sorts first), but a type late in the roster order draws from the saturated tail: 40 '
+      + 'artillery beside 10 infantry get 25 effective units against 33.3 on their own. The '
+      + 'server also refuses a repeated unit type in one stack. Until the engine implements '
+      + 'this, every figure this app produces is for a SINGLE-TYPE stack and says so.',
+  },
   'integrity': {
     confidence: 'measured',
     note: 'results.jsonl grew from 150 to 168 rows during the session that produced these tables, when a concurrent session flew the patrol experiment. The 18 patrol rows are single-sample and their multi-tick GROUND law does not close (predicted tick 3/4 defender output 3.5/3.5 against observed 3.4/3.3), so the patrol ATTRITION is implemented as an explicitly estimated band (see PATROL.attritionRange), never as a measured value; its maxRounds behaviour IS measured and is implemented as such. Two patrol findings do bear on the app: maxRounds is ignored entirely for terrain=air (0.25/0.5/0.75/1 return byte-identical results), and patrol out-damages a direct air strike in all 9 cells measured.',

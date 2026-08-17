@@ -37,12 +37,10 @@ on:
 permissions:
   contents: read
 
-# One deployment at a time. cancel-in-progress is deliberately false: a live
-# Pages deployment that is cancelled mid-flight can leave the site in a
-# half-published state, so queued runs wait rather than interrupt.
-concurrency:
-  group: pages
-  cancel-in-progress: false
+# Concurrency is declared on the deploy job rather than here. At workflow level
+# it would serialise every push and every pull request behind one another —
+# including runs that only verify and never publish — because they would all
+# share the single `pages` group. Only the publish itself needs to be exclusive.
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -113,10 +111,24 @@ jobs:
     name: Package web/
     needs: test
     runs-on: ubuntu-latest
+
+    # A job-level block REPLACES the workflow-level one rather than adding to
+    # it, so `contents: read` has to be restated here. `pages: read` is what
+    # configure-pages needs: it calls GET /repos/{owner}/{repo}/pages, and with
+    # the Pages scope at `none` that returns 403 and the step fails — the build
+    # would break on a permission, not on anything about the site.
+    permissions:
+      contents: read
+      pages: read
+
     steps:
       - name: Check out the repository
         uses: actions/checkout@v4
 
+      # Not needed to produce the artifact — the app uses relative paths only
+      # and there is no static-site generator to configure. It is here because
+      # it fails loudly and early if Pages was never switched to "GitHub
+      # Actions", which is the one manual step this workflow cannot perform.
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
@@ -139,6 +151,13 @@ jobs:
     needs: build
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+
+    # One deployment at a time. cancel-in-progress is deliberately false: a live
+    # Pages deployment cancelled mid-flight can leave the site half-published,
+    # so a queued run waits rather than interrupts.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
 
     permissions:
       pages: write      # to publish the deployment

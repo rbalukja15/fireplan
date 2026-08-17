@@ -1560,6 +1560,39 @@ def exp_land_matrix(p: Probe) -> None:
                  atk_terrain="land", def_terrain="land")
 
 
+# Defence coefficients, keyed for the mixed-stack predictions below.
+DEF_COEF = {code: v[2] for code, v in MEASURED_UNITS.items()}
+
+
+ROSTER_ORDER = sum(UNIT_CLASSES.values(), [])
+
+
+def predict_stack(rows: list[tuple[str, int]], model: str) -> float:
+    """Predicted defensive output of a composite stack under each candidate.
+
+    per_type    every row saturates on its own count       sum E(c_i)
+    shared      one saturation for the stack, split by count share
+    cumulative  the stack saturates as a whole and rows draw from it in the
+                order the ROSTER lists them -- not the order they were
+                submitted. Submitting art before inf returns the inf-first
+                answer, so the server sorts before it computes.
+    """
+    total = sum(c for _, c in rows) or 1
+    if model == "per_type":
+        return sum(DEF_COEF.get(u, 0.0) * effective_units(c) for u, c in rows)
+    if model == "shared":
+        return sum(DEF_COEF.get(u, 0.0) * effective_units(total) * (c / total)
+                   for u, c in rows)
+    ordered = sorted(rows, key=lambda r: (ROSTER_ORDER.index(r[0])
+                                          if r[0] in ROSTER_ORDER else 99))
+    out, seen = 0.0, 0
+    for u, c in ordered:
+        out += DEF_COEF.get(u, 0.0) * (effective_units(seen + c)
+                                       - effective_units(seen))
+        seen += c
+    return out
+
+
 PATROL_TARGETS = ["inf", "ac", "ht"]
 PATROL_ROUNDS = ["0.25", "0.5", "0.75", "1"]
 
@@ -2330,6 +2363,203 @@ def exp_hp_scaling(p: Probe) -> None:
               + ("wiped" if wiped_rows else "surviving") + " attackers.")
 
 
+def composite(stack: int, side: str, rows: list[tuple[str, int]],
+              hp: str = "100%") -> dict[str, str]:
+    """Fill one side's unit rows with a COMPOSITE stack.
+
+    Every experiment before this one used exactly one unit row per side, and
+    duel() blanks rows 2-8 to keep it that way. That was a measurement choice
+    -- one variable at a time -- and it is not how the game works. A real stack
+    is a mixture, and the form has always had the rows for it.
+    """
+    out: dict[str, str] = {}
+    for i, (unit, count) in enumerate(rows, start=1):
+        out[f"{side}.{stack}.{i}.unit"] = unit
+        out[f"{side}.{stack}.{i}.count"] = str(count)
+        out[f"{side}.{stack}.{i}.hp"] = hp
+    for i in range(len(rows) + 1, 9):
+        out[f"{side}.{stack}.{i}.count"] = ""
+        out[f"{side}.{stack}.{i}.hp"] = ""
+    return out
+
+
+# Rows beyond what the GET ships have to be synthesised, exactly as the page's
+# own addUnit() does. B ships four; A ships one.
+def composite_fields(side: str, stack: int, n_rows: int) -> tuple[str, ...]:
+    out = []
+    for i in range(1, n_rows + 1):
+        out += [f"{side}.{stack}.{i}.unit", f"{side}.{stack}.{i}.count",
+                f"{side}.{stack}.{i}.hp"]
+    return tuple(out)
+
+
+def exp_mixed_stacks(p: Probe) -> None:
+    """Is the stack-size factor E(n) per ROW or per STACK?
+
+    THE QUESTION THIS ANSWERS. E(n) saturates hard -- 50 units contribute 35
+    effective, and past 50 nothing at all. Every measurement in this project
+    put one unit type in one row, so n was simultaneously "units of this type"
+    and "units in this stack" and the two could never be told apart. For a
+    single-type stack it makes no difference. For a real one it decides whether
+
+        25 infantry + 25 artillery  =  E(25) + E(25) = 49.2 effective
+                              or  =  E(50)          = 35.0 effective
+
+    a factor of 1.4, and it is the difference between "split your doomstack"
+    and "do not bother". Nothing in the model predicts which.
+
+    THE DISCRIMINATOR. Hold the total count fixed and vary only how many rows
+    it is spread across. E is linear below 20, so the split has to straddle the
+    knee to say anything: 50 in one row against 25+25 gives 175 against 245.8
+    on the defender's output, which no reading precision can blur.
+
+    Reading the same responses also settles two more things for free:
+
+      * ALLOCATION. The page prints a separate span per unit row, so a mixed
+        stack's incoming damage is itemised. Whether it lands proportionally
+        to pool, to count, or on one row first has never been looked at.
+      * WHETHER ROWS INTERACT AT ALL. If two rows of the same unit behave
+        exactly like one row of the sum, rows are pure bookkeeping.
+    """
+    # The attacker exists only to be shot at: its loss IS the defender's output.
+    # So it must be able to absorb the largest output either hypothesis
+    # predicts, or the reading is capped at its pool and the discriminator
+    # collapses. Per-row on 50 units predicts 5.0 x (E(25)+E(25)) = 245.8, so
+    # 10 infantry (pool 200) is not enough -- the offline suite caught exactly
+    # that, and it would have read as "NEITHER" on live data.
+    atk_n = 20
+    base = settings()
+    results: dict[str, dict[str, Any]] = {}
+
+    def fight(label: str, rows: list[tuple[str, int]], **kw: Any) -> dict | None:
+        ov = dict(base)
+        ov.update(duel(1, "inf", atk_n, rows[0][0], rows[0][1], **kw))
+        ov.update(composite(1, "B", rows))
+        try:
+            p.submit(ov, create=composite_fields("B", 1, len(rows)))
+        except (BareFormReturned, ValueError) as e:
+            print(f"  ! {label}: {e}", file=sys.stderr)
+            record("mixed_stacks", {"label": label, "rows": rows,
+                                    "error": str(e)}, {})
+            return None
+        d = dict(p.last_details)
+        got = {"detail": d, "rows": rows,
+               "atk_lost": (d.get("A.1.1") or {}).get("lost"),
+               "def_rows": {k: v for k, v in d.items() if k.startswith("B.1.")}}
+        record("mixed_stacks", {"label": label, "rows": rows, "atk_n": atk_n,
+                                "detail": d, "summary": dict(p.last_summary),
+                                "raw": dict(p.last_raw)},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        results[label] = got
+        return got
+
+    total = 50
+    print(f"\n  {atk_n} infantry attack a {total}-unit defender, split various ways.")
+    print("  The defender's OUTPUT (= the attacker's loss) is the discriminator.\n")
+    print(f"  {'layout':32} {'atkLost':>9} {'per-type':>10} {'shared':>11} "
+          f"{'cumulative':>11}")
+    print("  per-type   = every row gets E(its own count), summed")
+    print("  shared     = one E(total) split by each row's share of the count")
+    print("  cumulative = row i gets E(units through i) - E(units before i)\n")
+
+    # The server refuses a repeated unit type -- "The same unit can't be
+    # specified twice in same stack" -- so a stack is a set of DISTINCT types
+    # and the obvious control (25 inf + 25 inf against 50 inf) cannot be sent.
+    # The question survives in a better form: is a mixed stack's output the sum
+    # of its rows measured alone, or is it capped by the stack as a whole?
+    layouts = [
+        ("50 inf, one row", [("inf", 50)]),
+        ("25 inf alone", [("inf", 25)]),
+        ("25 art alone", [("art", 25)]),
+        ("25 inf + 25 art", [("inf", 25), ("art", 25)]),
+        ("25 art + 25 inf (swapped)", [("art", 25), ("inf", 25)]),
+        # Asymmetric splits. With both rows at 25 every candidate that depends
+        # only on the count is degenerate -- the two rows are interchangeable
+        # and several different laws collapse to the same number. Moving the
+        # weight breaks that tie.
+        ("40 inf + 10 art", [("inf", 40), ("art", 10)]),
+        ("10 inf + 40 art", [("inf", 10), ("art", 40)]),
+    ]
+    saturated = False
+    for label, rows in layouts:
+        got = fight(label, rows)
+        if not got or got["atk_lost"] is None:
+            continue
+        a = (got["detail"].get("A.1.1") or {})
+        if a.get("pct", 0) >= 99.9:
+            saturated = True
+            print(f"  ! {label}: the ATTACKER was wiped, so its loss is capped "
+                  f"at its own pool and understates the defender's output.",
+                  file=sys.stderr)
+        print(f"  {label:32} {got['atk_lost']:9.2f} "
+              f"{predict_stack(rows, 'per_type'):10.2f} "
+              f"{predict_stack(rows, 'shared'):11.2f} "
+              f"{predict_stack(rows, 'cumulative'):11.2f}")
+
+    mixes = [(lbl, r["rows"], r["atk_lost"]) for lbl, r in results.items()
+             if len(r["rows"]) > 1 and r["atk_lost"]]
+    if saturated:
+        print("\n  NO VERDICT — an attacker stack was wiped, so its loss was "
+              "capped at its pool rather than reporting the defender's true "
+              "output. A capped reading looks exactly like a smaller one.")
+    elif not mixes:
+        print("\n  NO VERDICT — no multi-row stack produced a reading.")
+    else:
+        errs = {m: max(abs(obs - predict_stack(rows, m)) / obs
+                       for _, rows, obs in mixes)
+                for m in ("per_type", "shared", "cumulative")}
+        for m in ("per_type", "shared", "cumulative"):
+            print(f"    {m:11} worst error {100 * errs[m]:6.2f}%")
+        best = min(errs, key=errs.get)
+        names = {
+            "per_type": "PER UNIT TYPE — each row saturates on its own count, so "
+                        "a mixed army beats a single-type one of the same size",
+            "shared": "PER STACK, SHARED BY COUNT — one saturation for the whole "
+                      "stack, split by each row's share of it",
+            "cumulative": "PER STACK, CUMULATIVE IN ROSTER ORDER — the stack "
+                          "saturates as a whole and each unit type draws from "
+                          "what is left, in the order the roster lists them",
+        }
+        if errs[best] <= 0.01:
+            print(f"\n  VERDICT: E(n) is {names[best]} "
+                  f"(worst error {100 * errs[best]:.2f}%).")
+            if best == "cumulative":
+                print("  SUBMISSION ORDER DOES NOT MATTER — the swapped pair "
+                      "above returns the identical figure, so the server sorts "
+                      "into roster order before it computes. What DOES matter is "
+                      "that a type appearing late in that order draws from the "
+                      "saturated tail: 40 artillery beside 10 infantry get "
+                      "E(50)-E(10) = 25 effective, against E(40) = 33.3 on their "
+                      "own. Mixing costs the later type, and you cannot reorder "
+                      "your way out of it.")
+        else:
+            print(f"\n  VERDICT: none of the three fits (best is {best} at "
+                  f"{100 * errs[best]:.2f}%). The table above is the finding — "
+                  f"do not compress it.")
+
+
+    # ---- allocation: who takes the damage in a mixed stack? ---------------
+    print("\n  Damage allocation inside a mixed stack\n")
+    mixed = [("inf", 25), ("art", 25)]
+    got = fight("25 inf + 25 art", mixed)
+    if got:
+        print(f"  {'row':10} {'unit':6} {'HP lost':>9} {'pool':>9} {'% of own':>9}")
+        tot = 0.0
+        for i, (unit, count) in enumerate(mixed, start=1):
+            d = got["def_rows"].get(f"B.1.{i}") or {}
+            lost, pool = d.get("lost"), d.get("pool")
+            tot += lost or 0
+            print(f"  B.1.{i:<6} {unit:6} "
+                  + (f"{lost:9.2f}" if lost is not None else f"{'—':>9}")
+                  + (f"{pool:9.1f}" if pool else f"{'—':>9}")
+                  + (f"{100 * lost / pool:9.1f}" if (lost and pool) else f"{'—':>9}"))
+        print(f"\n  Total taken: {tot:.2f}. An attacker of {atk_n} infantry deals "
+              f"{4.0 * effective_units(atk_n):.2f} against a single-row stack.")
+        print("  Equal percentages mean damage is shared in proportion to pool; "
+              "equal absolute\n  figures mean it is split per row; one row at "
+              "zero means rows are ordered.")
+
+
 def exp_terrain(p: Probe) -> None:
     """Each terrain against the same baseline; multipliers fall out as ratios."""
     terrains = p.select_options.get("A.1.terrain") or ["land", "air", "sea"]
@@ -2636,6 +2866,7 @@ def exp_unit_stats(p: "Probe") -> None:
 
 EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "unit_stats": exp_unit_stats,
+    "mixed_stacks": exp_mixed_stacks,
     "buildings": exp_buildings,
     "trenches": exp_trenches,
     "air_vs_ground": exp_air_vs_ground,
@@ -2652,7 +2883,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
 # it is about to spend on someone else's ad-supported fan site before it starts
 # rather than after. Approximate by design: saturation re-runs add a few.
 REQUEST_ESTIMATE: dict[str, int] = {
-    "unit_stats": 20, "buildings": 14, "patrol": 18, "trenches": 10, "air_vs_ground": 30,
+    "unit_stats": 20, "buildings": 14, "patrol": 18, "mixed_stacks": 8, "trenches": 10, "air_vs_ground": 30,
     "land_matrix": 100, "size_factor": 33, "hp_scaling": 10,
     "fortress": 6, "terrain": 5, "variance": 60,
 }

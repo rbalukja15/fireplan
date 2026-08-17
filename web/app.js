@@ -248,9 +248,9 @@ function boot() {
 
   // Live recalculation. `input` covers typing, sliders and select changes.
   $('builders').addEventListener('input', onInput);
-  $('builders').addEventListener('change', onInput);
+  $('builders').addEventListener('change', onCommit);
   $('rounds').addEventListener('input', onInput);
-  $('rounds').addEventListener('change', onInput);
+  $('rounds').addEventListener('change', onCommit);
   $('mode').addEventListener('change', onInput);
 
   $('builders').addEventListener('click', (ev) => {
@@ -272,7 +272,13 @@ function boot() {
 
   window.addEventListener('hashchange', () => {
     const s = decodeState(location.hash);
-    if (!s) return;
+    if (!s) {
+      // An in-page anchor — the skip link, or the sticky bar — has just
+      // replaced the encoded battle in the URL with "#result". Put it back, or
+      // Copy link hands out a link to an anchor instead of to this battle.
+      syncHash(currentConfig());
+      return;
+    }
     state = s;
     renderBuildings('attacker');
     renderBuildings('defender');
@@ -290,6 +296,24 @@ function boot() {
   } catch {
     $('working').open = true;
   }
+
+  // Printing. A closed <details> prints nothing whatever the stylesheet says,
+  // so the working and the roster are opened for the print and put back after.
+  const printables = [$('working'), $('roster')].filter(Boolean);
+  let printMemo = null;
+  window.addEventListener('beforeprint', () => {
+    printMemo = printables.map((d) => d.open);
+    for (const d of printables) d.open = true;
+  });
+  window.addEventListener('afterprint', () => {
+    if (printMemo) printables.forEach((d, i) => { d.open = printMemo[i]; });
+    printMemo = null;
+  });
+
+  // Tells the classic fallback script at the foot of index.html to stand down;
+  // it fires only when nothing here ever ran.
+  window.__appBooted = true;
+  $('fatal').hidden = true;
 
   $('stickybar').hidden = false;
   document.body.classList.add('has-sticky');
@@ -515,6 +539,30 @@ function onInput() {
   recompute();
 }
 
+/**
+ * A committed edit — blur, Enter, or a spinner click.
+ *
+ * readDomToState() clamps: count to 1..500, HP to 1..100, rounds to something
+ * positive. While typing that is right, but once an entry is committed the box
+ * would go on showing 999 (or 0, or nothing) while the result — and the link
+ * the Copy button hands out — described a different battle. Write the clamped
+ * values back so the form cannot silently disagree with the figures under it.
+ */
+function onCommit() {
+  readDomToState();
+  writeNumbersToDom();
+  recompute();
+}
+
+function writeNumbersToDom() {
+  for (const { key } of SIDES) {
+    $(key + '-count').value = String(state[key].count);
+    $(key + '-hp').value = String(state[key].hpPct);
+    $(key + '-hp-range').value = String(state[key].hpPct);
+  }
+  $('rounds').value = String(state.rounds);
+}
+
 function swapSides() {
   readDomToState();
   const a = state.attacker;
@@ -528,13 +576,17 @@ function swapSides() {
    7. Compute + render
    -------------------------------------------------------------------------- */
 
-function recompute() {
-  const config = {
+function currentConfig() {
+  return {
     attacker: cloneSide(state.attacker),
     defender: cloneSide(state.defender),
     rounds: state.rounds,
     mode: state.mode,
   };
+}
+
+function recompute() {
+  const config = currentConfig();
 
   updateStackNotes();
   syncHash(config);
@@ -560,6 +612,7 @@ function recompute() {
   renderSanity(result, config);
   renderDerivation(result.derivation);
   renderSticky(result);
+  announceResult(result);
 }
 
 function cloneSide(s) {
@@ -590,6 +643,8 @@ function renderEngineError(err) {
   $('sb-a-pct').textContent = '';
   $('sb-d-pct').textContent = '';
   $('verdict').textContent = 'No result.';
+  lastHeadline = '';
+  announce('The engine could not compute this matchup. No result is shown.');
   $('sanity').hidden = true;
   $('deriv-body').textContent = '';
   $('working-count').textContent = '';
@@ -687,13 +742,18 @@ function renderCoverage(coverage, config) {
     list.appendChild(el('li', null, t));
   }
 
+  // The chips read as a bare adjective out of context — "estimated" next to
+  // "Outcome" tells a screen-reader user nothing about what is estimated. The
+  // prefix is hidden from sight and carried in the accessibility tree.
   const chip = $('result-chip');
-  chip.textContent = level;
+  chip.textContent = '';
+  chip.append(el('span', 'visually-hidden', 'Confidence: '), document.createTextNode(level));
   chip.className = 'conf-chip conf-' + level;
   $('result').dataset.level = level;
 
   const stConf = $('st-conf');
-  stConf.textContent = level;
+  stConf.textContent = '';
+  stConf.append(el('span', 'visually-hidden', 'Confidence: '), document.createTextNode(level));
   stConf.className = 'sb-conf conf-' + level;
 }
 
@@ -767,6 +827,42 @@ function isDestroyed(s) {
   return s.wiped === true;
 }
 
+/** The outcome sentence last written, without its explanatory sub-line. */
+let lastHeadline = '';
+
+/* --- 7c-ante. The page's only live region --------------------------------
+   The banner and the verdict are both rewritten on every keystroke. If both
+   are live regions, a screen reader reads two paragraphs of prose each time a
+   digit changes — which is how a confidence warning that matters becomes
+   noise the reader tunes out, and this app's whole point is that the warning
+   lands. So neither is live, and one short debounced line is posted here
+   instead: confidence first, then the outcome, then where the detail is.
+   -------------------------------------------------------------------------- */
+
+let announceTimer = null;
+
+function announce(text) {
+  const box = $('live');
+  if (!box) return;
+  clearTimeout(announceTimer);
+  announceTimer = setTimeout(() => { box.textContent = text; }, 450);
+}
+
+function announceResult(result) {
+  const caveats = $('coverage-caveats').children.length;
+  const bits = [`${displayedLevel} result.`];
+  if (lastHeadline) bits.push(lastHeadline);
+  const aHp = fmt((result.attacker || {}).hpLost);
+  const dHp = fmt((result.defender || {}).hpLost);
+  if (aHp !== null && dHp !== null) {
+    bits.push(`Attacker loses ${aHp} HP, defender ${dHp} HP.`);
+  }
+  if (caveats) {
+    bits.push(`${caveats} caveat${caveats === 1 ? '' : 's'} listed above the form.`);
+  }
+  announce(bits.join(' '));
+}
+
 function renderVerdict(result, config) {
   const a = result.attacker || {};
   const d = result.defender || {};
@@ -787,6 +883,7 @@ function renderVerdict(result, config) {
       ? `${blind.join(' and ')} ${blind.length > 1 ? 'have' : 'has'} no measured statistics at all — not HP, not attack, not defence. The figures below are what the model emits when asked a question it has no data for. They are not a prediction.`
       : 'This pairing was never submitted to the calculator even once. The figures below are what the model emits when asked a question it has no data for. They are not a prediction.';
     v0.appendChild(s0);
+    lastHeadline = 'No outcome can be stated for this matchup.';
     return;
   }
 
@@ -838,6 +935,7 @@ function renderVerdict(result, config) {
   const v = $('verdict');
   v.textContent = headline;
   v.appendChild(sub);
+  lastHeadline = headline;
 }
 
 /* --- 7c-bis. Self-consistency --------------------------------------------
@@ -1275,6 +1373,8 @@ function copyLink() {
     const old = btn.textContent;
     btn.textContent = 'Link copied';
     btn.classList.add('is-done');
+    // The label change is silent to a screen reader; say it in the live region.
+    announce('Link copied to the clipboard.');
     setTimeout(() => { btn.textContent = old; btn.classList.remove('is-done'); }, 1600);
   };
   if (navigator.clipboard && navigator.clipboard.writeText) {
