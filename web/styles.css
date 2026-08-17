@@ -265,22 +265,109 @@ button, input, select { font: inherit; color: inherit; }
 
 .stack-body {
   display: grid; gap: var(--s3);
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr;
+  margin-top: var(--s4); padding-top: var(--s3);
+  border-top: 1px dashed var(--line-2);
 }
-.field-unit { grid-column: 1 / -1; }
-@media (min-width: 480px) {
-  .stack-body { grid-template-columns: 2fr 1fr; }
-  .field-hp, .field-trench { grid-column: span 1; }
+@container stack (min-width: 380px) {
+  .stack-body { grid-template-columns: minmax(0, 22em); }
 }
 
 .field { min-width: 0; }
 .field > label,
-.bldg-head h3 {
+.bldg-head h3,
+.rows-head h3 {
   display: block;
   font-size: .72rem; font-weight: 650; text-transform: uppercase;
   letter-spacing: .07em; color: var(--muted);
   margin-bottom: var(--s1);
 }
+
+/* --- unit rows: a stack is a mixture ------------------------------------ */
+.rows-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--s2); margin-bottom: var(--s2);
+}
+.rows-head h3 { margin-bottom: 0; }
+
+.urows { display: grid; gap: var(--s2); }
+.urow {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  padding: var(--s2) var(--s3) var(--s3);
+}
+.stack-attacker .urow { border-left: 3px solid var(--atk-line); }
+.stack-defender .urow { border-left: 3px solid var(--def-line); }
+
+/* Narrow default: the unit select owns its own line, the numbers share the
+   next one. The remove button is a fixed square so the two number boxes keep
+   the same width whatever the label lengths are. */
+.urow-grid {
+  display: grid; gap: var(--s2);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 34px;
+  align-items: end;
+}
+.urow-grid .field-unit { grid-column: 1 / -1; }
+@container stack (min-width: 380px) {
+  .urow-grid { grid-template-columns: minmax(0, 1fr) 5.4em 5.4em 34px; }
+  .urow-grid .field-unit { grid-column: auto; }
+}
+.urow-grid > label { display: block; }
+.urow-grid .field > label { font-size: .64rem; letter-spacing: .06em; }
+.urow-grid select, .urow-grid input {
+  min-height: 38px; padding-block: 7px; font-size: .88rem;
+}
+.urow .btn-icon {
+  width: 34px; height: 38px; padding: 0; line-height: 1;
+  display: grid; place-items: center; font-size: 1.1rem;
+}
+.urow .btn-icon[disabled] { opacity: .4; cursor: not-allowed; }
+
+.urow-stats {
+  font-size: .72rem; color: var(--muted); margin-top: var(--s2);
+  font-variant-numeric: tabular-nums;
+}
+.urow-stats.is-danger { color: var(--danger); }
+
+/* The saturation readout. The bar is decorative — every figure in it is also
+   written out in the text beside it — so it is hidden from assistive tech. */
+.urow-eff {
+  display: flex; align-items: center; gap: var(--s2);
+  margin-top: var(--s1); flex-wrap: wrap;
+}
+.eff-num {
+  font-size: .78rem; font-weight: 620; font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.eff-bar {
+  flex: 1 1 5em; min-width: 3em; height: 7px; border-radius: 100px;
+  background: var(--line); overflow: hidden; display: flex;
+}
+.eff-bar i { display: block; height: 100%; background: var(--muted); }
+.stack-attacker .eff-bar i { background: var(--atk); }
+.stack-defender .eff-bar i { background: var(--def); }
+/* What saturation ate: hatched, so it reads as absence rather than as a second
+   quantity. */
+.eff-bar u {
+  display: block; height: 100%; opacity: .55;
+  background-image: repeating-linear-gradient(135deg,
+    var(--warn) 0 3px, transparent 3px 6px);
+}
+.urow-note { font-size: .72rem; color: var(--muted); margin-top: 4px; line-height: 1.35; }
+.urow-note:empty { display: none; }
+.urow-note.is-warn { color: var(--warn); }
+.urow-note.is-danger { color: var(--danger); }
+
+.sat-line {
+  margin-top: var(--s3); padding-top: var(--s2);
+  border-top: 1px dotted var(--line-2);
+  font-size: .74rem; color: var(--ink-2);
+  font-variant-numeric: tabular-nums; line-height: 1.4;
+}
+.sat-line:empty { display: none; }
+.sat-line b { font-weight: 650; }
+.sat-line .sat-warn { color: var(--warn); }
 .field-note {
   font-size: .74rem; color: var(--muted); margin-top: 4px; line-height: 1.35;
 }
@@ -310,17 +397,7 @@ select {
 }
 input:hover, select:hover { border-color: var(--muted); }
 
-/* The slider must never be the reason the page scrolls sideways. `min-width: 0`
-   lets it shrink inside its grid column; the flex-basis is large enough that it
-   wraps onto its own full-width line rather than being squeezed to a stub,
-   which is what happens in the narrow HP column between 760px and ~910px. */
-.hp-row { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; min-width: 0; }
-.hp-row input[type="number"] { width: 5.2em; flex: 0 0 auto; }
 .unit-suffix { color: var(--muted); font-size: .85rem; margin-left: -4px; }
-input[type="range"] {
-  flex: 1 1 7em; min-width: 0; accent-color: var(--focus);
-  height: 42px; background: none; border: 0; padding: 0;
-}
 
 /* --- buildings ---------------------------------------------------------- */
 .bldg-block {
@@ -484,6 +561,39 @@ input[type="range"] {
 .result[data-level="unknown"] .figure { text-decoration-color: var(--danger); }
 .result[data-level="estimated"] { border-color: var(--warn-line); }
 .result[data-level="unknown"] { border-color: var(--danger-line); }
+
+/* --- per-row itemisation of a result ------------------------------------ */
+.rowsplit { margin-top: var(--s4); }
+.rowsplit-h {
+  font-size: .68rem; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--muted); font-weight: 650; margin-bottom: var(--s1);
+}
+.rowsplit-table {
+  width: 100%; border-collapse: collapse;
+  font-size: .76rem; min-width: 300px;
+  font-variant-numeric: tabular-nums;
+}
+.rowsplit-table th, .rowsplit-table td {
+  text-align: left; padding: 5px var(--s2);
+  border-top: 1px solid var(--line);
+  white-space: nowrap;
+}
+.rowsplit-table thead th {
+  font-size: .62rem; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--muted); font-weight: 650; border-top: 0;
+  padding-top: 0;
+}
+.rowsplit-table th:first-child, .rowsplit-table td:first-child {
+  padding-left: 0; white-space: normal;
+}
+.rowsplit-table td:first-child { font-weight: 600; }
+.rowsplit-table .c-val { text-align: right; }
+.rowsplit-table td:last-child, .rowsplit-table th:last-child { padding-right: 0; }
+.rowsplit-table .row-none { color: var(--muted); font-weight: 400; }
+.rowsplit-table .row-sat { color: var(--warn); }
+.rowsplit-note { font-size: .7rem; color: var(--muted); margin-top: var(--s2); line-height: 1.4; }
+.rowsplit-note:empty { display: none; }
+.rowsplit-note.is-warn { color: var(--warn); }
 
 .score-buildings { margin-top: var(--s3); display: grid; gap: 4px; }
 .score-buildings:empty { display: none; }
