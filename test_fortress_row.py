@@ -119,7 +119,15 @@ check("L5 compounds to ~59%",
       abs(levels[5] - BASE_LOSS * 0.9 ** 5) < 0.05, str(levels[5]))
 check("ratios reported below 1.0", "ratio 0.9000" in out and "mitigation" in out)
 
-print("\n5. the OLD code would have measured nothing against this same server")
+print("\n5. the raw span text is recorded, not just the extracted number")
+check("every row carries raw span text",
+      all("raw" in r and r["raw"] for r in rows))
+check("raw text is the literal markup content",
+      rows[1]["raw"]["B.1.1"].startswith("Lost "), repr(rows[1]["raw"]["B.1.1"]))
+check("parsed breakdown stored beside it",
+      "pct" in rows[1]["detail"]["B.1.1"])
+
+print("\n6. the OLD code would have measured nothing against this same server")
 # Reproduce the old behaviour: write to bldg.0, which the server ignores.
 old_control = {k: v for k, v in posts[0].items()}
 old_level1 = dict(old_control)

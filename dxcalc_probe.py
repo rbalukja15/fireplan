@@ -987,9 +987,18 @@ def exp_fortress(p: Probe) -> None:
     except BareFormReturned as e:
         print(f"  ! control: {e}", file=sys.stderr)
         return
-    record("fortress", {"level": 0, "note": "control, no bldg row"}, control)
+    # The raw span TEXT goes into the record, not just the number pulled out of
+    # it. The attacker's reading under a fortress has been -8.5 at every level,
+    # and a bare number in results.jsonl cannot distinguish a genuinely signed
+    # loss from the leading digits of some phrase we have never seen. Whichever
+    # it is, the answer is in the text, so the text is what gets stored.
+    record("fortress", {"level": 0, "note": "control, no bldg row",
+                        "raw": dict(p.last_raw),
+                        "detail": dict(p.last_details)}, control)
     ref = control.get("B.1.1")
     print(f"  control (no fortress): defender lost {ref}")
+    for slot, text in sorted(p.last_raw.items()):
+        print(f"      {slot}: {text!r}")
 
     # Both stacks at the same position so the defender inherits its own
     # fortress, and 30 a side so one round cannot wipe either — a wipe
@@ -1004,12 +1013,16 @@ def exp_fortress(p: Probe) -> None:
         except BareFormReturned as e:
             print(f"  ! fort L{level}: {e}", file=sys.stderr)
             continue
-        record("fortress", {"level": level, "hp": "100%", "row": row}, r)
+        record("fortress", {"level": level, "hp": "100%", "row": row,
+                            "raw": dict(p.last_raw),
+                            "detail": dict(p.last_details)}, r)
         got = r.get("B.1.1")
         ratio = (got / ref) if (ref and got is not None) else None
         print(f"  fortress L{level}: defender lost {got}"
               + (f"   ratio {ratio:.4f}" if ratio is not None else "")
               + ("  <- mitigation" if ratio is not None and ratio < 0.999 else ""))
+        for slot, text in sorted(p.last_raw.items()):
+            print(f"      {slot}: {text!r}")
 
 
 def exp_size_factor(p: Probe) -> None:
