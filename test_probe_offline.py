@@ -195,6 +195,7 @@ print("\n5. REGRESSION: dropping the submit marker silently returns the bare for
 nm = dp.Probe(delay=0.0)
 nm.load_form()
 nm.submit_marker = None          # simulate the original bug
+before = FORM_HTML
 try:
     nm.submit({"A.1.1.count": "10"})
     raise AssertionError("expected BareFormReturned")
@@ -203,6 +204,18 @@ except dp.BareFormReturned:
           seen["outcome"] == "no marker -> bare form")
     check("and no 'oops' anywhere in the body — the silent failure",
           "oops" not in nm.last_response.lower())
+
+print("\n6. REGRESSION: a failed submit must not eat the captured form")
+# The failure dump used to be written to last_response.html — the same file
+# this fixture is loaded from. One bad submission (a balloon in air terrain is
+# enough) replaced the real form with the failure body, and every offline suite
+# then failed with "page layout changed?" while the site was fine.
+check("the fixture on disk is untouched",
+      open(os.path.join(HERE, "last_response.html"), "rb").read() == before,
+      "last_response.html was overwritten by a failed submit")
+check("and the failure went to its own file",
+      os.path.exists(os.path.join(os.getcwd(), dp.FAILURE_PATH))
+      or dp.FAILURE_PATH != "last_response.html")
 
 print(f"\nALL {ok} CHECKS PASSED")
 srv.shutdown()

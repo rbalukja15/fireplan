@@ -3,10 +3,14 @@
 Black-box recovery of the combat formulas behind dxter's *Supremacy 1914* battle
 calculator. Read this before touching `dxcalc_probe.py`.
 
-**Status: unblocked and productive.** The POST round-trips, the result semantics
-are settled, the whole unit roster is measured, and fortresses are solved. The
-next experiment (`buildings`) is written and tested but has never been run
-against the live site.
+**Status: the model is in good shape; the network is not.** The POST
+round-trips, the result semantics are settled, the whole unit roster is
+measured, and fortresses are solved. Four experiments are now written and
+offline-tested but have never been run live — `buildings`, `trenches`,
+`air_vs_ground`, `land_matrix` — because the last session ran in an environment
+where `dxcalc.com` is blocked. **Read §1 before anything else: the next session
+needs to start in the right environment, and that cannot be fixed once it is
+running.**
 
 ---
 
@@ -53,8 +57,36 @@ curl -sS -o /dev/null -w '%{http_code}\n' https://dxcalc.com/s1914     # want 20
 ```
 
 If that returns `000`/`403`, you are in the wrong environment. Say so and stop;
-do not try to route around the proxy. If it fails only on a redirect to
-`www.dxcalc.com`, add `*.dxcalc.com` to the allowlist.
+do not try to route around the proxy.
+
+### The apex is the host that matters (2026-08-17)
+
+A session ran in an environment where the allowlist covered the **subdomain but
+not the apex**, which fails in a way worth recognising because it looks half
+working:
+
+```
+https://dxcalc.com/s1914        curl: (56) CONNECT tunnel failed, response 403
+https://www.dxcalc.com/s1914    301  ->  location: https://dxcalc.com/s1914
+```
+
+`www` resolves, connects and answers — and then redirects straight into the
+blocked apex, so following the redirect fails anyway. **Allowing only
+`*.dxcalc.com` or `www.dxcalc.com` is not enough; the entry must be the bare
+`dxcalc.com`.** The environment in that session was a plain `Default`, not the
+`dxcalc` one described above, so the most likely cause is simply that the wrong
+environment was picked at session start.
+
+Two ways to tell this apart from the site being down, neither of which requires
+guessing:
+
+```bash
+curl -sS "$HTTPS_PROXY/__agentproxy/status"     # recentRelayFailures names the host
+curl -sS -o /dev/null -w '%{http_code}\n' https://example.com/   # 403 too => allowlist
+```
+
+`dxcalc_probe.py` now prints this diagnosis itself when a request dies on a
+tunnel/403 rather than leaving you to read it as a TLS or DNS problem.
 
 Local setup notes for the macOS checkout (pyenv 3.11.9): the script passes
 certifi's CA bundle explicitly because pyenv builds against an OpenSSL whose
@@ -154,6 +186,42 @@ and you have that unit's max HP **from the same request that measured damage**.
 `parse_reading()` returns `lost / pct / died / pool`.
 
 Deaths are `floor(HP_lost / unit_max_hp)`.
+
+### The per-stack summary table — free precision, previously unread
+
+Every stack's result block is followed by a `<table class=resultTable>` that
+the spans do not duplicate:
+
+```
+| HP lost | % lost | food | fish | iron | wood | coal | oil | gas | cash | hours
+|  141.67 |   23.6 |    0 |    0 |    0 |    0 |    0 |   0 |   0 |  $0 |    23
+```
+
+The two sources are complementary, and neither dominates:
+
+| | HP lost | % lost |
+|---|---|---|
+| span | `141.7` (1 dp) | `1.89%` (3 s.f.) |
+| table | `141.67` (2 dp) | `1.9` (1 dp) |
+
+So the best pool available from a single request is the **table's HP over the
+span's percentage**. On the captured fortress response that moves the
+defender's pool from `597.9` to `599.5` against a known `600` — the error drops
+by a factor of four. That is the cap on `maxHP`, which is why the unit table
+reads `60.06 / 175.44 / 260.12` for what are plainly `60 / 175 / 260`. **Worth
+re-running `unit_stats` for this reason alone: same requests, sharper table.**
+
+The table counts **unit rows only** — B.1 lost 11.3 HP of infantry and 8.5 HP
+of fortress, and its table says `11.33`.
+
+`refine_details()` performs the substitution, but only after checking that the
+stack's spans sum to the table it claims to summarise. A table attached to the
+wrong stack would look exactly as plausible as the building row that clobbered
+the attacker's slot for the whole first phase of this project, and that is the
+one failure mode this codebase should never re-learn by accident.
+
+`hours` (23 for the attacker, 1 for the defender) and the resource columns are
+unexplained. They are recorded rather than interpreted.
 
 ### Stack size factor
 
@@ -269,6 +337,9 @@ errors, and because the same failure modes will recur.
 | Building row overwrote a unit slot | `B.1.bldg.1` didn't match `SLOT_RE`, inherited `A.1.1`, and destroyed the attacker's reading in every fortress run | `RESULT_SLOT_RE` |
 | Nested `</span>` ended capture early | Truncated `-8.5 HP (3.4%) →` before `LVL:… DR:…`, the most informative text on the page | Span depth counting |
 | `--semantics` ruled on absent data | `None == None` passed vacuously, printing "VERDICT: HP LOST" with a 0.0/0.0 split from zero measurements | Refuses; reports `NO VERDICT` |
+| **A failed submit ate the test fixture** | `submit()` dumped any response with no readings to `last_response.html` — which is also the *committed capture of the real form* that all offline suites are built on. One balloon-in-air is enough: the fixture becomes a 38-byte stub, all suites fail with "page layout changed?", and the finger points at dxcalc.com when nothing about the site has changed | Failures now go to `last_failure.html` (gitignored); `test_probe_offline.py` asserts the fixture is byte-identical after a deliberate failure |
+| A bad `--run` name cost a live request | The experiment name was validated *after* `load_form()`, so a typo spent a page view and printed its complaint afterwards | Validated before the probe is constructed |
+| Saturation re-run could re-send an identical payload | At the defender-count cap the retry loop resent the same body and learned nothing | Retries only while the count actually grows |
 
 ---
 
@@ -336,22 +407,33 @@ containing only the last fortress run — and had to be reconstructed from a
 session transcript. Commit the file after every sweep. Re-deriving 37 rows
 means spending someone else's bandwidth twice for the same numbers.
 
-Experiments registered: `unit_stats`, `buildings`, `size_factor`, `hp_scaling`,
-`damage_land`, `damage_air`, `damage_sea`, `patrol`, `fortress`, `terrain`,
-`variance`.
+Experiments registered: `unit_stats`, `buildings`, `trenches`, `air_vs_ground`,
+`land_matrix`, `size_factor`, `hp_scaling`, `patrol`, `fortress`, `terrain`,
+`variance`. `--run` now prints the approximate request cost before it starts.
 
-`damage_land`, `damage_air` and `damage_sea` predate `unit_stats` and are
-largely superseded by it. They also do not record which side a reading came
-from, so they will merge attack and defence coefficients into one meaningless
-average. Rewrite or retire them rather than running them as they stand.
+`damage_land`, `damage_air` and `damage_sea` have been **retired** — they
+predate `unit_stats`, they sent one attacker into twenty defenders (so the
+attacker's reading was always the capped one), and they did not record which
+side a reading came from, which merges attack and defence coefficients into an
+average that is neither. Asking for them by name now prints what replaced them
+instead of "Unknown experiment":
 
-### Tests — 75 checks, no network needed
+| retired | replacement |
+|---|---|
+| `damage_land` | `unit_stats` for the diagonal, `land_matrix` for the rest |
+| `damage_sea` | `unit_stats` |
+| `damage_air` | `air_vs_ground` |
+
+### Tests — 150 checks, no network needed
 
 ```bash
-python3 test_probe_offline.py       # 36  transport, parsing, slot association
-python3 test_semantics_design.py    #  9  proves the experiment can discriminate
+python3 test_probe_offline.py       # 38  transport, parsing, slot association
+python3 test_semantics_design.py    #  9  proves --semantics can discriminate
 python3 test_unit_stats.py          # 15  recovers known constants from battle output
 python3 test_fortress_row.py        # 15  bldg.1 vs the bldg.0 template
+python3 test_result_table.py        # 29  the summary table, against real markup
+python3 test_trench_design.py       # 22  proves the trench sweep can discriminate
+python3 test_matchup_design.py      # 22  proves the matrix can discriminate
 ```
 
 These serve the site's courtesy budget as much as correctness: they run against
@@ -362,24 +444,53 @@ reproduce the real observation, and requires the right verdict against each. An
 experiment that cannot distinguish its candidates returns a confident answer
 either way.
 
+`test_trench_design.py` and `test_matchup_design.py` apply the same discipline
+to the two new sweeps, and each also asserts the thing the fortress phase got
+wrong: that the server actually *received* the field being varied. The trench
+test checks that all nine trench values reach the server and that the attacker's
+trench moves independently of the defender's. Configuring a field the server
+never sees produces a full sweep of identical readings and a confident "does
+nothing" — which is precisely the history here.
+
+**`last_response.html` is a fixture, not scratch.** It is the committed capture
+of the real form, and every mock server serves it. A failed submission dumps to
+`last_failure.html` instead; if you change that, you will silently destroy the
+fixture the first time a run hits a bad combination.
+
 ---
 
 ## 9. Next steps, in order
 
-1. **`--run buildings`** — 9 requests. Written and offline-tested, never run
-   live. Reads DR off the page for all eight types and distinguishes "renders a
-   row with DR 0%" from "renders no row at all", which a bare ratio of 1.0
-   cannot. Settles whether the other seven types are combat-relevant.
-2. **Re-run trenches.** The old conclusion predates the HP-lost discovery and
-   all three parser bugs. `duel()` already takes a `trench` argument.
-3. **Air-vs-ground matrix.** The standing question: does the Bomber deal 25.0 to
-   infantry but 0.0 to heavy tanks? `unit_stats` only measured `tac` against
-   `tac`. If it is 0 against all armour, that is a target-class rule; if 0
-   against heavy tanks *specifically* while other armour takes damage, that is a
-   bug worth reporting.
-4. **Re-verify `hp_scaling`** — the one confirmed law never re-checked since the
+Step 0 is `curl -sS -o /dev/null -w '%{http_code}\n' https://dxcalc.com/s1914`.
+Everything below needs the network; nothing below has ever run live. Four
+experiments are queued and offline-tested, so a working session should be able
+to spend its requests rather than its time.
+
+1. **`--run buildings`** — ~9 requests. Reads DR off the page for all eight
+   types and distinguishes "renders a row with DR 0%" from "renders no row at
+   all", which a bare ratio of 1.0 cannot. Settles whether the other seven
+   types are combat-relevant.
+2. **`--run trenches`** — ~10 requests. Reads HP lost and the derived pool
+   separately, so it separates the three candidate mechanics; a sweep that
+   watches only HP lost cannot tell "enlarges the pool" from "does nothing",
+   which is the likeliest reading of the old conclusion. Also asks, in one
+   extra request, whether a trench helps the side that is attacking.
+3. **`--run air_vs_ground`** — ~30 requests. The standing question: does the
+   Bomber deal 25.0 to infantry but 0.0 to heavy tanks? `unit_stats` measured
+   `tac` against `tac` and got 3.0, so the whole air column may describe
+   same-class combat only. If a plane is 0 against all armour that is a
+   target-class rule; if it is 0 against heavy tanks *specifically* while other
+   armour takes damage, that is a bug worth mailing to dxcalc@gmail.com.
+4. **Re-run `unit_stats`** — 17 requests, and now worth it: the summary table
+   sharpens every pool reading, so the max-HP column should come back as clean
+   integers instead of 60.06 / 175.44 / 260.12. It also re-confirms the roster
+   against a third independent run.
+5. **Re-verify `hp_scaling`** — the one confirmed law never re-checked since the
    parser fixes.
-5. **`terrain`**, then **`variance`** (60+ samples, `simulateVariance=on`) to
+6. **`--run land_matrix`** — ~100 requests, so weigh it. Its diagonal must
+   reproduce the `atk` column of `MEASURED_UNITS`; check that before trusting
+   anything off-diagonal.
+7. **`terrain`**, then **`variance`** (60+ samples, `simulateVariance=on`) to
    characterise whether the ±10% roll is per unit or per unit type per round.
 
 ---
@@ -402,4 +513,15 @@ either way.
   but it explains otherwise-confusing function names.
 - Do `hpLeft` spans elsewhere carry tails like the building row's? The unit
   numbers all reconcile cleanly, so probably not — but they were only ever seen
-  through the truncating parser.
+  through the truncating parser. (The related question "what else is on the page
+  that nothing reads?" has now been answered once, by the summary table in §4.
+  It was worth asking; it may be worth asking again.)
+- What are the summary table's `hours` and resource columns? `hours` was 23 for
+  a stack that lost 141.67 HP and 1 for one that lost 11.33 — not proportional,
+  so it is not simply HP/rate. Repair or regeneration time is the obvious guess.
+  Every resource column was 0 in the only response captured so far; a battle
+  involving units that cost upkeep may fill them in.
+- Does a stack wiped inside the measured round still deal its full damage? Every
+  coefficient read from the *other* side assumes so, and nobody has checked. A
+  pair of runs either side of the wipe threshold would settle it, and it bears
+  on how far the lopsided re-runs in `unit_stats` can be trusted.

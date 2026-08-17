@@ -13,8 +13,13 @@ Stdlib only. No pip install. Python 3.9+.
 
     python3 dxcalc_probe.py --dump-fields          # discover the form schema first
     python3 dxcalc_probe.py --sanity               # verify the POST round-trips
-    python3 dxcalc_probe.py --run damage_land
+    python3 dxcalc_probe.py --run trenches
     python3 dxcalc_probe.py --run all --delay 2.0
+
+dxcalc.com is blocked by default in Anthropic-hosted cloud environments. The
+session must be STARTED in an environment whose allowed-domains list contains
+the apex dxcalc.com; network policy is fixed at provisioning. Allowing only
+www.dxcalc.com does not work — it 301-redirects to the apex.
 
 Results stream to results.jsonl as they arrive, so a crash mid-sweep loses
 nothing.
@@ -150,8 +155,40 @@ FORTRESSES DO NOT REDUCE THE DEFENDER'S OUTPUT
     damage only; the defenders still hit for full. That reading was invisible
     while the building row was overwriting it.
 
-Trenches add to the defender's HP pool rather than reducing incoming damage.
-Levels 1-3 conferred no measurable benefit at all.
+THE PER-STACK SUMMARY TABLE — free precision nobody had read
+    Every stack's result block is followed by <table class=resultTable>, and it
+    is not a restatement of the span:
+
+        | HP lost | % lost | food | ... | cash | hours
+        |  141.67 |   23.6 |    0 | ... |   $0 |    23
+
+    The span rounds HP to one decimal (141.7) and the table does not (141.67);
+    the span carries three significant figures of percentage (1.89%) where the
+    table prints one decimal (1.9). The two are complementary, so the best pool
+    available from one request is the TABLE's HP over the SPAN's percentage.
+    On the captured fortress response that moves the defender's pool from 597.9
+    to 599.5 against a known 600 — a four-fold cut in the error that caps max
+    HP, which is why that column read 60.06 / 175.44 / 260.12 for 60 / 175 /
+    260. refine_details() does the substitution, but only after checking that
+    the stack's spans sum to the table it claims to summarise: a table attached
+    to the wrong stack would look every bit as plausible as the building row
+    that clobbered the attacker's slot for a whole phase of this project.
+
+    The table counts UNIT rows only — B.1 lost 11.3 HP of infantry and 8.5 of
+    fortress, and its table says 11.33. The resource columns and 'hours' are
+    unexplained and simply recorded.
+
+TRENCHES — UNVERIFIED, DO NOT CITE
+    The old note said trenches add to the defender's HP pool rather than
+    reducing incoming damage, and that levels 1-3 conferred no measurable
+    benefit. That predates the HP-lost discovery and all three parser bugs, and
+    "no measurable benefit" is exactly what the fortress said while the rig was
+    writing to a template row.
+
+    Note also that a pool increase and no effect at all are INDISTINGUISHABLE
+    to anything that reads only HP lost, which is all the old rig could do. Use
+    --run trenches, which reads HP lost and the derived pool separately and so
+    can tell the two apart.
 
 KNOWN SERVER BUG
     A Balloon ('bal') in 'air' terrain makes the server silently return the
@@ -168,15 +205,17 @@ BUILDING ROWS INDEX FROM 1, NOT 0
     the control and the level-1 run were the same request. See exp_fortress.
 
 STILL OPEN
-    - Fortress mitigation, now that the sweep writes to bldg.1. Unmeasured
-      rather than zero: the previous null result was an artifact of the index.
-      Extend to the other seven building types once forts read non-1.0.
-    - Tactical bomber deals 25.0 to infantry but 0.0 to heavy tanks, while
-      fighters deal 0 ground damage generally. Target-class rule or bug?
-      One data point each; needs the full air x ground matrix.
-    - Naval roster untouched.
+    - The other seven building types. --run buildings reads DR straight off
+      each one's result row; written and offline-tested, never run live.
+    - Trenches: which of the three mechanics, if any. --run trenches.
+    - Does damage depend on the TARGET? unit_stats measured every unit against
+      ITSELF, so the whole table is the diagonal of a matrix nobody has seen
+      off-diagonal. The bomber is the sharp case: 3.0 against bombers, but the
+      original notes claim 25.0 against infantry and 0.0 against heavy tanks.
+      --run air_vs_ground, then --run land_matrix.
     - Terrain multipliers untouched.
     - Variance distribution (the +/-10% roll) never sampled.
+    - What 'hours' and the resource columns of the summary table mean.
 
 ISOLATION TECHNIQUE
     Isolation is by the 'target' field, NOT by distance. A.n.target = B.n pairs
@@ -216,6 +255,7 @@ import argparse
 import html as html_mod
 import http.cookiejar
 import json
+import math
 import re
 import ssl
 import sys
@@ -230,12 +270,31 @@ BASE_URL = "https://dxcalc.com/s1914"
 DEFAULT_DELAY = 1.5
 RESULTS_PATH = "results.jsonl"
 
+# Where a response that yielded no readings gets dumped for inspection.
+#
+# This used to be last_response.html — which is also the COMMITTED CAPTURE of
+# the real form that all five offline test suites are built on. So any failed
+# submission overwrote the fixture with the failure body, and the balloon bug
+# alone is enough to trigger it: one 'bal' in air terrain and the file becomes
+# a stub, every mock server starts serving a page with no fields, and all
+# seventy-odd offline checks fail with "page layout changed?" — pointing at
+# dxcalc.com when nothing about the site has changed at all.
+#
+# The two uses are genuinely different: one is a fixture, the other is scratch.
+# They now have different names. results.jsonl was lost once to a comparable
+# accident and had to be rebuilt from a session transcript; this is the same
+# hazard with a longer fuse, because a clobbered fixture still looks like a file.
+FAILURE_PATH = "last_failure.html"
+
 SLOT_RE = re.compile(r"^([AB])\.(\d+)\.(\d+)$")
 # Buildings get their own result row, e.g. B.1.bldg.1, and it does NOT match
 # SLOT_RE. Without matching it here the building's span inherits whichever unit
 # slot was last seen and overwrites that stack's reading — which is exactly
 # what happened to the attacker throughout the fortress sweep.
 RESULT_SLOT_RE = re.compile(r"^([AB])\.\d+(?:\.[A-Za-z]+)?\.\d+$")
+# The stack container itself: <div id=A.1>. Deliberately excludes A.1.1 and
+# A.1.bldg.0 — this is what a per-stack summary table is attached to.
+STACK_ID_RE = re.compile(r"^([AB])\.(\d+)$")
 UA = "Mozilla/5.0 (X11; Linux x86_64) dxcalc-probe/1.0 (research; contact via dxcalc forum)"
 
 
@@ -410,6 +469,192 @@ class SpanCensus(HTMLParser):
             if text:
                 self.classes.setdefault(self._cls, []).append(text)
             self._cls = None
+
+
+class StackSummaryScraper(HTMLParser):
+    """Per-stack <table class=resultTable>, which nobody had read until now.
+
+    Every stack's result block is followed by a small table the spans do not
+    duplicate:
+
+        | HP lost | % lost | food | fish | iron | wood | coal | oil | gas | cash | hours
+        |  141.67 |   23.6 |    0 |    0 |    0 |    0 |    0 |   0 |   0 |  $0 |    23
+
+    Two things make it worth parsing.
+
+    FIRST, PRECISION. The span rounds HP to one decimal and the table does not:
+    141.67 against the span's "Lost 141.7 HP", 11.33 against "Lost 11.3 HP".
+    The percentage goes the other way — the span carries three significant
+    figures (1.89%) where the table prints one decimal (1.9) — so the two
+    sources are complementary, and the best pool estimate available from a
+    single request is the TABLE's HP over the SPAN's percentage. That directly
+    sharpens max-HP, which until now was derived from the percentage alone and
+    landed on 60.06 / 175.44 / 260.12 for what are plainly 60 / 175 / 260.
+
+    SECOND, COLUMNS NOBODY HAS LOOKED AT. The resource columns and 'hours' are
+    unexplained; they are recorded rather than interpreted, so a later session
+    has the data without spending requests to get it.
+
+    ASSOCIATION RULE: the table belongs to the stack container most recently
+    opened — <div id=A.1>, matched by STACK_ID_RE, not A.1.1 and not
+    A.1.bldg.0. In the captured response the order is strictly
+    stack-A / its rows / table, stack-B / its rows / table, so "nearest
+    preceding stack id" is exact rather than a heuristic. Getting an
+    association rule wrong is how the building row came to clobber the
+    attacker's reading for the whole first phase of this project, so
+    refine_details() below cross-checks every table against the spans it
+    claims to summarise instead of trusting this comment.
+
+    NOTE the table counts UNIT rows only: the fortress run has B.1 losing 11.3
+    HP of units and 8.5 HP of fortress, and its table says 11.33, not 19.8.
+    """
+
+    # Header text -> key. Unknown headers are slugified rather than dropped, so
+    # a column dxter adds later shows up as data instead of vanishing.
+    COLUMNS = {"hp lost": "hp_lost", "% lost": "pct_lost"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.summaries: dict[str, dict[str, float]] = {}
+        self.extra_rows: dict[str, list[list[str]]] = {}
+        self._stack: str | None = None
+        self._in_table = False
+        self._rows: list[list[str]] = []
+        self._cells: list[str] | None = None
+        self._buf: list[str] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        a = {k: (v or "") for k, v in attrs}
+        if STACK_ID_RE.match(a.get("id", "")):
+            self._stack = a.get("id", "")
+        if tag == "table" and "resultTable" in a.get("class", "").split():
+            self._in_table = True
+            self._rows = []
+        elif self._in_table:
+            if tag == "tr":
+                self._cells = []
+            elif tag in ("th", "td") and self._cells is not None:
+                self._buf = []
+
+    def handle_data(self, data: str) -> None:
+        if self._buf is not None:
+            self._buf.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if not self._in_table:
+            return
+        if tag in ("th", "td") and self._buf is not None and self._cells is not None:
+            self._cells.append("".join(self._buf).strip())
+            self._buf = None
+        elif tag == "tr" and self._cells is not None:
+            self._rows.append(self._cells)
+            self._cells = None
+        elif tag == "table":
+            self._in_table = False
+            self._store()
+
+    @classmethod
+    def _key(cls, header: str) -> str:
+        h = header.strip().lower()
+        if h in cls.COLUMNS:
+            return cls.COLUMNS[h]
+        return re.sub(r"[^a-z0-9]+", "_", h).strip("_") or "col"
+
+    @staticmethod
+    def _value(cell: str) -> float | None:
+        """'141.67' -> 141.67, '$0' -> 0.0, '' -> None. Currency and thousands
+        separators are formatting; a cell that is not a number at all is
+        reported as None rather than guessed at."""
+        m = re.search(r"-?\d+(?:\.\d+)?", strip_thousands(cell.replace("$", "")))
+        return float(m.group(0)) if m else None
+
+    def _store(self) -> None:
+        if len(self._rows) < 2:
+            return
+        if not self._stack:
+            print("  ! resultTable with no preceding stack id — not recorded.",
+                  file=sys.stderr)
+            return
+        header, data = self._rows[0], self._rows[1]
+        row: dict[str, float] = {}
+        for name, cell in zip(header, data):
+            val = self._value(cell)
+            if val is not None:
+                row[self._key(name)] = val
+        if row:
+            self.summaries[self._stack] = row
+        # More than one data row would mean the table carries a per-round or
+        # per-unit breakdown, which would be worth having. Say so loudly rather
+        # than silently keeping the first line.
+        if len(self._rows) > 2:
+            self.extra_rows[self._stack] = self._rows[2:]
+            print(f"  ! resultTable for {self._stack} has "
+                  f"{len(self._rows) - 1} data rows, not 1 — only the first is "
+                  f"summarised; the rest are in extra_rows.", file=sys.stderr)
+
+
+def stack_of(slot: str) -> str | None:
+    """'A.1.1' -> 'A.1', 'B.1.bldg.1' -> 'B.1'."""
+    m = re.match(r"^([AB]\.\d+)\.", slot)
+    return m.group(1) if m else None
+
+
+def refine_details(details: dict[str, dict[str, float]],
+                   summaries: dict[str, dict[str, float]],
+                   quiet: bool = False) -> dict[str, dict[str, float]]:
+    """Upgrade span readings with the summary table's extra digit, where safe.
+
+    The table gives a stack TOTAL over its unit rows; the spans give the split.
+    So the table can only replace a span when the stack has exactly one unit
+    row with a reading — which is every experiment here, because duel() blanks
+    rows 2-8 precisely so a single reading means a single unit type.
+
+    Before substituting anything, the sum of that stack's unit spans is checked
+    against the table. Agreement to within span rounding is the evidence that
+    the association rule held and that nothing unmodelled is in the total; a
+    mismatch is reported and the spans are left alone. A silent upgrade that
+    attached B.1's table to A.1 would be the building-row bug all over again,
+    and it would be far harder to spot because the numbers would still look
+    plausible.
+
+    Building rows (delta notation) are excluded from the sum: the fortress
+    response proves the table leaves them out.
+    """
+    out = {slot: dict(d) for slot, d in details.items()}
+    for stack, summary in summaries.items():
+        total = summary.get("hp_lost")
+        if total is None:
+            continue
+        units = [s for s, d in details.items()
+                 if stack_of(s) == stack and not d.get("delta") and "lost" in d]
+        if not units:
+            continue
+        span_sum = sum(details[s]["lost"] for s in units)
+        # Each span is rounded to 0.1, the table to 0.01.
+        tol = 0.05 * len(units) + 0.02
+        if abs(span_sum - total) > tol:
+            if not quiet:
+                print(f"  ! {stack}: summary table says {total} HP lost but its "
+                      f"spans sum to {span_sum:.2f} (tolerance {tol:.2f}). "
+                      f"Not substituting — check the table/stack association "
+                      f"before trusting either number.", file=sys.stderr)
+            continue
+        if len(units) != 1:
+            continue                      # total is real, but not divisible
+        slot = units[0]
+        d = out[slot]
+        d["lost_span"] = details[slot]["lost"]
+        d["lost"] = total
+        d["lost_source"] = 1.0            # 1.0 = table, absent = span
+        # Pool from the table's HP over the SPAN's percentage: the better half
+        # of each source. This is what sharpens max HP.
+        pct = d.get("pct")
+        if pct:
+            d["pool"] = round(total / (pct / 100), 1)
+        for key in ("hours", "cash"):
+            if key in summary:
+                d[f"stack_{key}"] = summary[key]
+    return out
 
 
 # onAttack(name, value) injects a hidden field at click time so the server can
@@ -597,6 +842,7 @@ class Probe:
         self.save_response = save_response
         self.last_details: dict[str, dict[str, float]] = {}
         self.last_raw: dict[str, str] = {}
+        self.last_summary: dict[str, dict[str, float]] = {}
         self.last_response = ""
         self.submit_marker: tuple[str, str] | None = None
         self.select_options: dict[str, list[str]] = {}
@@ -705,13 +951,16 @@ class Probe:
         scraper = ResultScraper()
         scraper.feed(html)
         if not scraper.readings:
-            with open("last_response.html", "w") as fh:
+            with open(FAILURE_PATH, "w") as fh:
                 fh.write(html)
             raise BareFormReturned(
                 "No hpLeft spans in response. Either an invalid unit/terrain "
                 "combination aborted the batch (see the balloon bug), or the "
                 "POST body is missing a field the server requires."
             )
+        summary = StackSummaryScraper()
+        summary.feed(html)
+        self.last_summary = summary.summaries
         # Full breakdown lives on the Probe; the return value stays a plain
         # slot -> HP-lost mapping so existing experiments keep working.
         self.last_details = {}
@@ -736,6 +985,15 @@ class Probe:
                   "number, which may not be HP:", file=sys.stderr)
             for slot, text in unparsed[:4]:
                 print(f"      {slot}: {text!r}", file=sys.stderr)
+        # The summary table carries one more digit than the span. Substituting
+        # it is a no-op on a response that has no table, so nothing that
+        # predates this depends on it being there.
+        if self.last_summary:
+            self.last_details = refine_details(self.last_details,
+                                               self.last_summary)
+            for slot, detail in self.last_details.items():
+                if detail.get("lost_source") == 1.0:
+                    out[slot] = detail["lost"]
         return out
 
 
@@ -787,12 +1045,18 @@ def duel(
     def_hp: str = "100%",
     position: int = 0,
     trench: int = 0,
+    atk_trench: int = 0,
 ) -> dict[str, str]:
     """One isolated attacker-vs-defender pair in slot `stack`.
 
     A attacks B explicitly via the target field; B defends (target "0").
     Both sides share a position so ranged attackers are always in range and
     the defender inherits any buildings assigned at that position.
+
+    `trench` is the DEFENDER's trench level and `atk_trench` the attacker's.
+    They are separate because whether a trench helps the side that is doing the
+    attacking is itself an open question — the fortress turned out to protect
+    the defender only — and a single `trench` argument cannot ask it.
     """
     if def_terrain is None:
         def_terrain = atk_terrain
@@ -800,7 +1064,7 @@ def duel(
         f"A.{stack}.target": f"B.{stack}",
         f"A.{stack}.terrain": atk_terrain,
         f"A.{stack}.position": str(position),
-        f"A.{stack}.trench": "0",
+        f"A.{stack}.trench": str(atk_trench),
         f"A.{stack}.1.unit": atk_unit,
         f"A.{stack}.1.count": str(atk_count),
         f"A.{stack}.1.hp": atk_hp,
@@ -965,58 +1229,228 @@ def label_of(p: Probe, code: str) -> str:
     return p.option_labels.get(UNIT_FIELD, {}).get(code, code)
 
 
-def exp_damage_land(p: Probe) -> None:
-    """One attacker vs a fat defender stack, single round: HP delta IS base damage."""
-    units = roster(p, "land")
-    target = units[0] if units else "inf"
-    for unit in units:
-        ov = settings()
-        ov.update(duel(1, unit, 1, target, 20))
-        try:
-            record("damage_land", {"unit": unit, "label": label_of(p, unit)},
-                   p.submit(ov))
-        except BareFormReturned as e:
-            print(f"  ! {unit}: {e}", file=sys.stderr)
+# The unit table as measured by --run unit_stats, reproduced identically on two
+# runs an hour apart. Kept as data, not just prose in the docstring, for two
+# reasons: stacks can be sized from it so a measurement is not thrown away to
+# saturation, and every later reading of a unit's pool becomes a free
+# regression check on the row — a silent change to the site shows up as a
+# disagreement instead of as a quietly different constant.
+#
+# code -> (max HP, damage per unit attacking, damage per unit defending)
+# 'bal' is absent deliberately: it has never been measured, because a balloon
+# in air terrain kills the whole submission.
+MEASURED_UNITS: dict[str, tuple[float, float, float]] = {
+    "inf": (20.0, 4.0, 5.0),
+    "cav": (25.0, 15.0, 7.5),
+    "ac": (60.0, 6.0, 12.0),
+    "lart": (10.0, 5.0, 1.0),
+    "art": (20.0, 8.0, 2.7),
+    "rrg": (60.0, 20.0, 6.7),
+    "lt": (175.0, 30.0, 30.0),
+    "ht": (260.0, 45.0, 45.0),
+    "convoy": (20.0, 1.0, 1.0),
+    "st": (40.0, 25.0, 6.3),
+    "int": (60.0, 20.0, 20.0),
+    "tac": (80.0, 3.0, 3.0),
+    "zep": (140.0, 5.0, 5.0),
+    "sub": (100.0, 40.0, 40.0),
+    "cl": (50.0, 10.0, 10.0),
+    "bb": (200.0, 40.0, 40.0),
+}
+
+# Sizing basis for a defender stack: the largest attack coefficient in the
+# table, not the attacker's own measured value. Those were all measured U vs U,
+# and the whole question here is whether damage is much larger against a
+# different class — the note that started this said a bomber deals 25.0 to
+# infantry while unit_stats measured it at 3.0 against bombers. Sizing on 3.0
+# would guarantee the wipe that destroys the reading.
+ATK_CEILING = max(atk for _, atk, _ in MEASURED_UNITS.values())
+SIZING_SAFETY = 2.5
+MAX_DEF_COUNT = 400
 
 
-def exp_damage_air(p: Probe) -> None:
-    """The unresolved one: does the bomber really do 0 to heavy tanks?
+def defender_count(code: str, atk_n: int) -> int:
+    """Enough defenders that one round cannot wipe them.
 
-    Full air x ground matrix. If a plane is 0 against everything armoured and
-    nonzero against everything soft, that's a target-class rule. If it's 0
-    against heavy tanks specifically and fine against other armour, that's a
-    bug worth mailing to dxcalc@gmail.com.
-
-    One pair per submission: a single bad combination aborts the whole batch.
+    A wiped stack has its loss capped at its own pool, which understates the
+    opponent's damage — and understating it is indistinguishable from the
+    target-class rule this experiment is looking for. Pool grows linearly with
+    the count while the stack-size factor caps damage output at 35 effective
+    units, so a fat defender costs nothing but a bigger number in the payload.
     """
-    for unit in roster(p, "air"):
-        for target in roster(p, "land"):
-            ov = settings()
-            ov.update(duel(1, unit, 1, target, 20,
-                           atk_terrain="air", def_terrain="land"))
-            try:
-                record("damage_air",
-                       {"unit": unit, "target": target,
-                        "unit_label": label_of(p, unit),
-                        "target_label": label_of(p, target)},
-                       p.submit(ov))
-            except (BareFormReturned, ValueError) as e:
-                print(f"  ! {unit} vs {target}: {e}", file=sys.stderr)
+    hp = MEASURED_UNITS.get(code, (20.0, 0.0, 0.0))[0]
+    need = SIZING_SAFETY * atk_n * ATK_CEILING / hp
+    return max(20, min(MAX_DEF_COUNT, math.ceil(need)))
 
 
-def exp_damage_sea(p: Probe) -> None:
-    units = roster(p, "naval")
-    for unit in units:
-        for target in units:
-            ov = settings()
-            ov.update(duel(1, unit, 1, target, 20, atk_terrain="sea", def_terrain="sea"))
-            try:
-                record("damage_sea",
-                       {"unit": unit, "target": target,
-                        "unit_label": label_of(p, unit)},
-                       p.submit(ov))
-            except BareFormReturned as e:
-                print(f"  ! {unit} vs {target}: {e}", file=sys.stderr)
+def exp_matchups(p: Probe, attackers: list[str], targets: list[str],
+                 tag: str, atk_terrain: str, def_terrain: str,
+                 atk_n: int = 10) -> None:
+    """Cross-matrix of X attacking Y, with every reading labelled by side.
+
+    This replaces damage_land / damage_air / damage_sea, which sent one
+    attacker against twenty defenders and recorded the bare span numbers with
+    no note of which side each came from. Pooling an attacker-loss with a
+    defender-loss reading averages two independent coefficients into a number
+    that is neither, and a lone attacker is wiped in the measured round, so the
+    reading that survived was the capped one.
+
+    What unit_stats cannot answer: it measures U against U only, so every
+    coefficient in it is same-class. If damage depends on the TARGET, those are
+    17 points on the diagonal of a matrix nobody has seen off-diagonal.
+
+    Each submission yields two cells, because one battle contains both roles:
+
+        defender's loss / E(attacker count) = X's damage ATTACKING Y
+        attacker's loss / E(defender count) = Y's damage DEFENDING against X
+
+    The attacker count is held at 10 so E(n) = n exactly and the size factor
+    cannot confound anything; the defender stack is sized to survive.
+    """
+    if not attackers or not targets:
+        print("  ! nothing to sweep — empty roster.", file=sys.stderr)
+        return
+    print(f"  {len(attackers)} attacker(s) x {len(targets)} target(s), "
+          f"{atk_n} attacking, one request each\n")
+    print(f"  {'atk':7} {'target':7} {'defN':>5} {'dmg/atk':>9} {'dmg/def':>9} "
+          f"{'targetHP':>9}  note")
+
+    matrix: dict[str, dict[str, float]] = {}
+    for x in attackers:
+        for y in targets:
+            def_n = defender_count(y, atk_n)
+            note = ""
+            r = None
+            for attempt in range(3):
+                try:
+                    payload = settings("1")
+                    payload.update(duel(1, x, atk_n, y, def_n,
+                                        atk_terrain=atk_terrain,
+                                        def_terrain=def_terrain))
+                    p.submit(payload)
+                except ValueError as e:                 # guard_payload refused
+                    print(f"  {x:7} {y:7} {'-':>5} {'-':>9} {'-':>9} {'-':>9}"
+                          f"  SKIPPED: {e}")
+                    record(tag, {"atk": x, "target": y, "skipped": str(e)}, {})
+                    r = None
+                    break
+                except BareFormReturned as e:
+                    print(f"  {x:7} {y:7} {def_n:>5} {'-':>9} {'-':>9} {'-':>9}"
+                          f"  FAILED: {e}")
+                    record(tag, {"atk": x, "target": y, "error": str(e)}, {})
+                    r = None
+                    break
+                d = dict(p.last_details)
+                a, b = d.get("A.1.1", {}), d.get("B.1.1", {})
+                # Only B's wipe spoils the cell this matrix is built from.
+                wiped = b.get("pct", 0) >= 99.9
+                if wiped and attempt < 2:
+                    prev, def_n = def_n, min(MAX_DEF_COUNT, def_n * 4)
+                    if def_n > prev:
+                        note = f"re-run, defenders wiped at {prev}"
+                        continue
+                    # Already at the cap: retrying would re-send an identical
+                    # payload and spend a live request to learn nothing.
+                r = (d, a, b, def_n)
+                if wiped:
+                    note = "STILL WIPED — lower bound only"
+                break
+            if r is None:
+                continue
+            d, a, b, def_n = r
+
+            dmg_atk = (b["lost"] / effective_units(atk_n)) if "lost" in b else None
+            dmg_def = (a["lost"] / effective_units(def_n)) if "lost" in a else None
+            target_hp = (b["pool"] / def_n) if ("pool" in b and def_n) else None
+            # The attacker being wiped is a different worry: nobody has checked
+            # whether a stack that dies in the measured round still deals its
+            # full damage, so the cell is flagged rather than quietly trusted.
+            if a.get("pct", 0) >= 99.9:
+                note = (note + "; " if note else "") + "attacker wiped"
+            known = MEASURED_UNITS.get(y)
+            if known and target_hp and abs(target_hp - known[0]) > 0.05 * known[0]:
+                note = ((note + "; " if note else "")
+                        + f"pool implies {target_hp:.1f} HP, table says {known[0]}")
+
+            matrix.setdefault(x, {})[y] = dmg_atk if dmg_atk is not None else float("nan")
+            cell = lambda v: f"{v:9.3f}" if isinstance(v, float) else f"{'?':>9}"
+            print(f"  {x:7} {y:7} {def_n:>5} {cell(dmg_atk)} {cell(dmg_def)} "
+                  f"{cell(target_hp)}  {note}".rstrip())
+            record(tag, {"atk": x, "target": y, "atk_n": atk_n, "def_n": def_n,
+                         "atk_terrain": atk_terrain, "def_terrain": def_terrain,
+                         "dmg_attacking": dmg_atk, "dmg_defending": dmg_def,
+                         "target_max_hp": target_hp, "note": note,
+                         "atk_label": label_of(p, x),
+                         "target_label": label_of(p, y),
+                         "detail": d, "summary": dict(p.last_summary)},
+                   {"A.1.1": a.get("lost"), "B.1.1": b.get("lost")})
+
+    report_matchups(matrix)
+
+
+def report_matchups(matrix: dict[str, dict[str, float]]) -> None:
+    """Is damage a property of the attacker alone, or of the pairing?"""
+    usable = {x: {y: v for y, v in row.items() if v == v}      # drop NaN
+              for x, row in matrix.items()}
+    usable = {x: row for x, row in usable.items() if row}
+    if not usable:
+        print("\n  NO VERDICT — no cell produced a usable reading. Nothing is "
+              "concluded; treat this as a defect report against the probe.")
+        return
+    print("\n  Does an attacker's damage depend on what it is hitting?")
+    for x, row in usable.items():
+        vals = list(row.values())
+        lo, hi = min(vals), max(vals)
+        zeros = sorted(y for y, v in row.items() if v == 0)
+        if len(vals) < 2:
+            print(f"    {x:7} only one target measured — cannot say.")
+            continue
+        if hi == 0:
+            print(f"    {x:7} deals ZERO to every target measured.")
+        elif lo == 0:
+            print(f"    {x:7} TARGET-DEPENDENT: {hi:.2f} at most, but exactly "
+                  f"0 against {', '.join(zeros)}.")
+        elif hi / lo - 1 > 0.05:
+            worst = min(row, key=row.get)
+            best = max(row, key=row.get)
+            print(f"    {x:7} TARGET-DEPENDENT: {lo:.2f} vs {worst} up to "
+                  f"{hi:.2f} vs {best} (x{hi / lo:.2f}).")
+        else:
+            print(f"    {x:7} flat at {lo:.2f}-{hi:.2f} across all "
+                  f"{len(vals)} targets — damage is a property of the "
+                  f"attacker, not the pairing.")
+    any_zero = any(v == 0 for row in usable.values() for v in row.values())
+    if any_zero:
+        print("\n  A hard zero is worth pinning down before reporting it: a "
+              "class rule (zero against ALL armour) and a bug (zero against "
+              "one unit while its neighbours take damage) look identical in a "
+              "single cell and different across a row. The row is above.")
+
+
+def exp_air_vs_ground(p: Probe) -> None:
+    """The standing question: does a Bomber deal 25.0 to infantry and 0.0 to
+    heavy tanks?
+
+    unit_stats measured 'tac' against 'tac' and got 3.0, so if the 25.0 in the
+    original notes is real then air damage depends on the target by a factor of
+    eight, and the whole air column of that table describes same-class combat
+    only. One request per pairing settles it.
+    """
+    exp_matchups(p, roster(p, "air"), roster(p, "land"), "air_vs_ground",
+                 atk_terrain="air", def_terrain="land")
+
+
+def exp_land_matrix(p: Probe) -> None:
+    """The same question for land-on-land, where unit_stats has the diagonal.
+
+    Every diagonal cell here should reproduce the 'atk' column of
+    MEASURED_UNITS. Any that does not is either a change on the site or a bug
+    in this rig, and it is cheaper to learn that here than to discover it after
+    fitting a law to the off-diagonal cells.
+    """
+    units = roster(p, "land")
+    exp_matchups(p, units, units, "land_matrix",
+                 atk_terrain="land", def_terrain="land")
 
 
 def exp_patrol(p: Probe) -> None:
@@ -1120,6 +1554,180 @@ def exp_fortress(p: Probe) -> None:
               + ("  <- mitigation" if ratio is not None and ratio < 0.999 else ""))
         for slot, text in sorted(p.last_raw.items()):
             print(f"      {slot}: {text!r}")
+
+
+# Every level 1-5, then a spread up to the form's maximum. The low levels are
+# where the previous "no measurable benefit" claim was made, so they are swept
+# individually rather than sampled.
+TRENCH_LEVELS = (1, 2, 3, 4, 5, 10, 15, 20)
+
+# Relative movement that counts as real. Readings are now two decimals on HP
+# and three significant figures on the percentage, so the derived pool carries
+# roughly 0.3% of noise; these sit well outside that and well inside any
+# mechanic worth having.
+MOVED_LOST = 0.01
+MOVED_POOL = 0.02
+
+
+def exp_trenches(p: Probe) -> None:
+    """Re-run trenches, and this time distinguish HOW they work.
+
+    The standing claim — "trenches add to the defender's HP pool rather than
+    reducing damage, and levels 1-3 conferred no benefit at all" — predates the
+    HP-lost discovery and all three parser bugs, and it has precisely the shape
+    of the fortress null result, which was the rig every time. It is re-run
+    here rather than cited.
+
+    THE DISCRIMINATOR. Every span yields two independent numbers, HP lost and
+    that loss as a percentage of the stack's full pool, so pool = lost / pct
+    comes free with each reading. The two hypotheses move different ones:
+
+        trench enlarges the defender's POOL   ->  lost flat,  pool grows
+        trench reduces incoming DAMAGE        ->  lost falls, pool flat
+        trench does nothing                   ->  both flat
+
+    A sweep that watched only HP lost — which is all the old rig could read —
+    cannot tell the first case from the third. That is very likely how "no
+    measurable benefit" was arrived at, and it is why this reports both columns
+    and refuses a one-word verdict when they disagree.
+
+    Two further readings come along for free:
+
+      * A.1.1 says whether a trench also blunts the defender's OUTPUT. The
+        fortress does not, and that was worth knowing.
+      * Any result row the trench renders for itself. The fortress mechanic was
+        ultimately read off the page rather than fitted, from a row nobody had
+        looked at, so every raw span is compared against the control's and new
+        ones are called out.
+    """
+    field = "B.1.trench"
+    if field not in p.baseline:
+        print(f"  ! {field} is not on the form — submit() would drop it "
+              f"silently and every level would read as the control. Stopping.",
+              file=sys.stderr)
+        return
+    offered = [int(v) for v in p.select_options.get(field, []) if v.isdigit()]
+    levels = [l for l in TRENCH_LEVELS if not offered or l in offered]
+    skipped = [l for l in TRENCH_LEVELS if l not in levels]
+    if skipped:
+        print(f"  ! the form does not offer trench levels {skipped}; skipping "
+              f"them. Offered: {offered}", file=sys.stderr)
+
+    def one(label: str, **kw: Any) -> dict[str, Any] | None:
+        ov = settings()
+        ov.update(duel(1, "inf", 10, "inf", 10, **kw))
+        try:
+            r = p.submit(ov)
+        except BareFormReturned as e:
+            print(f"  ! {label}: {e}", file=sys.stderr)
+            return None
+        d = dict(p.last_details)
+        record("trenches", {"label": label, **kw, "raw": dict(p.last_raw),
+                            "detail": d, "summary": dict(p.last_summary)}, r)
+        return {"readings": r, "detail": d, "raw": dict(p.last_raw)}
+
+    control = one("control, trench 0")
+    if not control or "B.1.1" not in control["detail"]:
+        print("  NO VERDICT — the control produced no defender reading.")
+        return
+    c = control["detail"]["B.1.1"]
+    lost0, pool0 = c.get("lost"), c.get("pool")
+    atk0 = (control["detail"].get("A.1.1") or {}).get("lost")
+    if not lost0 or not pool0:
+        print("  NO VERDICT — the control reading carries no HP/percentage "
+              "pair, so pool cannot be derived and the two hypotheses cannot "
+              "be separated.")
+        return
+    print(f"\n  control: defender lost {lost0} of a {pool0} HP pool"
+          + (f"; attacker lost {atk0}" if atk0 else "") + "\n")
+    print(f"  {'trench':>6} {'defLost':>9} {'lost/ctl':>9} {'pool':>9} "
+          f"{'pool/ctl':>9} {'atkLost':>9}  new rows")
+
+    rows: list[dict[str, Any]] = []
+    for level in levels:
+        got = one(f"defender trench {level}", trench=level)
+        if not got:
+            continue
+        d = got["detail"].get("B.1.1") or {}
+        lost, pool = d.get("lost"), d.get("pool")
+        if lost is None or pool is None:
+            print(f"  {level:>6}  reading incomplete — excluded from the verdict")
+            continue
+        atk = (got["detail"].get("A.1.1") or {}).get("lost")
+        fresh = sorted(set(got["raw"]) - set(control["raw"]))
+        rows.append({"level": level, "lost": lost, "pool": pool, "atk": atk,
+                     "lost_ratio": lost / lost0, "pool_ratio": pool / pool0})
+        print(f"  {level:>6} {lost:>9.2f} {lost / lost0:>9.4f} {pool:>9.1f} "
+              f"{pool / pool0:>9.4f} "
+              + (f"{atk:>9.2f}" if atk is not None else f"{'?':>9}")
+              + f"  {', '.join(fresh) if fresh else '—'}")
+        for slot in fresh:
+            print(f"           {slot}: {got['raw'][slot]!r}")
+
+    if not rows:
+        print("\n  NO VERDICT — no trench level produced a usable reading. "
+              "Nothing is concluded; this is a defect report against the "
+              "probe until the readings come back.")
+        return
+    if len(rows) < len(levels):
+        print(f"\n  ! {len(levels) - len(rows)} of {len(levels)} levels are "
+              f"missing from the verdict below.")
+
+    lost_moves = any(abs(r["lost_ratio"] - 1) > MOVED_LOST for r in rows)
+    pool_moves = any(abs(r["pool_ratio"] - 1) > MOVED_POOL for r in rows)
+    if lost_moves and not pool_moves:
+        print("\n  VERDICT: trenches REDUCE INCOMING DAMAGE. HP lost falls "
+              "while the pool holds, exactly as the fortress behaves.")
+        for r in rows:
+            print(f"    L{r['level']:<3} damage x{r['lost_ratio']:.4f}  "
+                  f"(DR {100 * (1 - r['lost_ratio']):.1f}%)")
+    elif pool_moves and not lost_moves:
+        print("\n  VERDICT: trenches ENLARGE THE DEFENDER'S POOL. Absolute HP "
+              "lost is unchanged; only its share of a bigger pool falls. The "
+              "old note said this — and now it rests on a measurement.")
+        for r in rows:
+            print(f"    L{r['level']:<3} pool x{r['pool_ratio']:.4f}")
+    elif lost_moves and pool_moves:
+        print("\n  VERDICT: NEITHER hypothesis alone. Both HP lost and the "
+              "derived pool moved, so a trench is doing more than one thing "
+              "(or the pool is not what the percentage divides by). Both "
+              "columns above are the finding; do not compress them into one "
+              "coefficient.")
+    else:
+        print("\n  VERDICT: trenches appear INERT at every level swept — "
+              "neither the damage nor the pool moved.")
+        print("  Before recording that as a fact about the game, note that "
+              "every 'the calculator does nothing' result in this project so "
+              "far has been a bug in the rig: bldg.0 was a template, a "
+              "building row was clobbering the attacker's slot, and a nested "
+              "</span> was truncating the answer. Check that B.1.trench "
+              "actually differs between the payloads above before believing "
+              "this one.")
+
+    if atk0:
+        atk_rows = [r for r in rows if r["atk"] is not None]
+        if atk_rows and all(abs(r["atk"] / atk0 - 1) <= MOVED_LOST
+                            for r in atk_rows):
+            print("\n  The defender's OUTPUT is unaffected: the attacker's "
+                  "loss is unchanged at every level, as with fortresses.")
+        elif atk_rows:
+            print("\n  Note: the attacker's loss MOVED with the defender's "
+                  "trench, so a trench changes the defender's output too — "
+                  "unlike a fortress.")
+
+    # Does a trench help the side that is attacking? The fortress protects the
+    # defender only, and one request settles whether this is the same.
+    if levels:
+        top = levels[-1]
+        got = one(f"attacker trench {top}, defender 0", atk_trench=top)
+        if got:
+            a = (got["detail"].get("A.1.1") or {}).get("lost")
+            if a is not None and atk0:
+                same = abs(a / atk0 - 1) <= MOVED_LOST
+                print(f"\n  attacker trench L{top}: attacker lost {a:.2f} vs "
+                      f"{atk0:.2f} with no trench — "
+                      + ("no effect while attacking."
+                         if same else "it protects the attacker too."))
 
 
 def exp_buildings(p: Probe) -> None:
@@ -1366,15 +1974,36 @@ def exp_unit_stats(p: "Probe") -> None:
 EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "unit_stats": exp_unit_stats,
     "buildings": exp_buildings,
+    "trenches": exp_trenches,
+    "air_vs_ground": exp_air_vs_ground,
+    "land_matrix": exp_land_matrix,
     "size_factor": exp_size_factor,
     "hp_scaling": exp_hp_scaling,
-    "damage_land": exp_damage_land,
-    "damage_air": exp_damage_air,
-    "damage_sea": exp_damage_sea,
     "patrol": exp_patrol,
     "fortress": exp_fortress,
     "terrain": exp_terrain,
     "variance": exp_variance,
+}
+
+# Roughly how many live requests each costs, so that `--run all` can say what
+# it is about to spend on someone else's ad-supported fan site before it starts
+# rather than after. Approximate by design: saturation re-runs add a few.
+REQUEST_ESTIMATE: dict[str, int] = {
+    "unit_stats": 17, "buildings": 9, "trenches": 10, "air_vs_ground": 30,
+    "land_matrix": 100, "size_factor": 33, "hp_scaling": 10, "patrol": 12,
+    "fortress": 6, "terrain": 5, "variance": 60,
+}
+
+# Removed rather than left runnable. All three predate unit_stats, and none of
+# them recorded which side a reading came from, so their output merges attack
+# and defence coefficients into an average that is neither. A name that used to
+# work should say what happened to it instead of "Unknown experiment".
+RETIRED: dict[str, str] = {
+    "damage_land": "superseded by 'unit_stats' (same-class coefficients, both "
+                   "sides labelled) and 'land_matrix' (the off-diagonal)",
+    "damage_sea": "superseded by 'unit_stats'; naval pairings are its diagonal",
+    "damage_air": "replaced by 'air_vs_ground', which labels each reading by "
+                  "side and sizes the defender so it is not wiped",
 }
 
 
@@ -1405,6 +2034,17 @@ def main() -> int:
                          "(overwritten each request; use with --sanity)")
     args = ap.parse_args()
 
+    # Validate the experiment name BEFORE load_form(), which is a live request.
+    # A typo used to cost dxter a page view and print its complaint afterwards.
+    if args.run and args.run != "all" and args.run not in EXPERIMENTS:
+        if args.run in RETIRED:
+            print(f"{args.run!r} has been retired: {RETIRED[args.run]}.",
+                  file=sys.stderr)
+        else:
+            print(f"Unknown experiment {args.run!r}. Available: "
+                  + ", ".join(EXPERIMENTS), file=sys.stderr)
+        return 1
+
     p = Probe(delay=args.delay, dry_run=args.dry_run, insecure=args.insecure,
               encoding=args.encoding, save_response=args.save_response)
     print(f"Loading form from {BASE_URL} ...")
@@ -1430,7 +2070,7 @@ def main() -> int:
             print(f"SANITY FAILED: {e}", file=sys.stderr)
             body = p.last_response
             print(f"\n  posted to : {p.post_url} ({p.form_method})", file=sys.stderr)
-            print(f"  response  : {len(body)} bytes -> last_response.html", file=sys.stderr)
+            print(f"  response  : {len(body)} bytes -> {FAILURE_PATH}", file=sys.stderr)
             for marker in ("hpLeft", "hpLost", "Lost ", "died", "oops", "Start Battle"):
                 print(f"    contains {marker!r}: {marker in body}", file=sys.stderr)
             return 1
@@ -1451,10 +2091,18 @@ def main() -> int:
         return 0
 
     names = list(EXPERIMENTS) if args.run == "all" else [args.run]
+    budget = sum(REQUEST_ESTIMATE.get(n, 0) for n in names)
+    if budget:
+        print(f"About {budget} live requests (~{budget * args.delay / 60:.1f} "
+              f"min at {args.delay}s apart) against someone else's fan site.\n")
     for name in names:
         fn = EXPERIMENTS.get(name)
         if not fn:
-            print(f"Unknown experiment {name!r}", file=sys.stderr)
+            if name in RETIRED:
+                print(f"{name!r} has been retired: {RETIRED[name]}.",
+                      file=sys.stderr)
+            else:
+                print(f"Unknown experiment {name!r}", file=sys.stderr)
             return 1
         print(f"--- {name} ---")
         fn(p)
@@ -1471,7 +2119,28 @@ if __name__ == "__main__":
         sys.exit(130)
     except urllib.error.URLError as exc:
         print(f"Network error: {exc}", file=sys.stderr)
-        if "CERTIFICATE_VERIFY_FAILED" in str(exc):
+        text = str(exc)
+        # An egress allowlist denies the CONNECT itself, so this surfaces as a
+        # tunnel/403 failure rather than as anything DNS- or TLS-shaped. Worth
+        # naming, because the obvious readings — the site is down, the cert is
+        # wrong — both send you somewhere useless.
+        if ("403" in text or "tunnel" in text.lower()
+                or "Forbidden" in text):
+            print("\nThat looks like an egress policy denial, not the site "
+                  "being down.", file=sys.stderr)
+            print("  Check:  curl -sS -o /dev/null -w '%{http_code}\\n' "
+                  "https://dxcalc.com/s1914", file=sys.stderr)
+            print("  A cloud session must be STARTED in an environment whose "
+                  "allowed-domains list contains dxcalc.com; the policy is "
+                  "read once at provisioning and cannot be changed for a "
+                  "session already running.", file=sys.stderr)
+            print("  Note the apex is the host that matters. www.dxcalc.com "
+                  "resolves and is reachable, but the server 301-redirects it "
+                  "straight to https://dxcalc.com/, so allowing only the "
+                  "subdomain gets you a redirect into a blocked host.",
+                  file=sys.stderr)
+            sys.exit(1)
+        if "CERTIFICATE_VERIFY_FAILED" in text:
             print("\nPython can't find a CA bundle. In order of preference:", file=sys.stderr)
             print("  1. macOS python.org build — run the bundled installer:", file=sys.stderr)
             print("     open '/Applications/Python 3.x/Install Certificates.command'", file=sys.stderr)

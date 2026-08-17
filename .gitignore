@@ -1,6 +1,12 @@
 __pycache__/
 *.pyc
 
+# Scratch dump of a response that produced no readings. Deliberately NOT
+# last_response.html: that name holds the committed capture of the real form
+# that every offline test is built on, and pointing the failure dump at it
+# meant one bad submission silently replaced the fixture with a stub.
+last_failure.html
+
 # results.jsonl is deliberately NOT ignored. It is the measurement record --
 # the only durable output of a run, and every request in it cost someone
 # else's bandwidth. It belongs in the repo.
