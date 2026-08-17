@@ -539,6 +539,38 @@ input[type="range"] {
 .roster-table td:first-child { font-weight: 600; }
 .tag-none { color: var(--muted); font-style: italic; }
 
+/* --- provenance ledger --------------------------------------------------- */
+.ledger-h {
+  font-size: .8rem; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--muted); padding: var(--s4) var(--s4) 0;
+}
+.ledger {
+  padding: 0 var(--s4) var(--s4);
+  display: grid; gap: 0;
+}
+.ledger dt {
+  display: flex; align-items: baseline; gap: var(--s2); flex-wrap: wrap;
+  margin-top: var(--s3); padding-top: var(--s3);
+  border-top: 1px solid var(--line);
+}
+.ledger dt code {
+  font-family: var(--mono); font-size: .78rem; font-weight: 600;
+  color: var(--ink);
+}
+.ledger-conf {
+  font-size: .62rem; font-weight: 700; text-transform: uppercase; letter-spacing: .07em;
+  padding: 2px 7px; border-radius: 100px; border: 1px solid currentColor;
+}
+.ledger dd { margin: var(--s1) 0 0; }
+.ledger-line {
+  font-size: .78rem; color: var(--ink-2); line-height: 1.45; margin-top: 3px;
+  max-width: 78ch;
+}
+.ledger-key {
+  font-family: var(--mono); font-size: .68rem; text-transform: uppercase;
+  letter-spacing: .05em; color: var(--muted); margin-right: 2px;
+}
+
 /* --- standing limits ---------------------------------------------------- */
 .limits {
   margin-top: var(--s5);

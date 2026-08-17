@@ -273,6 +273,52 @@ export const TRENCH_MAX_LEVEL = 20;
 // ---------------------------------------------------------------------------
 // FORM INPUT DOMAINS (read off the committed form capture, last_response.html)
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// PATROL
+// ---------------------------------------------------------------------------
+// An air stack can be flown as a direct STRIKE (terrain=air) or on PATROL
+// (terrain=patrol). Both were measured, 18 rows, and they are different
+// attacks. Two findings, with very different confidence:
+//
+//   SOLID -- maxRounds. Patrol damage is proportional to maxRounds; a direct
+//   strike IGNORES maxRounds entirely. Four rungs each (0.25/0.5/0.75/1), and
+//   the strike returns byte-identical damage at all four: 30.03 per unit every
+//   time. This one is not in doubt.
+//
+//   SOFT -- attrition. A stack's output is reduced by its own losses, but a
+//   strike pays the full fraction while patrol pays only a part of it:
+//
+//       dealt = base * E(n) * (1 - c * own_fraction_lost)
+//
+//   c = 1.000 for a strike (that is the return-fire law, fitted to 0.005 HP
+//   across 30 cells) and c = 0.36..0.43 for patrol across nine cells. It does
+//   NOT close to a single value, and the scatter does not track f, so the real
+//   mechanism is probably discrete -- ticks, or whole units dying at tick
+//   boundaries -- rather than a smooth fraction. 3/8 sits inside the range and
+//   is used as the working value, but the app must show the range and must
+//   never present a patrol number as measured.
+//
+// The base attack stat is UNCHANGED between the two modes: every attacker's
+// air-to-ground value comes back through patrol (int 5.006/5.024/5.008,
+// tac 30.026/30.000/30.000, zep 5.003/5.002/5.015). So patrol is the same
+// weapon delivered differently, not a different weapon.
+export const PATROL = {
+  attritionCoefficient: 0.375,        // working value, = 3/8
+  attritionRange: [0.360, 0.427],     // what nine cells actually support
+  cellsMeasured: 9,
+  roundsScale: true,                  // damage is proportional to maxRounds
+  strikeIgnoresRounds: true,          // a direct strike delivers once, always
+  // Measured advantage of patrol over a direct strike at maxRounds=1: the RAW
+  // ratio of defender HP lost, which is what a player actually sees. Ordered by
+  // how hard the target shoots back, which is the whole mechanism.
+  observedAdvantage: {
+    int: { inf: 1.0143, ht: 1.097, ac: 1.2294 },
+    tac: { inf: 1.0106, ht: 1.0719, ac: 1.1646 },
+    zep: { inf: 1.0059, ht: 1.0357, ac: 1.0826 },
+  },
+  provenance: 'PATROL.attrition',
+};
+
 export const FORM_DOMAINS = {
   terrain: ['land', 'sea', 'air', 'patrol', 'debark'],
   positionKm: [0, 1, 2, 3, 10, 20, 30, 40, 50, 75, 150],
@@ -309,7 +355,7 @@ export const NOT_MEASURED = [
   { key: 'attenuation_scope', what: 'Whether post-fire evaluation applies to sea, or to air defending.', why: 'Only air-attacks-ground was measured; air-vs-air and sea-vs-sea are argued unattenuated from roundness, not read.', closedBy: 'a lopsided sea duel' },
   { key: 'm_f_generality', what: 'Whether m(f) applies to defenders and to units other than infantry.', why: 'The HP sweep varied only an ATTACKING infantry stack.', closedBy: 'an hp_scaling sweep on the defender' },
   { key: 'E_gaps', what: 'E(n) at n in 21-28, 31-44, 46-49, and above 113.', why: 'Interpolation only; the sampled endpoints bracket every gap.', closedBy: 'a few cheap counts' },
-  { key: 'terrain', what: 'Terrain modifiers; patrol and debark semantics.', why: 'The terrain experiment has never run. Patrol has 18 rows but its multi-tick ground law is unpinned.', closedBy: 'a terrain sweep' },
+  { key: 'terrain', what: 'Terrain modifiers, and debark semantics.', why: 'The terrain experiment has never run and debark has never been submitted once. Patrol IS modelled, but its attrition coefficient is a band (0.360-0.427) rather than a value, so patrol results are estimates.', closedBy: 'a terrain sweep, and a patrol count-sweep at fixed loss fraction to pin the coefficient' },
   { key: 'variance', what: 'simulateVariance (a ±10% roll).', why: 'Never sampled. Unknown whether it rolls per unit or per unit-type per round.', closedBy: 'a repeated-request sweep' },
   { key: 'trench_gaps', what: 'Trench levels 6-9, 11-14, 16-19 (12 of 21).', why: 'Never submitted. Neither trench curve is smooth — output plateaus at x1.40 across levels 4 and 5 — so interpolation is demonstrably risky.', closedBy: '12 requests' },
   { key: 'trench_generality', what: 'Trench multipliers for any unit but infantry, and whether the output bonus multiplies the stat or the effective unit count.', why: 'Only 10v10 infantry was flown, and at n=10 E(n)=n, so the two readings of the output bonus are indistinguishable.', closedBy: 'one trench row with a 30-unit stack' },
@@ -487,8 +533,26 @@ export const PROVENANCE = {
     source: 'Read directly from the committed form capture last_response.html this session — a single flat <select name=A.1.1.unit> with <optgroup label=Land|Air|Naval>.',
     note: 'Not physics. Listed so the app does not invent options the game does not have. RANGED_KM values (artillery 50, railgun 150, cruiser 40, battleship 75) come from the help page, not from this rig.',
   },
+  'PATROL.attrition': {
+    confidence: 'estimated',
+    source: 'results.jsonl, experiment=patrol: 9 matchup cells at maxRounds=1, each compared '
+      + 'against the corresponding air_vs_ground cell already on disk.',
+    note: 'The base stat is measured and unchanged between modes. The ATTRITION COEFFICIENT is '
+      + 'not pinned: nine cells give 0.360-0.427 and the residual does not track the loss '
+      + 'fraction, so the delivery is probably discrete rather than a smooth fraction. 3/8 is a '
+      + 'working value inside the range, not a measurement. Any patrol result is labelled '
+      + 'estimated for this reason alone.',
+  },
+  'PATROL.rounds': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=patrol: a maxRounds ladder of 0.25/0.5/0.75/1 flown in '
+      + 'BOTH terrains, tac vs inf.',
+    note: 'Patrol damage is proportional to maxRounds (rate flat at 30.13-30.33 per unit per '
+      + 'round). A direct strike IGNORES maxRounds: 30.03 per unit at every rung. This is why the '
+      + 'app offers fractional rounds for patrol and not for a strike.',
+  },
   'integrity': {
     confidence: 'measured',
-    note: 'results.jsonl grew from 150 to 168 rows during the session that produced these tables, when a concurrent session flew the patrol experiment. The 18 patrol rows are single-sample and their multi-tick GROUND law does not close (predicted tick 3/4 defender output 3.5/3.5 against observed 3.4/3.3), so patrol is deliberately NOT implemented. Two patrol findings do bear on the app: maxRounds is ignored entirely for terrain=air (0.25/0.5/0.75/1 return byte-identical results), and patrol out-damages a direct air strike in all 9 cells measured.',
+    note: 'results.jsonl grew from 150 to 168 rows during the session that produced these tables, when a concurrent session flew the patrol experiment. The 18 patrol rows are single-sample and their multi-tick GROUND law does not close (predicted tick 3/4 defender output 3.5/3.5 against observed 3.4/3.3), so the patrol ATTRITION is implemented as an explicitly estimated band (see PATROL.attritionRange), never as a measured value; its maxRounds behaviour IS measured and is implemented as such. Two patrol findings do bear on the app: maxRounds is ignored entirely for terrain=air (0.25/0.5/0.75/1 return byte-identical results), and patrol out-damages a direct air strike in all 9 cells measured.',
   },
 };

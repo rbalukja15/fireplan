@@ -939,6 +939,75 @@ Cheap and worth doing at some point:
 
 ---
 
+## 11. The app
+
+`web/` is a deployable static battle calculator that implements the model in §4
+**locally**. It is five files — `index.html`, `styles.css`, `app.js`,
+`engine.js`, `data.js` — with no build step, no dependencies and no backend.
+`web/README.md` covers running and deploying it.
+
+**It never contacts dxcalc.com.** That is a design constraint, not an
+implementation detail, and it is the reason the app carries a re-implementation
+instead of a proxy. dxcalc.com is one person's ad-supported fan site with no
+API; the courtesy rule in §6 that keeps this project's own request rate at one
+per 1.5 s would be meaningless if the deliverable then pointed an unbounded
+number of strangers at the same host. A public proxy would put every user's
+traffic on dxter's bandwidth without asking. So the app answers from measured
+constants instead, and `test/engine.test.mjs` asserts that `engine.js` and
+`data.js` contain no `fetch`, no `XMLHttpRequest`, no `WebSocket`, no `new URL`
+and no dynamic import — so the property cannot quietly regress.
+
+**Its engine is verified against `results.jsonl`.** The suite replays the
+record row by row and compares the engine's prediction against what the site
+actually printed; no expected value in it is a constant the engine itself
+carries. Tolerances follow the page's print precision (§4): ±0.005 where the
+summary table gave two decimals, ±0.05 from a span alone, deaths exact, and a
+stack pool asserted inside its bracket rather than as a point — the midpoint
+mistake from §4 is a test failure here, not a style preference. **All eight
+experiments in the file are replayed**, and the suite asserts that no experiment
+is left out.
+
+Patrol is the interesting case, because the two halves of it have very different
+confidence and the app has to carry both:
+
+- Its **`maxRounds` behaviour is measured** and implemented as such — patrol
+  damage is proportional to the round count, a direct strike ignores `maxRounds`
+  entirely. The UI offers an *Air mode* control (strike / patrol) only for the
+  air-versus-ground pairing where both were actually flown, and the Rounds field
+  relabels itself to say which of the two you are looking at.
+- Its **attrition coefficient is a band, not a number** — 0.360–0.427 over nine
+  cells — so every patrol result is labelled `estimated` however clean the
+  matchup, and the derivation prints the range beside the central figure
+  (`c in 0.36-0.427 gives 274.38-278.4`). The nine cells replay to within 0.72%.
+
+That split is the app working as intended: it would have been easy to quote a
+single coefficient to three decimals and be believed.
+
+```bash
+node web/test/engine.test.mjs      # 609 checks, no network
+```
+
+The app is also where §0 gets enforced rather than merely written down. Every
+constant in `data.js` carries a provenance key and one of four tags —
+`measured`, `derived`, `assumed`, `unmeasured` — and a constant without one is
+a defect. Every result is tagged `measured`, `estimated` or `unknown`;
+`unknown` **withholds the number** instead of producing something plausible.
+The land off-diagonal is the case that matters most: the app will compute
+infantry-against-heavy-tank, but it labels the answer `estimated` and names the
+substitution it made, because §4 established that attack is per target class
+and the diagonal cannot be assumed to generalise. `data.js` exports
+`NOT_MEASURED`, 24 gaps each with what is missing, why, and what would close
+it; the UI's "What this model does not know" panel is rendered from that array,
+so it cannot drift away from the code. Closing an experiment in §9 should mean
+deleting an entry there.
+
+`.github/workflows/pages.yml` deploys `web/` to GitHub Pages, gated on the
+engine suite and all eight Python suites — it does not deploy if any fail.
+Publishing requires one manual setting that no API can flip: **Settings → Pages
+→ Build and deployment → Source: `GitHub Actions`**.
+
+---
+
 ## 10. Open questions
 
 - **ANSWERED (2026-08-17): no.** Only the fortress mitigates damage; the other

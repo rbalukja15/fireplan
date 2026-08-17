@@ -1,0 +1,154 @@
+# Deploy web/ to GitHub Pages — but only if the model still reproduces the record.
+#
+# The gate is the point. web/engine.js is a clean-room implementation of
+# coefficients measured against dxcalc.com, and its test suite replays
+# results.jsonl row by row: every expected value in it came off the wire. A
+# build that fails those checks is a calculator that confidently prints wrong
+# numbers, which is the failure mode this whole project exists to avoid
+# (HANDOVER.md §0). So the tests are a hard gate on deployment, not a report.
+#
+# Nothing here reaches dxcalc.com. The Python suites are all offline — they
+# run against mock servers built from the committed capture in
+# last_response.html — and the deployed app performs no network requests at
+# all. See web/README.md.
+#
+# PUBLISHING IS OPT-IN. A push runs the gate and stops there; it never
+# publishes. The site goes live only when a human runs this workflow by hand
+# (Actions -> Pages -> Run workflow), so nothing reaches the public because a
+# commit landed. Remove the `if:` on the deploy job to make pushes publish.
+#
+# ONE MANUAL STEP BEFORE THE FIRST DEPLOY, which cannot be automated:
+#   Settings -> Pages -> Build and deployment -> Source: "GitHub Actions".
+# Without it the deploy step fails with a 404 from the Pages API.
+
+name: Pages
+
+on:
+  push:
+    branches:
+      - main
+      - claude/dxcalc-reverse-engineering-1nv8y7
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+# Least privilege by default; the deploy job widens it for itself only.
+permissions:
+  contents: read
+
+# One deployment at a time. cancel-in-progress is deliberately false: a live
+# Pages deployment that is cancelled mid-flight can leave the site in a
+# half-published state, so queued runs wait rather than interrupt.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Verify. Runs on every trigger, including pull requests, where no deploy
+  #    happens — so a PR still gets the full gate.
+  # ---------------------------------------------------------------------------
+  test:
+    name: Verify the model against the record
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # No dependency install of any kind. The app has no build step and no
+      # node_modules; dxcalc_probe.py and every test suite are Python stdlib
+      # only. If a future change adds a dependency, this is where it would go —
+      # and the absence of an install step is itself worth preserving.
+
+      - name: Confirm the deployable directory is dependency-free
+        run: |
+          test ! -e web/package.json || (echo "web/ grew a package.json — this workflow assumes no build step" && exit 1)
+          test ! -e package-lock.json || (echo "repo grew a lockfile — see the note above" && exit 1)
+
+      # Replays results.jsonl (168 rows) against web/engine.js and asserts the
+      # honesty properties too: no network call anywhere in engine.js/data.js,
+      # no unmeasured quantity ever labelled 'measured'. It reads
+      # results.jsonl from the repo root, so it needs the full checkout, not
+      # just web/.
+      - name: App engine suite (replays results.jsonl)
+        run: node web/test/engine.test.mjs
+
+      # The eight offline suites that guard the research rig. These do not
+      # test the app, but they are the reason its constants are trustworthy:
+      # they prove each experiment could have distinguished the hypotheses it
+      # ruled between. A regression here means a constant's provenance is no
+      # longer backed by a working measurement design.
+      - name: Probe transport, parsing and slot association
+        run: python3 test_probe_offline.py
+      - name: --semantics can discriminate
+        run: python3 test_semantics_design.py
+      - name: Unit stats and max-HP brackets
+        run: python3 test_unit_stats.py
+      - name: Fortress rows (bldg.1 vs the bldg.0 template)
+        run: python3 test_fortress_row.py
+      - name: The per-stack summary table
+        run: python3 test_result_table.py
+      - name: The trench sweep can discriminate
+        run: python3 test_trench_design.py
+      - name: The matchup matrix can discriminate
+        run: python3 test_matchup_design.py
+      - name: Patrol can be told from air
+        run: python3 test_patrol_design.py
+
+  # ---------------------------------------------------------------------------
+  # 2. Build the Pages artifact. Only after the gate is green.
+  # ---------------------------------------------------------------------------
+  build:
+    name: Package web/
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      # web/ is uploaded verbatim: the thing that is deployed is byte-identical
+      # to the thing that was tested and to the thing you serve locally. That
+      # includes web/test/, which is a few KB of inert text — worth the
+      # simplicity of having no staging-copy step to drift out of sync.
+      - name: Upload web/ as the Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./web
+
+  # ---------------------------------------------------------------------------
+  # 3. Deploy. MANUAL ONLY — see the note at the top of this file. A push runs
+  #    the gate above and stops there; publishing is a deliberate act, not a
+  #    side effect of committing.
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+
+    permissions:
+      pages: write      # to publish the deployment
+      id-token: write   # to let actions/deploy-pages prove who it is
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

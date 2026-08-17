@@ -579,6 +579,21 @@ check('every derivation entry carries a label, a formula and a value key',
       (e) => typeof e.label === 'string' && typeof e.formula === 'string' && 'value' in e,
     );
   })());
+{
+  // The app must never put user traffic on dxcalc.com. That is a property of
+  // the source, not of a run, so it is asserted against the source.
+  const src = ['../data.js', '../engine.js']
+    .map((f) => readFileSync(join(HERE, f), 'utf8')).join('\n');
+  const banned = /\bfetch\s*\(|XMLHttpRequest|WebSocket|EventSource|navigator\.sendBeacon|import\s*\(|https?:\/\/(?!\s)/g;
+  const hits = src.match(banned) || [];
+  check('engine.js and data.js contain no network call of any kind — no fetch, no XHR, no '
+    + 'WebSocket, no URL, no dynamic import', hits.length === 0, `found: ${hits.join(', ')}`);
+  // Comments may name the site; code may not.
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  check('and dxcalc.com appears nowhere in the executable code (only in comments explaining '
+    + 'why it must not)', !/dxcalc\.com/.test(code),
+    (code.match(/.*dxcalc\.com.*/g) || []).join(' | '));
+}
 check('every constant in UNITS points at a PROVENANCE note that exists',
   Object.values(UNITS).every((u) => Object.values(u.provenance).every((k) => PROVENANCE[k])),
   Object.values(UNITS).flatMap((u) => Object.values(u.provenance).filter((k) => !PROVENANCE[k])).join(' '));
@@ -588,21 +603,99 @@ check('the land off-diagonal gap — the biggest one — is named in NOT_MEASURE
   NOT_MEASURED.some((g) => g.key === 'land_off_diagonal' && /biggest/.test(g.why)));
 
 // ===========================================================================
-console.log('\n11. coverage of the record itself');
+console.log('\n11. patrol — replayed as an explicitly estimated band');
+// ===========================================================================
+// The engine now implements patrol. Its ATTRITION coefficient is a band, not
+// a number, so every patrol result is labelled estimated -- but a band is only
+// honest if the numbers inside it actually reproduce the battles that were
+// fought. All nine measured cells are replayed here against a 1.5% tolerance,
+// which is the width the band itself implies, not a tolerance chosen to pass.
+{
+  const airCell = {};
+  for (const r of rows) {
+    if (r.experiment !== 'air_vs_ground') continue;
+    const b = (r.meta.detail || {})['B.1.1'] || {};
+    if (b.lost != null) airCell[`${r.meta.atk}/${r.meta.target}`] = { lost: b.lost, defN: r.meta.def_n };
+  }
+  const seen = new Set();
+  let worstErr = 0;
+  for (const r of rows) {
+    const m = r.meta || {};
+    if (r.experiment !== 'patrol' || m.error || m.rounds !== '1' || m.terrain !== 'patrol') continue;
+    const ref = airCell[`${m.unit}/${m.target}`];
+    const b = (m.detail || {})['B.1.1'] || {};
+    if (!ref || b.lost == null) continue;
+    seen.add(`${m.unit}/${m.target}`);
+    const res = simulate({
+      mode: 'patrol',
+      attacker: { unit: m.unit, count: m.atk_n, hpPct: 100 },
+      defender: { unit: m.target, count: m.def_n, hpPct: 100 },
+      rounds: 1,
+    });
+    const err = Math.abs(res.defender.hpLost - b.lost) / b.lost;
+    worstErr = Math.max(worstErr, err);
+    check(`patrol ${m.unit} vs ${m.target}: engine ${res.defender.hpLost.toFixed(2)} vs measured ${b.lost}`,
+      err <= 0.015, `${(err * 100).toFixed(2)}% off`);
+    check(`patrol ${m.unit} vs ${m.target} is never labelled measured`,
+      res.coverage.level === 'estimated', res.coverage.level);
+  }
+  // Nine distinct cells; tac/inf appears twice because the maxRounds ladder
+  // re-flew it, so count cells rather than rows.
+  check('all nine measured patrol cells were replayed', seen.size === 9,
+    `${seen.size} distinct: ${[...seen].join(' ')}`);
+  check(`worst patrol error is inside the band the coefficient implies`,
+    worstErr <= 0.015, `${(worstErr * 100).toFixed(2)}%`);
+
+  // The maxRounds halves. These ARE measured and must be exact in kind:
+  // patrol scales, a strike does not.
+  const strike = (rr) => simulate({
+    mode: 'strike', attacker: { unit: 'tac', count: 10, hpPct: 100 },
+    defender: { unit: 'inf', count: 57, hpPct: 100 }, rounds: rr,
+  }).defender.hpLost;
+  check('a direct strike ignores maxRounds (measured: byte-identical at 0.25/0.5/0.75/1)',
+    [0.25, 0.5, 0.75, 1].every((r) => Math.abs(strike(r) - strike(1)) < 1e-9),
+    [0.25, 0.5, 0.75, 1].map((r) => strike(r).toFixed(3)).join(' / '));
+  const pat = (rr) => simulate({
+    mode: 'patrol', attacker: { unit: 'tac', count: 10, hpPct: 100 },
+    defender: { unit: 'inf', count: 57, hpPct: 100 }, rounds: rr,
+  }).defender.hpLost;
+  // Proportional, but not EXACTLY: a longer patrol eats more return fire, so
+  // the attrition factor differs slightly between rungs. That is real in both
+  // directions -- the live ladder's per-round rate rose 30.13 -> 30.33 across
+  // 0.25 to 1 (+0.67%), and the engine falls by a similar amount. Asserting
+  // exact linearity would be asserting something the measurement does not say.
+  check('patrol damage is proportional to maxRounds, to the flatness measured',
+    Math.abs(pat(0.25) * 4 / pat(1) - 1) < 0.015,
+    `${pat(0.25).toFixed(3)} x 4 = ${(pat(0.25) * 4).toFixed(3)} vs ${pat(1).toFixed(3)}`);
+  check('and a quarter-round patrol deals roughly a quarter of the damage',
+    pat(0.25) > 0 && Math.abs(pat(0.25) / pat(1) - 0.25) < 0.01,
+    `${(pat(0.25) / pat(1)).toFixed(4)}`);
+  check('patrol out-damages a strike against a target that shoots back',
+    pat(1) > strike(1));
+  check('and matches it against one that barely does, to within the band',
+    Math.abs(pat(1) / strike(1) - 1) < 0.05, (pat(1) / strike(1)).toFixed(4));
+
+  // Patrol is only offered where it was measured.
+  check('patrol on a land-vs-land pairing falls back and says so',
+    simulate({ mode: 'patrol', attacker: { unit: 'inf', count: 10 }, defender: { unit: 'inf', count: 10 } })
+      .coverage.caveats.some((c) => /only ever measured for an AIR stack/.test(c)));
+}
+
+// ===========================================================================
+console.log('\n12. coverage of the record itself');
 // ===========================================================================
 {
   const counts = {};
   for (const r of rows) counts[r.experiment] = (counts[r.experiment] || 0) + 1;
-  const replayed = ['semantics', 'unit_stats', 'hp_scaling', 'air_vs_ground', 'trenches', 'fortress', 'buildings'];
+  const replayed = ['semantics', 'unit_stats', 'hp_scaling', 'air_vs_ground', 'trenches', 'fortress', 'buildings', 'patrol'];
   const notReplayed = Object.keys(counts).filter((e) => !replayed.includes(e));
-  console.log(`  note  replayed: ${replayed.map((e) => `${e} ${counts[e]}`).join(', ')}`);
-  console.log(`  note  NOT replayed: ${notReplayed.map((e) => `${e} ${counts[e]}`).join(', ') || 'none'}`);
-  check('the only experiment left unreplayed is patrol, which the engine deliberately '
-    + 'does not implement (its multi-tick ground law does not close)',
-    notReplayed.length === 1 && notReplayed[0] === 'patrol',
-    notReplayed.join(', '));
-  check('and the reason is recorded in PROVENANCE.integrity',
-    /patrol is deliberately NOT implemented/.test(PROVENANCE.integrity.note));
+  console.log(`  note  replayed: ${replayed.map((e) => `${e} ${counts[e] || 0}`).join(', ')}`);
+  check('every experiment in the record is now replayed by the engine',
+    notReplayed.length === 0, notReplayed.join(', ') || 'none');
+  check('and the patrol attrition band is recorded as estimated, not measured',
+    PROVENANCE['PATROL.attrition'].confidence === 'estimated');
+  check('while the patrol maxRounds behaviour is recorded as measured',
+    PROVENANCE['PATROL.rounds'].confidence === 'measured');
 }
 
 // ===========================================================================

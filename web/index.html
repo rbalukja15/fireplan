@@ -54,6 +54,14 @@
   </form>
 
   <div class="global-row">
+    <div class="field field-mode" id="mode-field" hidden>
+      <label for="mode">Air mode</label>
+      <select id="mode" name="mode">
+        <option value="strike">Direct strike</option>
+        <option value="patrol">Patrol</option>
+      </select>
+      <p class="field-note" id="mode-note"></p>
+    </div>
     <div class="field field-rounds">
       <label for="rounds">Rounds</label>
       <input type="number" id="rounds" name="rounds" value="1" min="0.25" max="1000" step="0.25" inputmode="decimal">
@@ -175,9 +183,10 @@
       <li><strong>Land unit vs. a different land unit.</strong> Attack is known to depend on the
         target's class, and only same-class pairings were ever measured. 90 of the 100 land
         pairings are extrapolation.</li>
-      <li><strong>Terrain.</strong> This page models a direct attack. Patrol was measured separately
-        and behaves differently &mdash; same base stat, far less of the attacker's own attrition
-        charged against it &mdash; and is not modelled here. Debark is unknown.</li>
+      <li><strong>Terrain.</strong> Air stacks can be flown as a direct strike or on patrol, and
+        both are modelled &mdash; but patrol's attrition coefficient is a <em>band</em>
+        (0.360&ndash;0.427 over nine cells), not a number, so every patrol result is an estimate.
+        Debark has never been submitted, and no other terrain modifier was measured.</li>
       <li><strong>Multi-round battles.</strong> Every measurement used exactly one round.</li>
       <li><strong>Variance.</strong> The game rolls roughly &plusmn;10%. Nothing here is rolled;
         these are the variance-off figures.</li>
@@ -190,7 +199,11 @@
 
   <details class="roster" id="roster">
     <summary><span class="working-title">Unit reference &amp; provenance</span></summary>
-    <p class="working-lede" id="roster-lede"></p>
+    <p class="working-lede">
+      Attack and defence below are <strong>same-class only</strong> &mdash; the value a unit shows
+      when fighting its own kind. Cross-class values exist for air attacking ground and ground
+      defending against air; everything else is unmeasured.
+    </p>
     <div class="table-scroll">
       <table class="deriv roster-table">
         <caption class="visually-hidden">Unit statistics and how each was obtained</caption>
@@ -206,11 +219,13 @@
         <tbody id="roster-body"></tbody>
       </table>
     </div>
-    <p class="working-lede">
-      Attack and defence are <strong>same-class only</strong> &mdash; the value a unit shows when
-      fighting its own kind. Cross-class values exist for air attacking ground and ground
-      defending against air; everything else is unmeasured.
+
+    <h3 class="ledger-h">Provenance of every constant</h3>
+    <p class="working-lede" id="roster-lede">
+      Where each constant in the model came from and how well it is pinned down. Nothing in
+      this app is used that is not listed here.
     </p>
+    <dl class="ledger" id="ledger"></dl>
   </details>
 
 </main>

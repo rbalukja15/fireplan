@@ -69,12 +69,10 @@ const SIDES = [
   { key: 'defender', label: 'Defender' },
 ];
 
-/** Read a Map or a plain object uniformly — the contract says "level -> x". */
-function tableKeys(t) {
-  if (!t) return [];
-  if (typeof t.keys === 'function' && typeof t.get === 'function') return [...t.keys()];
-  return Object.keys(t);
-}
+/* Note on two contract exports this file deliberately does not touch:
+   TRENCH_POOL / TRENCH_OUTPUT are read only through engine.trenchFactors(),
+   and matchup coverage only through simulate().coverage, so the UI never
+   second-guesses the engine's interpretation of its own tables. */
 
 /** Format an HP-like figure. Returns null when there is nothing to show. */
 function fmt(v, dp = 2) {
@@ -93,6 +91,20 @@ function fmtInt(v) {
 }
 
 /**
+ * Strict numeric read of an engine field.
+ *
+ * Number(null) === 0 and Number('') === 0, both of which pass Number.isFinite.
+ * Coercing an absent field that way turns "not returned" into a confident
+ * zero — which is how a null hpLost came out as "0.0% of the pool". Every
+ * read of a Result field goes through here.
+ */
+function numOrNull(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
  * Share of the pool a side lost, as 0..100, or null.
  *
  * Derived from hpLost/pool wherever both exist, because that is unambiguous.
@@ -102,13 +114,14 @@ function fmtInt(v) {
  */
 function pctOf(side) {
   if (!side) return null;
-  const lost = Number(side.hpLost);
-  const pool = Number(side.pool);
-  if (Number.isFinite(lost) && Number.isFinite(pool) && pool > 0) {
-    return (lost / pool) * 100;
-  }
-  const p = Number(side.pctLost);
-  if (!Number.isFinite(p)) return null;
+  const lost = numOrNull(side.hpLost);
+  // No HP figure, no share-of-pool figure. Printing "0.0% of the pool" beside
+  // an em dash would invent a loss of zero out of an absent measurement.
+  if (lost === null) return null;
+  const pool = numOrNull(side.pool);
+  if (pool !== null && pool > 0) return (lost / pool) * 100;
+  const p = numOrNull(side.pctLost);
+  if (p === null) return null;
   return (p > 0 && p <= 1) ? p * 100 : p;
 }
 
@@ -189,6 +202,7 @@ function el(tag, className, text) {
 
 const UNITS = DATA ? (DATA.UNITS || {}) : {};
 const BUILDINGS = DATA ? (DATA.BUILDINGS || {}) : {};
+const PATROL = DATA ? (DATA.PATROL || { observedAdvantage: {} }) : { observedAdvantage: {} };
 
 const UNIT_CODES = Object.keys(UNITS);
 const BUILDING_CODES = Object.keys(BUILDINGS);
@@ -210,6 +224,7 @@ const DEFAULT_STATE = () => ({
   attacker: { unit: defaultUnit(), count: 30, hpPct: 100, trench: 0, buildings: [] },
   defender: { unit: defaultUnit(), count: 30, hpPct: 100, trench: 0, buildings: [] },
   rounds: 1,
+  mode: 'strike',
 });
 
 let state = DEFAULT_STATE();
@@ -236,6 +251,7 @@ function boot() {
   $('builders').addEventListener('change', onInput);
   $('rounds').addEventListener('input', onInput);
   $('rounds').addEventListener('change', onInput);
+  $('mode').addEventListener('change', onInput);
 
   $('builders').addEventListener('click', (ev) => {
     const add = ev.target.closest('[data-add-bldg]');
@@ -474,6 +490,7 @@ function writeStateToDom() {
     $(key + '-trench').value = String(s.trench);
   }
   $('rounds').value = String(state.rounds);
+  $('mode').value = state.mode === 'patrol' ? 'patrol' : 'strike';
   renderBuildings('attacker');
   renderBuildings('defender');
 }
@@ -490,6 +507,7 @@ function readDomToState() {
   }
   const r = Number($('rounds').value);
   state.rounds = Number.isFinite(r) && r > 0 ? r : 1;
+  state.mode = $('mode').value === 'patrol' ? 'patrol' : 'strike';
 }
 
 function onInput() {
@@ -515,6 +533,7 @@ function recompute() {
     attacker: cloneSide(state.attacker),
     defender: cloneSide(state.defender),
     rounds: state.rounds,
+    mode: state.mode,
   };
 
   updateStackNotes();
@@ -743,8 +762,8 @@ function renderSide(prefix, side, cfg) {
  */
 function isDestroyed(s) {
   if (!s) return false;
-  const left = Number(s.unitsLeft);
-  if (Number.isFinite(left)) return left <= 0;
+  const left = numOrNull(s.unitsLeft);
+  if (left !== null) return left <= 0;
   return s.wiped === true;
 }
 
@@ -780,8 +799,8 @@ function renderVerdict(result, config) {
   } else if (aDead) {
     headline = `The attacking ${aUnit.label || ''} stack is destroyed. The attack fails.`.replace(/\s+/g, ' ');
   } else {
-    const ad = Number(a.deaths), dd = Number(d.deaths);
-    if (Number.isFinite(ad) && Number.isFinite(dd)) {
+    const ad = numOrNull(a.deaths), dd = numOrNull(d.deaths);
+    if (ad !== null && dd !== null) {
       if (ad === 0 && dd === 0) {
         headline = 'Neither side loses a whole unit.';
       } else {
@@ -829,23 +848,35 @@ function renderVerdict(result, config) {
    -------------------------------------------------------------------------- */
 
 function renderSanity(result, config) {
+  const box = $('sanity');
+
+  // Not run when coverage is 'unknown': there the engine is legitimately
+  // emitting placeholders for quantities it has no data for, the banner
+  // already says the figures are not a prediction, and calling that a defect
+  // would be an accusation the app cannot support.
+  if (displayedLevel === 'unknown') {
+    box.hidden = true;
+    box.textContent = '';
+    return;
+  }
+
   const problems = [];
   const check = (label, side, cfg) => {
     if (!side) { problems.push(`${label}: the engine returned no figures at all.`); return; }
-    const deaths = Number(side.deaths);
-    const left = Number(side.unitsLeft);
-    const lost = Number(side.hpLost);
-    const pool = Number(side.pool);
-    if (Number.isFinite(deaths) && deaths > cfg.count) {
+    const deaths = numOrNull(side.deaths);
+    const left = numOrNull(side.unitsLeft);
+    const lost = numOrNull(side.hpLost);
+    const pool = numOrNull(side.pool);
+    if (deaths !== null && deaths > cfg.count) {
       problems.push(`${label}: ${deaths} units killed out of ${cfg.count} in the stack.`);
     }
-    if (Number.isFinite(left) && (left < 0 || left > cfg.count)) {
+    if (left !== null && (left < 0 || left > cfg.count)) {
       problems.push(`${label}: ${left} units left out of ${cfg.count}.`);
     }
-    if (Number.isFinite(deaths) && Number.isFinite(left) && deaths + left !== cfg.count) {
+    if (deaths !== null && left !== null && deaths + left !== cfg.count) {
       problems.push(`${label}: ${deaths} killed plus ${left} surviving does not make ${cfg.count}.`);
     }
-    if (Number.isFinite(lost) && Number.isFinite(pool) && lost > pool + 1e-6) {
+    if (lost !== null && pool !== null && lost > pool + 1e-6) {
       problems.push(`${label}: lost ${fmt(lost)} HP from a pool of ${fmt(pool)}.`);
     }
     // Deliberately NOT checked: `wiped` true while unitsLeft > 0. That is not
@@ -857,7 +888,6 @@ function renderSanity(result, config) {
   check('Attacker', result.attacker, config.attacker);
   check('Defender', result.defender, config.defender);
 
-  const box = $('sanity');
   if (!problems.length) {
     box.hidden = true;
     box.textContent = '';
@@ -1015,9 +1045,41 @@ function updateStackNotes() {
     sum.textContent = bits.join(' · ');
   }
 
+  // Air mode: only offered where both modes were actually measured.
+  const modeField = $('mode-field');
+  const mNote = $('mode-note');
+  const av = UNITS[state.attacker.unit];
+  const dv = UNITS[state.defender.unit];
+  const eligible = !!(av && dv && av.cls === 'air' && dv.cls === 'land'
+                      && state.attacker.unit !== 'bal');
+  modeField.hidden = !eligible;
+  if (eligible) {
+    if (state.mode === 'patrol') {
+      const adv = (PATROL.observedAdvantage[state.attacker.unit] || {})[state.defender.unit];
+      mNote.textContent = adv
+        ? `Measured at ×${adv.toFixed(3)} of a direct strike against this target. `
+          + 'The attrition band makes it an estimate.'
+        : 'Patrol charges less of the attacker\'s own losses against its output. '
+          + 'The coefficient is a band, so this is an estimate.';
+      mNote.className = 'field-note is-warn';
+    } else {
+      mNote.textContent = 'A direct strike ignores Rounds entirely — measured, '
+        + 'byte-identical at 0.25/0.5/0.75/1.';
+      mNote.className = 'field-note';
+    }
+  }
+
   // Rounds note.
   const rNote = $('rounds-note');
-  if (Number(state.rounds) === 1) {
+  if (eligible && state.mode === 'patrol') {
+    rNote.textContent = 'Patrol damage is proportional to Rounds — measured, on a '
+      + '0.25/0.5/0.75/1 ladder. Fractions are meaningful here.';
+    rNote.className = 'field-note';
+  } else if (eligible) {
+    rNote.textContent = 'Ignored for a direct strike: the same ladder returned identical '
+      + 'damage at every setting.';
+    rNote.className = 'field-note';
+  } else if (Number(state.rounds) === 1) {
     rNote.textContent = 'Every measurement behind this model used exactly one round.';
     rNote.className = 'field-note';
   } else {
@@ -1030,6 +1092,37 @@ function updateStackNotes() {
    9. Roster reference
    -------------------------------------------------------------------------- */
 
+const PROV = (DATA && DATA.PROVENANCE && typeof DATA.PROVENANCE === 'object') ? DATA.PROVENANCE : {};
+
+/**
+ * A unit's provenance holds references INTO the PROVENANCE ledger
+ * (e.g. { maxHP: 'UNITS.maxHP' }), so a value may be a key, an inline note,
+ * or an object. Resolve one step, then report the confidence it carries.
+ */
+function confidenceOfRef(ref) {
+  if (typeof ref === 'string' && PROV[ref] && PROV[ref].confidence) return String(PROV[ref].confidence);
+  if (ref && typeof ref === 'object' && ref.confidence) return String(ref.confidence);
+  return null;
+}
+
+/** "max HP derived · attack, defence measured" */
+function provSummary(provenance) {
+  if (!provenance || typeof provenance !== 'object') return null;
+  const FIELD_LABEL = { maxHP: 'max HP', atk: 'attack', def: 'defence' };
+  const byConfidence = new Map();
+  for (const [field, ref] of Object.entries(provenance)) {
+    const conf = confidenceOfRef(ref);
+    if (!conf) continue;
+    const label = FIELD_LABEL[field] || field;
+    if (!byConfidence.has(conf)) byConfidence.set(conf, []);
+    byConfidence.get(conf).push(label);
+  }
+  if (!byConfidence.size) return null;
+  return [...byConfidence.entries()]
+    .map(([conf, fields]) => `${fields.join(', ')} ${conf}`)
+    .join(' · ');
+}
+
 function buildRoster() {
   const body = $('roster-body');
   body.textContent = '';
@@ -1040,9 +1133,9 @@ function buildRoster() {
     tr.appendChild(el('td', null, u.label || code));
     tr.appendChild(el('td', null, CLASS_LABEL[u.cls] || u.cls || EM_DASH));
 
-    const cell = (v) => {
+    const cell = (v, dp) => {
       const td = el('td', 'c-val');
-      const t = fmtLoose(v);
+      const t = dp === null ? fmtLoose(v) : fmtStat(v);
       if (t === null) {
         td.textContent = 'not measured';
         td.className = 'c-val tag-none';
@@ -1051,25 +1144,63 @@ function buildRoster() {
       }
       return td;
     };
-    tr.appendChild(cell(u.maxHP));
+    tr.appendChild(cell(u.maxHP, null));
     tr.appendChild(cell(u.atk));
     tr.appendChild(cell(u.def));
 
-    const prov = provText(u.provenance);
-    const pt = el('td', null, prov || 'no provenance recorded');
-    if (!prov) pt.className = 'tag-none';
+    const summary = provSummary(u.provenance) || provText(u.provenance);
+    const pt = el('td', null, summary || 'no provenance recorded');
+    if (!summary) pt.className = 'tag-none';
     tr.appendChild(pt);
 
     body.appendChild(tr);
   }
 
-  // Any free-form notes data.js wants to publish about the constants.
-  const lede = $('roster-lede');
-  const notes = DATA.PROVENANCE;
-  const text = provText(notes);
-  lede.textContent = text
-    ? text
-    : 'Statistics recovered by black-box measurement of the live calculator, with variance off.';
+  buildLedger();
+}
+
+/** The provenance ledger: one entry per constant, with its confidence. */
+function buildLedger() {
+  const dl = $('ledger');
+  if (!dl) return;
+  dl.textContent = '';
+
+  const entries = Object.entries(PROV);
+  if (!entries.length) {
+    dl.appendChild(el('dd', 'tag-none', 'data.js published no provenance notes.'));
+    return;
+  }
+
+  for (const [key, entry] of entries) {
+    const dt = el('dt');
+    dt.appendChild(el('code', null, key));
+
+    const conf = (entry && typeof entry === 'object' && entry.confidence)
+      ? String(entry.confidence) : null;
+    if (conf) {
+      // Anything that is not plainly "measured" reads as a qualification.
+      const tone = /^measured$/i.test(conf) ? 'measured'
+                 : /unmeasured|unknown/i.test(conf) ? 'unknown'
+                 : 'estimated';
+      dt.appendChild(el('span', 'ledger-conf conf-' + tone, conf));
+    }
+    dl.appendChild(dt);
+
+    const dd = el('dd');
+    if (entry && typeof entry === 'object') {
+      const { confidence, ...rest } = entry;
+      void confidence;
+      for (const [k, v] of Object.entries(rest)) {
+        const line = el('p', 'ledger-line');
+        line.appendChild(el('span', 'ledger-key', k));
+        line.appendChild(document.createTextNode(' ' + provText(v)));
+        dd.appendChild(line);
+      }
+    } else {
+      dd.textContent = provText(entry);
+    }
+    dl.appendChild(dd);
+  }
 }
 
 /* --------------------------------------------------------------------------
@@ -1082,7 +1213,8 @@ function encodeState(cfg) {
     for (const b of s.buildings) out += '~' + [b.code, b.level, b.hpPct].join('.');
     return out;
   };
-  return `a=${side(cfg.attacker)}&d=${side(cfg.defender)}&r=${cfg.rounds}`;
+  return `a=${side(cfg.attacker)}&d=${side(cfg.defender)}&r=${cfg.rounds}`
+    + (cfg.mode === 'patrol' ? '&m=patrol' : '');
 }
 
 function decodeState(hash) {
@@ -1119,7 +1251,11 @@ function decodeState(hash) {
     const d = side(parts.d);
     if (!a || !d) return null;
     const r = Number(parts.r);
-    return { attacker: a, defender: d, rounds: Number.isFinite(r) && r > 0 ? r : 1 };
+    return {
+      attacker: a, defender: d,
+      rounds: Number.isFinite(r) && r > 0 ? r : 1,
+      mode: parts.m === 'patrol' ? 'patrol' : 'strike',
+    };
   } catch {
     return null;
   }

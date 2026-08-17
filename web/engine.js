@@ -29,6 +29,7 @@ import {
   GROUND_DEFENCE_VS_AIR,
   BUILDING_DAMAGE_PER_EFFECTIVE_UNIT,
   FORTRESS,
+  PATROL,
 } from './data.js';
 
 const EPS = 1e-9;
@@ -170,6 +171,29 @@ export function resolveUnit(u) {
  * How well the record covers one attacker/defender pairing.
  * Returns { level: 'measured'|'estimated'|'unknown', reason }.
  */
+/**
+ * Is this configuration flown as a patrol, and is that even a legal question?
+ *
+ * Patrol is only meaningful for an air stack attacking ground: that is the
+ * only pairing where both modes were measured. Asking for it anywhere else
+ * returns applies:false and the engine falls back to the strike path rather
+ * than inventing a second mechanic for a matchup that has neither.
+ */
+export function patrolMode(mode, atkUnit, defUnit) {
+  const a = resolveUnit(atkUnit);
+  const d = resolveUnit(defUnit);
+  const wanted = mode === 'patrol';
+  const eligible = !!(a && d && a.cls === 'air' && d.cls === 'land' && a.code !== 'bal');
+  return {
+    wanted,
+    applies: wanted && eligible,
+    eligible,
+    ignoredRounds: !wanted && eligible,   // a strike ignores maxRounds entirely
+    c: PATROL.attritionCoefficient,
+    range: PATROL.attritionRange,
+  };
+}
+
 export function coverageOf(atkUnit, defUnit) {
   const a = resolveUnit(atkUnit);
   const d = resolveUnit(defUnit);
@@ -426,20 +450,78 @@ function runSimulation(config, derivation, caveats) {
   let level = matchup.level;
   const reasons = [matchup.reason];
 
+  // ---- mode: direct strike or patrol ---------------------------------------
+  const patrol = patrolMode(config.mode || (config.attacker && config.attacker.mode),
+                            atk.unit, def.unit);
+  if (patrol.wanted && !patrol.eligible) {
+    caveats.push('Patrol was requested but only ever measured for an AIR stack attacking GROUND. '
+      + 'This pairing is computed as a direct engagement instead; patrol semantics elsewhere are '
+      + 'unmeasured.');
+  }
+
   // ---- rounds --------------------------------------------------------------
   let rounds = num(config.rounds, 1);
   if (!Number.isFinite(rounds) || rounds <= 0) rounds = 1;
-  if (!Number.isInteger(rounds)) {
-    caveats.push(`Fractional rounds (${rounds}) are unmeasured outside patrol, which is not `
-      + `implemented. Computing ${Math.max(1, Math.floor(rounds))} whole round(s) instead.`);
-    rounds = Math.max(1, Math.floor(rounds));
+
+  if (patrol.applies) {
+    // MEASURED: patrol damage is proportional to maxRounds. A ladder of
+    // 0.25/0.5/0.75/1 gives a flat 30.13-30.33 per unit per round, so
+    // fractional rounds are real here and are the finest instrument available.
+    if (rounds > 4) {
+      level = worst(level, 'estimated');
+      caveats.push(`Patrol was measured only up to maxRounds = 1. Scaling to ${rounds} assumes the `
+        + 'proportionality holds indefinitely, which nobody has checked.');
+    }
+    derivation.push({
+      label: 'Mode: PATROL',
+      formula: `Damage is proportional to maxRounds (measured: rate flat across `
+        + `0.25/0.5/0.75/1). Scaling by ${round4(rounds)}.`,
+      value: rounds,
+    });
+  } else if (patrol.ignoredRounds) {
+    // MEASURED: a direct air strike delivers once, whatever maxRounds says.
+    // 30.03 per unit at every rung of the same ladder.
+    if (rounds !== 1) {
+      caveats.push(`A direct air strike IGNORES maxRounds — the same ladder returned 30.03 per unit `
+        + `at 0.25, 0.5, 0.75 and 1 alike. The ${rounds} you asked for changes nothing; one strike `
+        + 'is computed. Switch to patrol if you want damage to scale with time on station.');
+    }
+    derivation.push({
+      label: 'Mode: DIRECT STRIKE',
+      formula: 'maxRounds is ignored for terrain=air (measured: byte-identical results at '
+        + '0.25/0.5/0.75/1). One strike is delivered.',
+      value: 1,
+    });
+    rounds = 1;
+  } else {
+    if (!Number.isInteger(rounds)) {
+      caveats.push(`Fractional rounds (${rounds}) are measured only for patrol, which does not `
+        + `apply here. Computing ${Math.max(1, Math.floor(rounds))} whole round(s) instead.`);
+      rounds = Math.max(1, Math.floor(rounds));
+    }
+    if (rounds !== 1) {
+      level = worst(level, 'estimated');
+      reasons.push('Multi-round: EVERY measurement in the record used maxRounds = 1, so '
+        + 'round-to-round carry-over is an extrapolation of the engine, not a reading.');
+      caveats.push(`${rounds} rounds requested. Round-to-round carry-over, whether m(f) re-evaluates `
+        + 'each round, and whether fortress DR decays between rounds are all unmeasured.');
+    }
   }
-  if (rounds !== 1) {
+
+  if (patrol.applies) {
+    // The base stat is the same in both modes and that IS measured. What is
+    // not pinned is the attrition coefficient, so the whole result drops to
+    // estimated no matter how clean the matchup itself is.
     level = worst(level, 'estimated');
-    reasons.push('Multi-round: EVERY measurement in the record used maxRounds = 1, so round-to-round '
-      + 'carry-over is an extrapolation of the engine, not a reading.');
-    caveats.push(`${rounds} rounds requested. Round-to-round carry-over, whether m(f) re-evaluates `
-      + 'each round, and whether fortress DR decays between rounds are all unmeasured.');
+    reasons.push('Flown as a PATROL. The attack stat is unchanged from a direct strike (measured: '
+      + 'every attacker\'s value comes back through patrol), but patrol charges only part of the '
+      + 'attacker\'s own losses against its output, and that fraction is NOT pinned — nine cells '
+      + `give ${patrol.range[0]}-${patrol.range[1]} and the scatter does not track the loss `
+      + 'fraction. This result uses 3/8 as a working value.');
+    caveats.push(`Patrol attrition coefficient is a band, not a number: ${patrol.range[0]}-`
+      + `${patrol.range[1]} over ${PATROL.cellsMeasured} cells. The delivery is probably discrete `
+      + '(ticks, or whole units dying at tick boundaries), so treat the damage figure as a central '
+      + 'estimate with a few percent either side, not a prediction.');
   }
 
   // ---- coefficients --------------------------------------------------------
@@ -546,8 +628,14 @@ function runSimulation(config, derivation, caveats) {
   }
 
   // ---- rounds --------------------------------------------------------------
-  for (let r = 1; r <= rounds; r += 1) {
-    const tag = rounds > 1 ? `R${r} ` : '';
+  // Patrol treats maxRounds as a DURATION and scales one pass by it (measured:
+  // the per-round rate is flat across a 0.25/0.5/0.75/1 ladder). Everything
+  // else iterates whole rounds. Looping a fractional count would run zero
+  // times and silently return no damage at all.
+  const loopRounds = patrol.applies ? 1 : rounds;
+  const patrolScale = patrol.applies ? rounds : 1;
+  for (let r = 1; r <= loopRounds; r += 1) {
+    const tag = loopRounds > 1 ? `R${r} ` : '';
     if (atk.n <= 0 || def.n <= 0 || atk.pool <= EPS || def.pool <= EPS) {
       derivation.push({
         label: `${tag}round skipped`,
@@ -577,11 +665,12 @@ function runSimulation(config, derivation, caveats) {
 
     // 1. Defender's output — always from the PRE-round state (measured: a
     //    ground defender is not attenuated even losing 26% of its pool).
-    const defOutput = defCoef.value * defE * hpMultiplier(defF) * def.tf.output;
+    const defOutput = defCoef.value * defE * hpMultiplier(defF) * def.tf.output * patrolScale;
     derivation.push({
       label: `${tag}Defender output`,
       formula: `${defCoef.value} x E(${def.n})=${round4(defE)} x m(${round4(defF)})=`
-        + `${round4(hpMultiplier(defF))}${def.tf.output !== 1 ? ` x trench ${def.tf.output}` : ''} = ${round4(defOutput)}`,
+        + `${round4(hpMultiplier(defF))}${def.tf.output !== 1 ? ` x trench ${def.tf.output}` : ''}`
+        + `${patrolScale !== 1 ? ` x ${round4(patrolScale)} rounds on station` : ''} = ${round4(defOutput)}`,
       value: defOutput,
     });
 
@@ -611,7 +700,30 @@ function runSimulation(config, derivation, caveats) {
     // 3. Attacker's output. Air attacking ground is evaluated on its state
     //    AFTER that incoming fire; everything else is pre-round.
     let atkOutput = null;
-    if (attenuated) {
+    if (patrol.applies) {
+      // PATROL. Same base stat as a strike; only a fraction c of the stack's
+      // own losses is charged against its output, against the full fraction a
+      // strike pays. c is a band, not a number -- see the caveat above.
+      const fLost = atk.pool > EPS ? atkLostThis / atk.pool : 0;
+      const factor = Math.max(0, 1 - patrol.c * fLost);
+      const lo = Math.max(0, 1 - patrol.range[1] * fLost);
+      const hi = Math.max(0, 1 - patrol.range[0] * fLost);
+      atkOutput = atkCoef.value * atkE * hpMultiplier(atkF) * factor * patrolScale;
+      derivation.push({
+        label: `${tag}Attacker output (patrol)`,
+        formula: `${atkCoef.value} x E(${atk.n})=${round4(atkE)} x m(${round4(atkF)})=`
+          + `${round4(hpMultiplier(atkF))} x (1 - ${patrol.c} x ${round4(fLost)})=${round4(factor)}`
+          + `${patrolScale !== 1 ? ` x ${round4(patrolScale)} rounds` : ''} = ${round4(atkOutput)}`
+          + ` — patrol charges only part of the attacker's own losses [estimated: c in `
+          + `${patrol.range[0]}-${patrol.range[1]} gives ${round4(atkCoef.value * atkE * hpMultiplier(atkF) * lo * patrolScale)}`
+          + `-${round4(atkCoef.value * atkE * hpMultiplier(atkF) * hi * patrolScale)}]`,
+        value: atkOutput,
+      });
+      if (atk.n > 20) {
+        caveats.push('Every patrol cell measured used a 10-unit air stack, where E(n) = n. '
+          + 'Above 20 the size factor and the attrition band interact in a way nobody has read.');
+      }
+    } else if (attenuated) {
       const nAlive = atk.n - atkDeathsThis;
       if (nAlive <= 0) {
         level = 'unknown';
