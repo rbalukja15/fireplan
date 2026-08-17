@@ -97,14 +97,32 @@ FORTRESS — measured, and it works
     and 28.3333 * 5.0 = 141.7 (attacker's loss), both matching to display
     precision.
 
-STILL UNEXPLAINED
-    With a fortress present the ATTACKER's reading is -8.5 at every level,
-    where the control reads 141.7. It is negative, and constant while the
-    defender's number moves, so it is not damage. It cannot have come from
-    parse_reading() either, whose pattern has no minus sign — it is the
-    parse_hp() fallback picking the first number out of span text we do not
-    recognise. submit() now prints that raw text; re-run the fortress sweep
-    to see what the page is actually saying there.
+FORTRESS HP AND DAMAGE TO BUILDINGS — solved, and it was a parser bug
+    The attacker reading -8.5 under every fortress was never the attacker. The
+    raw span said
+
+        "-8.5 HP (17%) →"      not      "Lost 141.7 HP (23.6%) 7 died"
+
+    That is the FORTRESS's own result row. Its id is B.1.bldg.1, which the old
+    SLOT_RE did not match, so the row inherited the last unit slot seen —
+    A.1.1 — and overwrote the attacker's real reading. RESULT_SLOT_RE matches
+    building ids now, so the two no longer collide.
+
+    Decoding it gives two new constants. The percentage is the damage over the
+    building's own pool, and the pool scales exactly with level:
+
+        L1 17%    L2 8.5%    L3 5.67%    L4 4.25%    L5 3.4%
+        8.5 / pct  ->  50, 100, 150, 200, 250
+
+        FORTRESS HP = 50 per level.
+
+    The 8.5 is constant at every level, and 8.5 / E(30) = 8.5 / 28.3333 = 0.3:
+
+        infantry deal 0.3 per effective unit to BUILDINGS, against 4.0 to units.
+
+    The minus sign is delta notation and the arrow points at the resulting
+    value; DELTA_RE parses that shape. Buildings are reported per row, so this
+    also means the other seven building types can be measured the same way.
 
 Trenches add to the defender's HP pool rather than reducing incoming damage.
 Levels 1-3 conferred no measurable benefit at all.
@@ -187,6 +205,11 @@ DEFAULT_DELAY = 1.5
 RESULTS_PATH = "results.jsonl"
 
 SLOT_RE = re.compile(r"^([AB])\.(\d+)\.(\d+)$")
+# Buildings get their own result row, e.g. B.1.bldg.1, and it does NOT match
+# SLOT_RE. Without matching it here the building's span inherits whichever unit
+# slot was last seen and overwrites that stack's reading — which is exactly
+# what happened to the attacker throughout the fortress sweep.
+RESULT_SLOT_RE = re.compile(r"^([AB])\.\d+(?:\.[A-Za-z]+)?\.\d+$")
 UA = "Mozilla/5.0 (X11; Linux x86_64) dxcalc-probe/1.0 (research; contact via dxcalc forum)"
 
 
@@ -300,7 +323,7 @@ class ResultScraper(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         a = {k: (v or "") for k, v in attrs}
         node_id = a.get("id", "")
-        if SLOT_RE.match(node_id):
+        if RESULT_SLOT_RE.match(node_id):
             self._slot = node_id
         classes = a.get("class", "").split()
         if tag == "span" and "hpLeft" in classes:
@@ -435,10 +458,28 @@ READING_RE = re.compile(
     r"(?:\s*(?:all\s+)?(\d+)\s+died)?", re.I)
 
 
+# Buildings report in a different shape entirely: "-8.5 HP (17%) →" rather
+# than "Lost 8.5 HP (17%) 0 died". The minus is delta notation, not a signed
+# loss, and the arrow points at the resulting value. Same arithmetic underneath
+# — magnitude over percentage still gives the pool — but the wording differs,
+# so it needs its own pattern instead of falling through to parse_hp().
+DELTA_RE = re.compile(
+    r"(-?[\d.]+)\s*HP\s*\(\s*([\d.]+)\s*%\s*\)\s*(?:→|->)")
+
+
 def parse_reading(text: str) -> dict[str, float] | None:
     """Full breakdown of one result span, not just the leading number."""
-    m = READING_RE.search(strip_thousands(text))
+    text = strip_thousands(text)
+    m = READING_RE.search(text)
     if not m:
+        d = DELTA_RE.search(text)
+        if d:
+            lost = abs(float(d.group(1)))
+            pct = float(d.group(2))
+            out: dict[str, float] = {"lost": lost, "pct": pct, "delta": 1.0}
+            if pct > 0:
+                out["pool"] = round(lost / (pct / 100), 1)
+            return out
         return None
     lost = float(m.group(1))
     pct = float(m.group(2))

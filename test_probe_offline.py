@@ -117,6 +117,28 @@ check("thousands separator survives",
 check("parse_hp fallback survives it too",
       dp.parse_hp("Lost 1,375.1 HP") == 1375.1,
       str(dp.parse_hp("Lost 1,375.1 HP")))
+# Buildings report as "-8.5 HP (17%) →": delta notation, different wording.
+r = dp.parse_reading("-8.5 HP (17%) →")
+check("building delta span parses", r is not None and r["delta"] == 1.0, str(r))
+check("magnitude taken; the sign is notation, not a negative loss",
+      r["lost"] == 8.5)
+check("pool implies a level-1 fortress has 50 HP", r["pool"] == 50.0)
+check("level 5 implies 250 HP",
+      dp.parse_reading("-8.5 HP (3.4%) →")["pool"] == 250.0)
+check("ascii arrow accepted too",
+      dp.parse_reading("-8.5 HP (17%) ->") is not None)
+
+# A building's result row must not overwrite a unit stack's. Its id is
+# B.1.bldg.1, which the original SLOT_RE ignored, so it inherited A.1.1 and
+# clobbered the attacker's reading throughout the fortress sweep.
+s = dp.ResultScraper()
+s.feed('<div id="A.1.1"><span class="hpLeft">Lost 141.7 HP (23.6%) 7 died</span></div>'
+       '<div id="B.1.bldg.1"><span class="hpLeft">-8.5 HP (17%) &#8594;</span></div>'
+       '<div id="B.1.1"><span class="hpLeft">Lost 79.3 HP (13.2%) 3 died</span></div>')
+check("attacker's reading survives a building row",
+      s.readings["A.1.1"].startswith("Lost 141.7"), repr(s.readings.get("A.1.1")))
+check("building gets its own slot", s.readings["B.1.bldg.1"].startswith("-8.5"))
+check("defender unaffected", s.readings["B.1.1"].startswith("Lost 79.3"))
 
 print("\n1. multipart encoder round-trips through a real MIME parser")
 sample = {"A.1.1.count": "10", "A.1.1.hp": "100%", "A.1.terrain": "land",
