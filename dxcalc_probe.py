@@ -291,7 +291,14 @@ SLOT_RE = re.compile(r"^([AB])\.(\d+)\.(\d+)$")
 # SLOT_RE. Without matching it here the building's span inherits whichever unit
 # slot was last seen and overwrites that stack's reading — which is exactly
 # what happened to the attacker throughout the fortress sweep.
-RESULT_SLOT_RE = re.compile(r"^([AB])\.\d+(?:\.[A-Za-z]+)?\.\d+$")
+#
+# A HERO row is the same hazard with a different shape. addHero() inserts
+# <div id="B.1.hero"> immediately before the first unit row, and there is only
+# ever one per stack, so it carries NO trailing index — the building pattern
+# above would not match it either. Caught before the first hero request was
+# ever sent, by asking the question the fortress phase taught us to ask.
+RESULT_SLOT_RE = re.compile(
+    r"^([AB])\.\d+(?:\.[A-Za-z]+)?\.\d+$|^([AB])\.\d+\.hero$")
 # The stack container itself: <div id=A.1>. Deliberately excludes A.1.1 and
 # A.1.bldg.0 — this is what a per-stack summary table is attached to.
 STACK_ID_RE = re.compile(r"^([AB])\.(\d+)$")
@@ -625,6 +632,13 @@ def refine_details(details: dict[str, dict[str, float]],
         total = summary.get("hp_lost")
         if total is None:
             continue
+        # Building rows carry delta notation and ARE excluded -- the fortress
+        # response proves the table leaves them out. A HERO row is the
+        # opposite, and it was guessed wrong before it was measured: the hero
+        # renders an ordinary "Lost 2.1 HP (5.19%)" span and the table COUNTS
+        # it. Every hero request reconciles exactly once it is included
+        # (77.90 units + 2.10 hero = 80.00 table, on all sixteen). So a hero
+        # belongs to its stack in a way a building does not.
         units = [s for s, d in details.items()
                  if stack_of(s) == stack and not d.get("delta") and "lost" in d]
         if not units:
@@ -2560,6 +2574,112 @@ def exp_mixed_stacks(p: Probe) -> None:
               "zero means rows are ordered.")
 
 
+HERO_FIELDS = ("B.1.hero.abb", "B.1.hero.lvl", "B.1.hero.hp")
+HERO_ATK_FIELDS = ("A.1.hero.abb", "A.1.hero.lvl", "A.1.hero.hp")
+
+
+def hero_options() -> list[str]:
+    """The 23 hero codes, read out of the page's own addHero() template.
+
+    They are not on the GET form -- addHero() injects them client-side, exactly
+    like a building row -- so they have to come from bytro.js rather than from
+    p.select_options.
+    """
+    try:
+        js = open("bytro.js").read()
+    except OSError:
+        return []
+    block = js[js.find("hero.abb"):js.find("hero.lvl")]
+    return re.findall(r'<option value="([^"]+)"', block)
+
+
+def exp_heroes(p: Probe) -> None:
+    """Do heroes do anything, and to whom?
+
+    NEVER MEASURED. In 174 live requests not one carried a hero, so every
+    coefficient in this project describes a hero-free battle. That is at least
+    internally consistent -- nothing on disk is contaminated -- but heroes are
+    a real mechanic and the roster is large: 23 of them, 20 levels each, one
+    per stack (addHero refuses a second: "This stack already has a hero.").
+
+    READ THE PAGE, DO NOT FIT THE NUMBERS. The fortress mechanic was solved by
+    noticing the building's own result row printed "DR: 90% -> 87.5%" outright,
+    after six requests of curve-fitting had learned less. A hero gets its own
+    <div id="B.1.hero"> in the same position, so one request per hero should
+    say what that hero does in words, whatever the numbers do.
+
+    THE TRAP THIS DESIGN IS BUILT AROUND. The hero names are plainly
+    class-specific -- Manfred von Richthofen is an air ace, Otto Hersing a
+    U-boat commander, Togo Heihachiro a battleship admiral. Against a land
+    stack most of them should legitimately do nothing, and "does nothing" is
+    the single most dangerous reading in this project (HANDOVER section 0).
+    So a null here is NOT reported as "no effect": it is reported as "no effect
+    ON THIS STACK CLASS", and the hero row's raw text is captured every time so
+    a silent row and an absent row can never be confused.
+    """
+    heroes = hero_options()
+    if not heroes:
+        print("  ! no hero list found in bytro.js.", file=sys.stderr)
+        return
+    abb, lvl, hp = HERO_FIELDS
+    print(f"  {len(heroes)} heroes from the page's own addHero() template\n")
+
+    base = settings()
+    base.update(duel(1, "inf", 20, "inf", 30))
+    try:
+        control = p.submit(base)
+    except BareFormReturned as e:
+        print(f"  ! control: {e}", file=sys.stderr)
+        return
+    ref_def = control.get("B.1.1")
+    ref_atk = control.get("A.1.1")
+    record("heroes", {"hero": None, "note": "control, no hero"}, control)
+    print(f"  control: defender lost {ref_def}, attacker lost {ref_atk}\n")
+    print(f"  {'hero':12} {'defLost':>9} {'atkLost':>9} {'defRatio':>9} "
+          f"{'atkRatio':>9}  hero row text")
+
+    silent, effective = [], []
+    for h in heroes:
+        ov = dict(settings(), **{abb: h, lvl: "10", hp: "100%"})
+        ov.update(duel(1, "inf", 20, "inf", 30))
+        try:
+            r = p.submit(ov, create=HERO_FIELDS)
+        except (BareFormReturned, ValueError) as e:
+            print(f"  ! {h}: {e}", file=sys.stderr)
+            record("heroes", {"hero": h, "error": str(e)}, {})
+            continue
+        raw = dict(p.last_raw)
+        row = raw.get("B.1.hero")
+        d = r.get("B.1.1")
+        a = r.get("A.1.1")
+        dr = (d / ref_def) if (ref_def and d is not None) else None
+        ar = (a / ref_atk) if (ref_atk and a is not None) else None
+        moved = any(x is not None and abs(x - 1) > 0.005 for x in (dr, ar))
+        (effective if moved else silent).append(h)
+        record("heroes", {"hero": h, "level": 10, "def_ratio": dr,
+                          "atk_ratio": ar, "hero_row": row,
+                          "detail": dict(p.last_details),
+                          "summary": dict(p.last_summary), "raw": raw}, r)
+        cell = lambda v: f"{v:9.2f}" if isinstance(v, (int, float)) else f"{'—':>9}"
+        print(f"  {h:12} {cell(d)} {cell(a)} {cell(dr)} {cell(ar)}  "
+              + (repr(row) if row else "NO ROW RENDERED"))
+
+    print(f"\n  {len(effective)} of {len(heroes)} changed a land-vs-land battle: "
+          f"{', '.join(effective) if effective else 'none'}")
+    if silent:
+        print(f"  {len(silent)} did not: {', '.join(silent)}")
+        print("  That is NOT 'these heroes do nothing'. Every reading above is "
+              "an INFANTRY stack, and\n  the roster is plainly class-specific — "
+              "an air ace has no business buffing infantry.\n  The hero row "
+              "text column separates a hero the server ignored from one it\n  "
+              "applied to units that were not there.")
+    rows_seen = [h for h in heroes if h not in silent or True]
+    if effective:
+        print("\n  Next: sweep levels 1..20 for one effective hero, and re-run "
+              "the silent ones\n  against air and naval stacks before "
+              "concluding anything about them.")
+
+
 def exp_terrain(p: Probe) -> None:
     """Each terrain against the same baseline; multipliers fall out as ratios."""
     terrains = p.select_options.get("A.1.terrain") or ["land", "air", "sea"]
@@ -2867,6 +2987,7 @@ def exp_unit_stats(p: "Probe") -> None:
 EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "unit_stats": exp_unit_stats,
     "mixed_stacks": exp_mixed_stacks,
+    "heroes": exp_heroes,
     "buildings": exp_buildings,
     "trenches": exp_trenches,
     "air_vs_ground": exp_air_vs_ground,
@@ -2883,7 +3004,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
 # it is about to spend on someone else's ad-supported fan site before it starts
 # rather than after. Approximate by design: saturation re-runs add a few.
 REQUEST_ESTIMATE: dict[str, int] = {
-    "unit_stats": 20, "buildings": 14, "patrol": 18, "mixed_stacks": 8, "trenches": 10, "air_vs_ground": 30,
+    "unit_stats": 20, "buildings": 14, "patrol": 18, "mixed_stacks": 8, "heroes": 23, "trenches": 10, "air_vs_ground": 30,
     "land_matrix": 100, "size_factor": 33, "hp_scaling": 10,
     "fortress": 6, "terrain": 5, "variance": 60,
 }

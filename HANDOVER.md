@@ -545,6 +545,85 @@ Also established:
 - **Fortresses do not reduce the defender's output.** The attacker loses 141.7
   at fortress level 5, identical to the no-fortress control.
 
+### Heroes — measured 2026-08-17, and they are large
+
+**In 174 live requests not one carried a hero**, so every coefficient in this
+document describes a hero-free battle. That is at least internally consistent —
+nothing on disk is contaminated — but it is a big hole: a hero adds up to
+**40%** to a stack's output.
+
+`addHero(side, stack)` injects `{side}.{stack}.hero.{abb,lvl,hp}`, exactly like
+a building row. **22 heroes, levels 1–20, at most one per stack** (`addHero`
+refuses a second outright).
+
+#### A hero is a UNIT, not a building
+
+This was guessed wrong before it was measured, and the rig caught it. The hero
+renders an ordinary unit-style span — `Lost 2.1 HP (5.19%)` — and **the stack's
+summary table counts it**:
+
+```
+77.90 (units)  +  2.10 (hero)  =  80.00 (table)      on all sixteen readings
+```
+
+A building is the opposite: the fortress response proves the table leaves it
+out. The first draft assumed heroes behaved like buildings and excluded them
+from the reconciliation, and every hero request then printed a table mismatch.
+**The mismatch warning is what found it** — that guard exists because a table
+attached to the wrong stack would look exactly as plausible, and it earned its
+keep here on a case it was not written for.
+
+Each hero has its own HP pool, readable from its span: `tatiana` 15.1,
+`lucien` 40.5, `pershing` 80.8, `alvin` 101.0. **Every hero lost exactly 2.10
+HP** regardless of its own pool or its buff size, so allocation to the hero is
+not pool-proportional.
+
+#### Sixteen of 22 changed a land battle; six are refused outright
+
+Naval heroes are **server-rejected on land**, cleanly:
+
+```
+oops: Can't have Otto Hersing on land.
+oops: Can't have Tōgō Heihachirō on land.
+oops: Can't have Ivan “Vedmid” Kovalenko on land.
+```
+
+So the class-specificity the names imply is real and enforced, not silent. The
+effect on the defender's output, 30 infantry at hero level 10:
+
+| hero | attacker's loss | vs control |
+|---|---|---|
+| control (none) | 141.67 | — |
+| `maeve` | 144.27 | ×1.02 |
+| `georg`, `tatiana` | 145.92 | ×1.03 |
+| `allen`, `larab` | 149.92 | ×1.06 |
+| `marco` | 154.92 | ×1.09 |
+| `joffre` | 155.92 | ×1.10 |
+| `hank` | 158.51 | ×1.12 |
+| `kangal` | 159.92 | ×1.13 |
+| **`joffre_home`** | **197.89** | **×1.40** |
+
+`joffre_home` is Joseph Joffre "(Homeland)" — the same hero as `joffre` with a
+territory condition, and worth nearly four times as much. The defender's own
+loss is **unchanged at 80.00 total** in every case; the units' share drops to
+77.90 only because the hero absorbs 2.10 of it. So a hero does not mitigate —
+it joins the stack, takes a share of the incoming damage, and adds output.
+
+#### What is still unmeasured about heroes
+
+- **Levels.** Everything above is level 10. The 1–20 curve is untouched, and
+  it is the obvious next sweep (one hero, ~6 requests).
+- **The six land-refused heroes** need an air or naval stack before anything is
+  said about them. Their land silence is a server refusal, not a null result.
+- **Whether the buff is class-targeted within land.** Every reading is
+  infantry; a hero that buffs cavalry specifically would look identical to one
+  that does nothing here.
+- **Attacking heroes.** Only `B.1.hero` was ever populated.
+
+**The app does not model heroes**, and says so — `data.js` carries the gap in
+`NOT_MEASURED` and the UI's limits panel states every figure assumes no hero.
+Given a 40% swing, that caveat is load-bearing rather than decorative.
+
 ### Composite stacks — measured 2026-08-17, and the law is exact
 
 **Every experiment before this one put one unit type in one row.** `duel()`
@@ -943,7 +1022,7 @@ instead of "Unknown experiment":
 | `damage_sea` | `unit_stats` |
 | `damage_air` | `air_vs_ground` |
 
-### Tests — 232 checks, no network needed
+### Tests — 253 checks, no network needed
 
 ```bash
 python3 test_probe_offline.py       # 45  transport, parsing, slot association
@@ -955,6 +1034,7 @@ python3 test_trench_design.py       # 27  proves the trench sweep can discrimina
 python3 test_matchup_design.py      # 30  proves the matrix can discriminate
 python3 test_patrol_design.py       # 22  proves patrol can be told from air
 python3 test_mixed_stacks_design.py # 21  proves composite saturation can be read
+python3 test_hero_design.py         # 21  separates an ignored hero from an irrelevant one
 ```
 
 These serve the site's courtesy budget as much as correctness: they run against
@@ -1123,8 +1203,12 @@ Publishing requires one manual setting that no API can flip: **Settings → Page
 - Do other units have a separate building-damage stat like infantry's 0.3? One
   `buildings`-style run per unit would give the whole column. Still open, and
   now the cheapest unmeasured column in the model.
-- Heroes exist as a per-stack toggle and buff units. Every experiment leaves them
-  off; if any reading looks inflated, check that first.
+- **PARTLY ANSWERED (2026-08-17).** Heroes measured at level 10 against a land
+  stack: 16 of 22 change the battle, up to x1.40, and a hero is a UNIT that
+  the summary table counts rather than a building it excludes. Levels 1-20,
+  the six land-refused heroes, and attacking heroes are all still open. See
+  §4. No earlier reading is contaminated — not one of the first 174 requests
+  carried a hero.
 - `firestorm` appears throughout `bytro.js` but is not exposed on the S1914 form
   — likely shared code with dxter's Call of War calculator. Probably irrelevant,
   but it explains otherwise-confusing function names.
