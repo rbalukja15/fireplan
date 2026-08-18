@@ -402,7 +402,7 @@ export const NOT_MEASURED = [
   { key: 'trench_10_pool', what: 'The level-10 pool multiplier beyond 2 decimal places.', why: 'Bracketed to [1.2382, 1.2463], which excludes the tidy 1.25.', closedBy: 'a larger stack, which tightens the bracket' },
   { key: 'fortress_edges', what: 'A fortress on the ATTACKING side; a fortress against air or naval attackers; fortress-trench interaction; DR above level 5.', why: 'Only a level 1-5 fortress defending against infantry was measured. At level 6 the formula returns DR = 1.05, so it must saturate or the cap is real.', closedBy: 'a handful of requests' },
   { key: 'building_caps', what: 'Workshop and factory level caps; workshop HP per level.', why: 'The sweep asked for 3, was not rejected, and never probed higher. Workshop shows 35 total at L3 with 20 in the top level, so HP is not uniform per level.', closedBy: 'two requests' },
-  { key: 'heroes', what: 'Heroes.', why: 'An addHero(side, stack) button exists on the form and was never once exercised. Every reading is hero-free.', closedBy: 'a hero sweep' },
+  { key: 'heroes', what: 'Heroes — 22 of them, levels 1-20, one per stack.', why: 'Now measured at LEVEL 10 only: 16 of 22 change a land battle, up to x1.40, so the effect is large. The level curve is completely untouched, so the app models no hero at all rather than pretend one level is the mechanic. Every figure here assumes no hero.', closedBy: 'a level 1-20 sweep on one hero, plus the six naval heroes against an air or naval stack' },
   { key: 'position', what: 'Position / range effects.', why: 'Every run was at position 0.', closedBy: 'a position sweep' },
 ];
 
@@ -619,6 +619,20 @@ export const PROVENANCE = {
       + 'including the asymmetric splits where allocation by pool or by attack value alone is '
       + 'off by 10.7 and 26.6 HP respectively. Note it uses the RAW count, not the saturated '
       + 'effective count -- allocation ignores the size factor that output obeys.',
+  },
+  'HEROES.measured': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=heroes: a control plus 22 hero types at level 10 '
+      + 'against 30 infantry.',
+    note: 'MEASURED BUT DELIBERATELY NOT MODELLED. 16 of 22 heroes change a land battle, '
+      + 'from x1.02 to x1.40, so the effect is large. But every reading is level 10, and the '
+      + 'level 1-20 curve is completely untouched -- implementing a single level as though it '
+      + 'were the mechanic would put a confident number on 19 unmeasured levels. Six naval '
+      + 'heroes are refused on land outright ("Can\'t have Otto Hersing on land"), so their '
+      + 'silence is a server refusal rather than a null. A hero is a UNIT: it renders an '
+      + 'ordinary Lost-HP span and the stack summary table counts it, unlike a building. It '
+      + 'does not mitigate -- total incoming damage is unchanged, the hero just absorbs a '
+      + 'share of it. Every figure this app produces assumes NO hero.',
   },
   'integrity': {
     confidence: 'measured',

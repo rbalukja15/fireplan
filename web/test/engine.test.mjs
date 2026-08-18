@@ -830,8 +830,17 @@ console.log('\n13. coverage of the record itself');
   const notReplayed = Object.keys(counts).filter((e) => !replayed.includes(e));
   console.log(`  note  replayed: ${replayed.map((e) => `${e} ${counts[e] || 0}`).join(', ')}`);
   console.log(`  note  NOT replayed: ${notReplayed.map((e) => `${e} ${counts[e]}`).join(', ') || 'none'}`);
-  check('every experiment in the record is replayed by the engine',
-    notReplayed.length === 0, notReplayed.join(', ') || 'none');
+  // 'heroes' is measured but deliberately unmodelled: every reading is level
+  // 10 and the 1-20 curve is untouched, so shipping one level as the mechanic
+  // would put a confident number on 19 unmeasured ones. Declared, not dropped.
+  check('the only unreplayed experiment is heroes, and the engine says why',
+    notReplayed.length === 1 && notReplayed[0] === 'heroes',
+    notReplayed.join(', ') || 'none');
+  check('heroes are recorded as measured but not modelled',
+    PROVENANCE['HEROES.measured'].confidence === 'measured'
+    && /DELIBERATELY NOT MODELLED/.test(PROVENANCE['HEROES.measured'].note));
+  check('and the app still declares heroes as a gap the user can see',
+    NOT_MEASURED.some((g) => /hero/i.test(g.key) || /hero/i.test(g.what)));
   check('composite saturation and allocation are both recorded as measured',
     PROVENANCE['STACK.saturation'].confidence === 'measured'
     && PROVENANCE['STACK.allocation'].confidence === 'measured');
