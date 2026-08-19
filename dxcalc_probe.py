@@ -614,7 +614,7 @@ def refine_details(details: dict[str, dict[str, float]],
     The table gives a stack TOTAL over its unit rows; the spans give the split.
     So the table can only replace a span when the stack has exactly one unit
     row with a reading — which is every experiment here, because duel() blanks
-    rows 2-8 precisely so a single reading means a single unit type.
+    rows 2-15 precisely so a single reading means a single unit type.
 
     Before substituting anything, the sum of that stack's unit spans is checked
     against the table. Agreement to within span rounding is the evidence that
@@ -957,7 +957,7 @@ class Probe:
             val = "" if v is None else str(v)
             if k not in payload and k not in create:
                 # Blanking a row the form doesn't have is harmless — that is
-                # what duel() does to rows 2-8. SETTING one is a silent bug:
+                # what duel() does to rows 2-15. SETTING one is a silent bug:
                 # the experiment believes it configured something it did not.
                 # The fortress sweep lost six requests a run to exactly this.
                 if val:
@@ -1091,6 +1091,9 @@ def settings(rounds: str | float = "1", variance: bool = False) -> dict[str, str
         "updateCounts": "",
         "newWindow": "",
     }
+
+
+MAX_UNIT_ROWS = 15      # the form's own maxUnits; duel() and composite() both honour it
 
 
 def duel(
@@ -2409,7 +2412,7 @@ def composite(stack: int, side: str, rows: list[tuple[str, int]],
     """Fill one side's unit rows with a COMPOSITE stack.
 
     Every experiment before this one used exactly one unit row per side, and
-    duel() blanks rows 2-8 to keep it that way. That was a measurement choice
+    duel() blanks rows 2-15 to keep it that way. That was a measurement choice
     -- one variable at a time -- and it is not how the game works. A real stack
     is a mixture, and the form has always had the rows for it.
     """
@@ -2418,7 +2421,13 @@ def composite(stack: int, side: str, rows: list[tuple[str, int]],
         out[f"{side}.{stack}.{i}.unit"] = unit
         out[f"{side}.{stack}.{i}.count"] = str(count)
         out[f"{side}.{stack}.{i}.hp"] = hp
-    for i in range(len(rows) + 1, 9):
+    # Up to MAX_UNIT_ROWS, matching duel(). This stopped at 9 while duel()
+    # already blanked 2..15, so a composite stack only stayed clean because
+    # duel() runs first and happens to cover the tail. Any caller that built a
+    # stack WITHOUT duel() would have left rows 9-15 carrying whatever the GET
+    # shipped -- a contaminated reading with no error, which is the failure
+    # mode this whole file is organised against.
+    for i in range(len(rows) + 1, MAX_UNIT_ROWS + 1):
         out[f"{side}.{stack}.{i}.count"] = ""
         out[f"{side}.{stack}.{i}.hp"] = ""
     return out
@@ -2712,7 +2721,7 @@ def exp_stack_limits(p: Probe) -> None:
 
     Two numbers have been assumed all project and neither was ever checked.
 
-    ROW COUNT. duel() blanks rows 2-8, an arbitrary "enough" chosen early on,
+    ROW COUNT. duel() blanks rows 2-15, the form's real maximum,
     and that 8 was then carried into the app as though it were the game's
     limit. The page's own constant is maxUnits = 15. But a stack cannot repeat
     a unit type (measured), so the real ceiling is the number of TYPES a stack

@@ -1091,9 +1091,14 @@ console.log('\n14. coverage of the record itself');
   // refusals encoded in STACK_GROUP and HEROES.maxLevel rather than physics to
   // replay: which types may share a stack, and each hero's real level cap.
   // Constraint probes (server refusals, encoded rather than replayed) plus
-  // hero_targets, which is the sweep that showed a hero's buff lands on
-  // SPECIFIC unit types and can act on the HP pool -- a channel this engine
-  // has no term for, so it is declared rather than pretended.
+  // hero_targets -- which is NOT replayed for a specific reason worth keeping
+  // written down. Its attacker was wiped in all sixteen hero runs (400.0 of a
+  // 400.0 pool), so its output column is the attacker's own pool repeated,
+  // not a measurement of anything. What it did establish is the HP-POOL
+  // channel, read off the defender's row pools, and this engine has no term
+  // for that. Replaying it would mean asserting the engine reproduces numbers
+  // that carry no information. survivable_rig is the same sweep rerun with an
+  // attacker that lives, and that one IS replayed, in full.
   const declaredNonReplay = ['stack_limits', 'hero_caps', 'hero_targets'];
   void declaredNonReplay;
   check('every unreplayed experiment is one the engine declares and explains',

@@ -33,15 +33,17 @@ suite asserts all of that, so it stays true.
   `simulate()` never throws for any roster combination, and a number the record
   cannot support is flagged or withheld, never emitted as though it were
   measured.
-- `app.js` — the UI. Each side is a **stack of up to 8 distinct unit types**,
+- `app.js` — the UI. Each side is a **stack of up to 15 distinct unit types**,
   which is what an army actually is; the type already used on a side is removed
   from every other row's list, so the duplicate the server refuses cannot be
-  entered. Rows are held in roster order and each one shows its own effective
-  unit count, so a stack whose artillery is only worth 25 of its 40 units says
-  so before the battle is fought. It renders the engine's `derivation[]` array,
+  entered. Rows are DISPLAYED in roster order — the server computes them
+  strongest first, by the damage column in use, so each row shows its own
+  effective unit count rather than leaving you to infer it from position. A
+  stack whose artillery is only worth 25 of its 40 units says so before the
+  battle is fought. It renders the engine's `derivation[]` array,
   so every number on screen can be traced back to the law and the reading it
   came from.
-- `test/engine.test.mjs` — 580 checks. See [Verification](#verification).
+- `test/engine.test.mjs` — 754 checks. See [Verification](#verification).
 
 ---
 
@@ -146,7 +148,7 @@ Nothing needs installing and nothing needs building. Edit a file, reload.
 node web/test/engine.test.mjs
 ```
 
-580 checks, no network needed. The suite replays `../results.jsonl` row by row
+754 checks, no network needed. The suite replays `../results.jsonl` row by row
 and compares the engine's prediction against what dxcalc.com actually printed;
 **no expected value in it is a constant the engine itself carries** — every one
 came off the wire. Tolerances follow the source page's print precision: HP lost
