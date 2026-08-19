@@ -27,7 +27,7 @@ on:
   push:
     branches:
       - main
-      - claude/dxcalc-reverse-engineering-1nv8y7
+      - claude/dxcalc-reverse-engineering-k9i0qb
   pull_request:
     branches:
       - main
@@ -82,27 +82,24 @@ jobs:
       - name: App engine suite (replays results.jsonl)
         run: node web/test/engine.test.mjs
 
-      # The eight offline suites that guard the research rig. These do not
-      # test the app, but they are the reason its constants are trustworthy:
-      # they prove each experiment could have distinguished the hypotheses it
-      # ruled between. A regression here means a constant's provenance is no
-      # longer backed by a working measurement design.
-      - name: Probe transport, parsing and slot association
-        run: python3 test_probe_offline.py
-      - name: --semantics can discriminate
-        run: python3 test_semantics_design.py
-      - name: Unit stats and max-HP brackets
-        run: python3 test_unit_stats.py
-      - name: Fortress rows (bldg.1 vs the bldg.0 template)
-        run: python3 test_fortress_row.py
-      - name: The per-stack summary table
-        run: python3 test_result_table.py
-      - name: The trench sweep can discriminate
-        run: python3 test_trench_design.py
-      - name: The matchup matrix can discriminate
-        run: python3 test_matchup_design.py
-      - name: Patrol can be told from air
-        run: python3 test_patrol_design.py
+      # The offline suites that guard the research rig. These do not test the
+      # app, but they are the reason its constants are trustworthy: they prove
+      # each experiment could have distinguished the hypotheses it ruled
+      # between. A regression here means a constant's provenance is no longer
+      # backed by a working measurement design.
+      #
+      # EVERY suite, discovered rather than listed. The list version drifted:
+      # two suites were written and never added to it, so they ran locally and
+      # never in CI. A loop cannot drift, and an empty glob fails loudly rather
+      # than passing silently.
+      - name: Offline suites (no network)
+        run: |
+          shopt -s failglob
+          for t in test_*.py; do
+            echo "=== $t"
+            python3 "$t"
+          done
+
 
   # ---------------------------------------------------------------------------
   # 2. Build the Pages artifact. Only after the gate is green.
