@@ -577,7 +577,7 @@ export const NOT_MEASURED = [
   { key: 'sea_land_air', what: 'Any sea-vs-land or sea-vs-air pairing.', why: 'Entirely absent from the record.', closedBy: 'a cross-class sweep' },
   { key: 'balloon', what: 'The Balloon: max HP, attack, defence, class interactions — every quantity.', why: 'Sending bal in air terrain aborts the whole batch server-side with no error, so it has four rows in results.jsonl and all four are empty.', closedBy: 'unknown; the request itself fails' },
   { key: 'building_damage_per_unit', what: 'Damage to buildings from any unit but infantry.', why: 'Infantry deal 0.3 per effective unit. Nothing else in the model predicts that number, so it cannot be inferred for other units.', closedBy: 'one request per unit type against a building' },
-  { key: 'multi_round', what: 'Battles longer than one round.', why: 'EVERY measurement in results.jsonl used maxRounds=1. Round-to-round carry-over, whether m(f) re-evaluates, and whether fortress DR decays across rounds are all unmeasured.', closedBy: 'a maxRounds sweep' },
+  { key: 'multi_round_details', what: 'The reported DEATH count in a multi-round battle, and whether fortress DR decays across rounds.', why: 'The output law across rounds is now measured to 0.042% — survivors are whole units and m(f) applies to what those survivors have left. But the death count the page PRINTS does not follow floor(cumulative loss / per-unit HP): it reads one lower than that for rounds 2-5 of the ladder, and no simple per-round rule reproduces it either. Output is unaffected, since the survivor count that drives it does follow the floor rule. Fortress DR across rounds was not in the ladder.', closedBy: 'a ladder that varies the unit size so the death rule is over-determined, plus one fortress ladder' },
   { key: 'air_E_above_20', what: 'Which effective-count law an attenuated air stack above 20 units uses.', why: 'All 30 attenuated stacks were 10 units, where E(n) = n, so E(n_alive)·m(f_after) and a per-unit sum of m(f_i) are indistinguishable. They diverge above 20.', closedBy: 'one air_vs_ground cell with a 30-unit air stack' },
   { key: 'E_with_m_above_20', what: 'E(n) combined with m(f) for n > 20.', why: 'Only a 10-unit stack was ever damaged.', closedBy: 'an hp_scaling sweep at n=30' },
   { key: 'air_wiped', what: 'An air attacker reduced to zero survivors.', why: 'The post-fire law divides by the survivor count; at zero survivors it has no measured branch.', closedBy: 'one deliberately lopsided air_vs_ground cell' },
@@ -808,6 +808,19 @@ export const PROVENANCE = {
       + 'count share, and 77.7% for ROSTER order -- which is what this app shipped until '
       + '2026-08-19. Roster order fitted the original four mixtures only because every one of '
       + 'them was infantry + artillery, an ordering the two laws agree on.',
+  },
+  'ROUNDS.multi': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=multi_round: the same 50-vs-50 infantry battle read '
+      + 'at maxRounds 1, 2, 3, 4, 5, 6, 8 and 10.',
+    note: 'Each round\'s output is coefficient x E(survivors) x m(f), where survivors are '
+      + 'WHOLE units - count minus floor(HP lost / per-unit HP) - and f is what those '
+      + 'survivors have left of their own maximum. Fits the ladder to 0.042%, against '
+      + '0.221% for fractional survivors without m(f), 1.063% for whole survivors without '
+      + 'it, and 6.0% for evaluating post-fire as air does. This reconciles with '
+      + 'HP.scaling rather than contradicting it: m(f) is the same law, applied to the '
+      + 'survivors. THE APP USED TO RECOMPUTE NOTHING between rounds, which is 13.66% out '
+      + 'by round six - it declared a wipe that does not happen.',
   },
   'STACK.allocation': {
     confidence: 'measured',

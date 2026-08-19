@@ -1105,6 +1105,45 @@ console.log('\n12e. heroes on the attacking side');
     `${atkHero.damageDealt} attacking, ${defHero.damageDealt} defending`);
 }
 
+console.log('\n12f. multi-round — replayed against the maxRounds ladder');
+// ===========================================================================
+// Every other reading in the record is ONE round. The engine iterated, and
+// recomputed nothing between rounds: each row's effective count was fixed at
+// the opening figure, which is 13.66% out by round six, where it declared a
+// wipe that does not happen.
+{
+  let rungs = 0;
+  for (const r of rows) {
+    const m = r.meta || {};
+    if (r.experiment !== 'multi_round' || m.error) continue;
+    const d = m.detail || {};
+    const obs = (d['A.1.1'] || {}).lost;
+    if (obs == null) continue;
+    rungs += 1;
+    const res = simulate({
+      attacker: { unit: 'inf', count: 50, hpPct: 100 },
+      defender: { unit: 'inf', count: 50, hpPct: 100 },
+      rounds: m.rounds,
+    });
+    check(`${m.rounds} rounds: attacker lost ${res.attacker.hpLost.toFixed(2)} `
+      + `vs measured ${obs}`,
+      Math.abs(res.attacker.hpLost - obs) / obs <= 0.005,
+      `${(100 * (res.attacker.hpLost - obs) / obs).toFixed(3)}%`);
+  }
+  check('the whole maxRounds ladder was replayed', rungs >= 8, String(rungs));
+
+  // The rule, stated as behaviour: a stack that has taken losses fights the
+  // next round with fewer units AND with those units damaged.
+  const r1 = simulate({ attacker: { unit: 'inf', count: 50 },
+    defender: { unit: 'inf', count: 50 }, rounds: 1 });
+  const r2 = simulate({ attacker: { unit: 'inf', count: 50 },
+    defender: { unit: 'inf', count: 50 }, rounds: 2 });
+  check('round two deals LESS than round one, because both sides are thinner',
+    (r2.attacker.hpLost - r1.attacker.hpLost) < r1.attacker.hpLost,
+    `${(r2.attacker.hpLost - r1.attacker.hpLost).toFixed(2)} then `
+    + `${r1.attacker.hpLost.toFixed(2)}`);
+}
+
 console.log('\n13. heroes — replayed against every measured reading');
 // ===========================================================================
 // A hero is a unit plus a buff, and the app now models it. Replayed here
@@ -1181,7 +1220,7 @@ console.log('\n14. coverage of the record itself');
   for (const r of rows) counts[r.experiment] = (counts[r.experiment] || 0) + 1;
   const replayed = ['semantics', 'unit_stats', 'hp_scaling', 'air_vs_ground', 'trenches',
     'fortress', 'buildings', 'patrol', 'mixed_stacks', 'survivable_rig',
-    'stack_order', 'allocation', 'hero_sides',
+    'stack_order', 'allocation', 'hero_sides', 'multi_round',
     // Heroes are now modelled and replayed above: the sweeps that measured
     // them are physics the engine reproduces, not declared omissions.
     'heroes', 'hero_scaling', 'hero_table', 'hero_levels', 'air_rounds'];

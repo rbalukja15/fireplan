@@ -4445,6 +4445,129 @@ def _curve_at(curve: dict[int, float] | None, level: int) -> float:
     return curve[lo] + (level - lo) / (hi - lo) * (curve[hi] - curve[lo])
 
 
+def exp_multi_round(p: Probe) -> None:
+    """What actually happens between rounds. EVERY reading on disk is one round.
+
+    The app iterates: it recomputes each side's output from the survivors, once
+    per round, and carries HP across. Not one line of that is measured. Three
+    separate things could be wrong and all of them would look plausible:
+
+      * whether E(n) re-evaluates on the SURVIVORS or stays at the opening count
+      * whether m(f) re-evaluates as the pool drains, or is fixed at round one
+      * whether a wiped side stops contributing, and on which round
+
+    A long battle separates them, because the three predictions diverge further
+    with every round. 50 infantry a side lasts six or seven rounds and loses
+    units every one of them, so by round 5 "E on survivors" and "E fixed" are
+    far apart.
+    """
+    print("\n  50 infantry a side, the same battle read at increasing "
+          "maxRounds.\n")
+    print(f"  {'rounds':>6} {'A lost':>9} {'A died':>7} {'B lost':>9} "
+          f"{'B died':>7}   per-round delta")
+    seen: list[tuple[int, float, float, float, float]] = []
+    for rounds in (1, 2, 3, 4, 5, 6, 8, 10):
+        ov = settings(rounds=rounds)
+        ov.update(duel(1, "inf", 50, "inf", 50))
+        try:
+            p.submit(ov)
+        except (BareFormReturned, ValueError) as e:
+            print(f"  ! rounds={rounds}: {e}", file=sys.stderr)
+            record("multi_round", {"rounds": rounds, "error": str(e)}, {})
+            continue
+        d = dict(p.last_details)
+        record("multi_round", {"rounds": rounds, "atk": ("inf", 50),
+                               "def": ("inf", 50), "detail": d},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        a = d.get("A.1.1") or {}
+        b = d.get("B.1.1") or {}
+        if a.get("lost") is None or b.get("lost") is None:
+            print(f"  {rounds:>6} {'—':>9}")
+            continue
+        prev = seen[-1] if seen else None
+        delta = (f"A +{a['lost'] - prev[1]:6.2f}  B +{b['lost'] - prev[3]:6.2f}"
+                 if prev else "")
+        seen.append((rounds, a["lost"], a.get("died", 0), b["lost"],
+                     b.get("died", 0)))
+        print(f"  {rounds:>6} {a['lost']:9.2f} {a.get('died', 0):7.0f} "
+              f"{b['lost']:9.2f} {b.get('died', 0):7.0f}   {delta}")
+
+    if len(seen) < 3:
+        print("\n  NO VERDICT — too few rounds read.")
+        return
+
+    # Four candidate laws, each iterated exactly as the app would.
+    #
+    # The survivor count is the thing that separates them. A stack that has
+    # lost 273.43 of 1000 HP has 36.33 units' worth of HP left, not 37 whole
+    # units and not 36 -- and the difference compounds every round.
+    def run(n: int, mode: str) -> float:
+        hp, atk, dfn = MEASURED_UNITS["inf"][0], 4.0, 5.0
+        pool = 50 * hp
+        a_lost = b_lost = 0.0
+        for _ in range(n):
+            a_n = ((pool - a_lost) / hp if mode != "integer"
+                   else 50 - int(a_lost // hp))
+            b_n = ((pool - b_lost) / hp if mode != "integer"
+                   else 50 - int(b_lost // hp))
+            if a_n <= 0 or b_n <= 0:
+                break
+            a_out = atk * effective_units(a_n)
+            b_out = dfn * effective_units(b_n)
+            if mode == "post":
+                # Air's law: evaluate on whoever is left AFTER this round.
+                a_n2 = max(0.0, (pool - a_lost - b_out) / hp)
+                b_n2 = max(0.0, (pool - b_lost - a_out) / hp)
+                a_out, b_out = atk * effective_units(a_n2), dfn * effective_units(b_n2)
+            elif mode == "m_f":
+                a_out *= 0.05 + 0.95 * (pool - a_lost) / pool
+                b_out *= 0.05 + 0.95 * (pool - b_lost) / pool
+            a_lost = min(pool, a_lost + b_out)
+            b_lost = min(pool, b_lost + a_out)
+        return a_lost
+
+    models = ("fractional", "integer", "post", "m_f")
+    print(f"\n  {'rounds':>6} {'A measured':>11} "
+          + " ".join(f"{m:>12}" for m in models))
+    errs = {m: 0.0 for m in models}
+    for rounds, a_lost, _, _, _ in seen:
+        cells = []
+        for m in models:
+            pred = run(rounds, m)
+            cells.append(f"{pred:12.2f}")
+            errs[m] = max(errs[m], abs(pred - a_lost) / max(a_lost, 1))
+        print(f"  {rounds:>6} {a_lost:11.2f} " + " ".join(cells))
+    print()
+    for m in models:
+        print(f"    {m:12} worst error {100 * errs[m]:7.3f}%")
+    best = min(errs, key=errs.get)
+    names = {
+        "fractional": "each round's output is coefficient x E(pool / maxHP), "
+                      "evaluated BEFORE that round's\n  damage lands. The "
+                      "survivor count is FRACTIONAL -- a stack holding 726.57 "
+                      "HP counts as\n  36.33 units, not 37 and not 36.",
+        "integer": "the survivor count is whole units, from the reported death "
+                   "count",
+        "post": "output is evaluated on whoever is left AFTER the round, as in "
+                "air",
+        "m_f": "m(f) attenuates each round as the pool drains",
+    }
+    if errs[best] <= 0.005:
+        print(f"\n  VERDICT: {names[best]}")
+    elif errs[best] <= 0.01:
+        print(f"\n  BEST FIT, NOT EXACT: {names[best]}\n"
+              f"  Worst error {100 * errs[best]:.3f}%, against "
+              + ", ".join(f"{m} {100 * errs[m]:.2f}%"
+                          for m in models if m != best)
+              + ".\n  Rounds 1 and 2 are exact and the residual appears from "
+              "round 3, growing then\n  shrinking — a small systematic term "
+              "this does not capture. Multi-round results\n  must be labelled "
+              "ESTIMATED, not measured.")
+    else:
+        print(f"\n  VERDICT: none of the four fits (best {best} at "
+              f"{100 * errs[best]:.2f}%). The measured column is the finding.")
+
+
 def exp_terrain(p: Probe) -> None:
     """Each terrain against the same baseline; multipliers fall out as ratios."""
     terrains = p.select_options.get("A.1.terrain") or ["land", "air", "sea"]
@@ -4766,6 +4889,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "hero_full": exp_hero_full,
     "hero_hp_cap": exp_hero_hp_cap,
     "hero_sides": exp_hero_sides,
+    "multi_round": exp_multi_round,
     "buildings": exp_buildings,
     "trenches": exp_trenches,
     "air_vs_ground": exp_air_vs_ground,
@@ -4782,7 +4906,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
 # it is about to spend on someone else's ad-supported fan site before it starts
 # rather than after. Approximate by design: saturation re-runs add a few.
 REQUEST_ESTIMATE: dict[str, int] = {
-    "unit_stats": 20, "buildings": 14, "patrol": 18, "mixed_stacks": 8, "heroes": 23, "stack_limits": 4, "hero_scaling": 9, "hero_table": 28, "hero_levels": 16, "hero_caps": 30, "stack_ladder": 9, "stack_order": 5, "hero_output": 21, "hero_buff_confirm": 5, "allocation": 9, "hero_full": 24, "hero_hp_cap": 22, "hero_sides": 30, "trenches": 10, "air_vs_ground": 30,
+    "unit_stats": 20, "buildings": 14, "patrol": 18, "mixed_stacks": 8, "heroes": 23, "stack_limits": 4, "hero_scaling": 9, "hero_table": 28, "hero_levels": 16, "hero_caps": 30, "stack_ladder": 9, "stack_order": 5, "hero_output": 21, "hero_buff_confirm": 5, "allocation": 9, "hero_full": 24, "hero_hp_cap": 22, "hero_sides": 30, "multi_round": 8, "trenches": 10, "air_vs_ground": 30,
     "land_matrix": 100, "size_factor": 33, "hp_scaling": 10,
     "fortress": 6, "terrain": 5, "variance": 60,
 }

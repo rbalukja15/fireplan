@@ -1108,6 +1108,9 @@ function runSimulation(config, derivation, caveats) {
   const patrolScale = patrol.applies ? rounds : 1;
   for (let r = 1; r <= loopRounds; r += 1) {
     const tag = loopRounds > 1 ? `R${r} ` : '';
+    // Rounds after the first fight with what is left: fewer units, and those
+    // units damaged. Both change the output and neither used to.
+    if (r > 1) { refreshRound(atk); refreshRound(def); }
     if (atk.n <= 0 || def.n <= 0 || atk.pool <= EPS || def.pool <= EPS) {
       derivation.push({
         label: `${tag}round skipped`,
@@ -1510,7 +1513,9 @@ function stackOutput(side, coefFor, scale, mulEach) {
   for (const r of side.rows) {
     const c = coefFor(r.unit);
     if (c === null || c === undefined) return { total: null, parts: [] };
-    const mm = mulEach ? mulEach(r) : hpMultiplier(r.hpPct / 100);
+    const frac = (r.liveFrac === undefined)
+      ? r.hpPct / 100 : r.liveFrac * (r.hpPct / 100);
+    const mm = mulEach ? mulEach(r) : hpMultiplier(frac);
     // The stack-level multipliers (trench output, patrol duration) must be
     // carried onto the ROWS as well, or the rows no longer sum to the stack.
     // They did not, and the UI's row-vs-total sanity check caught it: a
@@ -1530,6 +1535,37 @@ function stackOutput(side, coefFor, scale, mulEach) {
  * per-unit HP. See allocationWeights for what replaced the old rule and why.
  */
 /** Row or hero, whichever this allocation part points at. */
+/**
+ * Re-open each row for a new round: living units, and the fraction of THEIR
+ * own maximum that is left. Both feed the next round's output.
+ *
+ * Measured over an eight-rung maxRounds ladder (50 infantry a side, which
+ * lasts seven rounds). The survivor count is WHOLE units -- floor(HP lost /
+ * per-unit HP) -- and m(f) then applies to what those survivors have left,
+ * f = remaining pool / (survivors x per-unit max). That fits to 0.042%.
+ * Fractional survivors without m(f) fits 0.221%, whole survivors without m(f)
+ * 1.063%, and evaluating post-fire as air does 6.0%.
+ *
+ * The engine used to compute each row's effective count ONCE and never update
+ * it, which is the "fixed E" law: 13.66% out by round six, where it declared a
+ * wipe that does not happen.
+ */
+function refreshRound(side) {
+  for (const r of side.rows) {
+    if (!r.perUnitMaxHP) continue;
+    const alive = Math.max(0, r.count - Math.floor(r.hpLost / r.perUnitMaxHP));
+    r.liveCount = alive;
+    const full = alive * r.perUnitMaxHP;
+    r.liveFrac = full > 0 ? Math.min(1, (r.pool - r.hpLost) / full) : 0;
+  }
+  const live = side.rows.map((r) => ({
+    unit: r.unit,
+    count: r.liveCount === undefined ? r.count : r.liveCount,
+  }));
+  const eff = effectiveByRow(live, side.role === 'attacker' ? 'atk' : 'def');
+  side.rows.forEach((r, i) => { r.effective = eff[i].effective; });
+}
+
 function partName(t) {
   return t && t.unit ? t.unit.code : (t && t.def ? t.def.label : 'hero');
 }
