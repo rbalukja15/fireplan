@@ -557,9 +557,18 @@ export const FORM_DOMAINS = {
 export const NOT_MEASURED = [
   {
     key: 'land_off_diagonal',
-    what: 'Land unit vs a DIFFERENT land unit (90 of 100 land pairings).',
-    why: 'Attack is known to be per-target-class, so the same-class diagonal cannot be assumed to generalise. This is the single biggest gap.',
-    closedBy: 'the land_matrix experiment, ~100 requests',
+    what: 'Land vs land: the per-pairing ATTACK coefficient. Largely answered — see why.',
+    why: 'A land attacker\u2019s TOTAL output does not depend on what it is shooting at. '
+      + 'Its diagonal coefficient x E(n) reproduces every reading on record to 0.23% — nine '
+      + 'attackers against a nine-type defender, plus two genuinely non-diagonal cases '
+      + '(25 ac + 25 st and 30 inf + 30 st against heavy tanks, both exact). The target '
+      + 'dependence that does exist lives entirely in how the damage is SPLIT, and that is '
+      + 'measured for all nine targets. So the 100-cell matrix is not 100 unknowns: it is '
+      + 'one diagonal plus a three-value target table. What is still untested is a duel '
+      + 'between two single types off the diagonal, which would confirm it directly rather '
+      + 'than through mixtures, and whether the same holds against AIR or NAVAL targets — '
+      + 'it demonstrably does not for an air attacker.',
+    closedBy: 'a handful of single-type off-diagonal duels, not the full 100-cell sweep',
   },
   { key: 'naval_off_diagonal', what: 'Naval unit vs a different naval unit (6 of 9 pairings).', why: 'Only the three diagonals were flown.', closedBy: 'a 6-cell naval sweep' },
   { key: 'ground_attacking_air', what: 'A ground stack ATTACKING an air stack.', why: 'Only ground DEFENDING against air was measured. The roles are not interchangeable.', closedBy: 'a ground-attacks-air sweep' },

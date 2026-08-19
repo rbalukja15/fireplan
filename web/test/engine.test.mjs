@@ -604,8 +604,15 @@ check('every constant in UNITS points at a PROVENANCE note that exists',
   Object.values(UNITS).flatMap((u) => Object.values(u.provenance).filter((k) => !PROVENANCE[k])).join(' '));
 check(`NOT_MEASURED lists ${NOT_MEASURED.length} open gaps, each with what/why/closedBy`,
   NOT_MEASURED.length >= 20 && NOT_MEASURED.every((g) => g.key && g.what && g.why && g.closedBy));
-check('the land off-diagonal gap — the biggest one — is named in NOT_MEASURED',
-  NOT_MEASURED.some((g) => g.key === 'land_off_diagonal' && /biggest/.test(g.why)));
+// It used to be described as the biggest gap, on the assumption that 90 of
+// 100 land pairings were unknown. They are not: the allocation sweep showed a
+// land attacker's total is target-independent, so the matrix is one diagonal
+// plus a three-value target table. The entry must now say what IS still open
+// rather than overstate it.
+check('the land off-diagonal entry states what remains, not the old 90-cell claim',
+  NOT_MEASURED.some((g) => g.key === 'land_off_diagonal'
+    && /does not depend on what it is shooting at/.test(g.why)
+    && !/biggest/.test(g.why)));
 
 // ===========================================================================
 console.log('\n11. patrol — replayed as an explicitly estimated band');
@@ -1032,6 +1039,18 @@ console.log('\n12d. the damage split, replayed against every attacker');
     });
   }
   check('all nine attackers were replayed', sweeps === 9, String(sweeps));
+
+  // A land attacker's TOTAL does not depend on its target -- the target only
+  // redistributes. That is what makes the 100-cell land matrix a diagonal plus
+  // a three-value table rather than 100 unknowns, and it is the OPPOSITE of
+  // how air behaves, so it is asserted rather than assumed.
+  const vsInf = simulate({ attacker: { unit: 'ac', count: 20 },
+    defender: { unit: 'inf', count: 200 }, rounds: 1 });
+  const vsHt = simulate({ attacker: { unit: 'ac', count: 20 },
+    defender: { unit: 'ht', count: 200 }, rounds: 1 });
+  check('an armoured car deals the same total to infantry as to heavy tanks',
+    Math.abs(vsInf.defender.hpLost - vsHt.defender.hpLost) < 1e-9,
+    `${vsInf.defender.hpLost} vs ${vsHt.defender.hpLost}`);
 
   // The finding a player feels: infantry are the most damage-efficient thing
   // to put in a stack, because they soak half of what anything else does.
