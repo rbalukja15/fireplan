@@ -2921,6 +2921,170 @@ def exp_hero_scaling(p: Probe) -> None:
                   f"finding; do not compress them.")
 
 
+def fit_hero(readings: dict[int, float], unit_coef: float = 5.0
+             ) -> tuple[str, float, float, float] | None:
+    """Solve (position, own attack A, stack multiplier M) from three readings.
+
+    A hero is a unit plus a buff:
+
+        output(n) = A * heroEffective(n)  +  unit_coef * M * unitEffective(n)
+
+    and WHERE it sits in the stack decides both effective counts, because a
+    stack saturates cumulatively in roster order. Two positions are possible
+    against a single-type defender:
+
+        first  hero takes E(1) = 1,          units take E(n+1) - 1
+        last   hero takes E(n+1) - E(n),     units take E(n)
+
+    Fitting only 'first' silently mis-solved maeve: she adds exactly nothing at
+    n = 50, which is the signature of a hero at the END of a saturated stack
+    (E(51) - E(50) = 0), and forcing her into the 'first' shape absorbed the
+    mismatch into a fake multiplier of 1.0083 that squeaked under tolerance.
+    Solved in the right position she is a clean A = 4.00, M = 1.00.
+
+    Returns the better-fitting position with its worst relative error.
+    """
+    ns = sorted(readings)
+    if len(ns) < 3:
+        return None
+    shapes = {
+        "first": (lambda n: 1.0, lambda n: unit_coef * (effective_units(n + 1) - 1)),
+        "last": (lambda n: effective_units(n + 1) - effective_units(n),
+                 lambda n: unit_coef * effective_units(n)),
+    }
+    best = None
+    for pos, (hero_e, unit_e) in shapes.items():
+        n0, n2 = ns[0], ns[-1]
+        det = hero_e(n0) * unit_e(n2) - hero_e(n2) * unit_e(n0)
+        if abs(det) < 1e-9:
+            continue
+        a = (readings[n0] * unit_e(n2) - readings[n2] * unit_e(n0)) / det
+        m = (hero_e(n0) * readings[n2] - hero_e(n2) * readings[n0]) / det
+        err = max(abs(a * hero_e(n) + m * unit_e(n) - readings[n]) / readings[n]
+                  for n in ns if readings[n])
+        if best is None or err < best[3]:
+            best = (pos, a, m, err)
+    return best
+
+
+def _recorded_hero_readings() -> tuple[dict[int, float], dict[str, float]]:
+    """Controls by stack size, and each hero's n=30 output, from results.jsonl.
+
+    Both were already bought. The controls came from hero_scaling and the
+    per-hero n=30 figures from the first heroes sweep, so decomposing the rest
+    of the roster only needs the two stack sizes nobody has flown for them --
+    and the n=30 reading then serves as a free HELD-OUT check on every fit.
+    """
+    ctl: dict[int, float] = {}
+    at30: dict[str, float] = {}
+    try:
+        with open(RESULTS_PATH) as fh:
+            for line in fh:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                m = row.get("meta") or {}
+                out = (row.get("readings") or {}).get("A.1.1")
+                if out is None:
+                    continue
+                if row.get("experiment") == "hero_scaling" and m.get("hero") is None:
+                    ctl[int(m["def_n"])] = out
+                elif row.get("experiment") == "heroes" and m.get("hero"):
+                    at30.setdefault(m["hero"], out)
+    except OSError:
+        pass
+    return ctl, at30
+
+
+def exp_hero_table(p: Probe) -> None:
+    """Decompose A and M for every hero the first sweep left confounded.
+
+    hero_scaling separated the two halves of the hero law for two heroes:
+
+        output = A * 1  +  unit_coef * M * (E(n+1) - 1)
+
+    The other fourteen have a single reading each at n = 30, where an additive
+    A and a multiplicative M are indistinguishable. Two more stack sizes fix
+    each one, and only two: n = 10 and n = 50 are bought here, the controls and
+    the n = 30 readings are read back off disk, and n = 30 is then a held-out
+    point that cost nothing.
+    """
+    ctl, at30 = _recorded_hero_readings()
+    missing = [n for n in (10, 30, 50) if n not in ctl]
+    if missing:
+        print(f"  ! no control on disk for n={missing}; run hero_scaling first.",
+              file=sys.stderr)
+        return
+    done = set(HERO_SCALE_PICKS)
+    todo = [h for h in hero_options() if h in at30 and h not in done]
+    if not todo:
+        print("  nothing left to decompose.")
+        return
+
+    abb, lvl, hp = HERO_FIELDS
+    print(f"\n  {len(todo)} heroes still confounded; buying n=10 and n=50 for "
+          f"each ({2 * len(todo)} requests).")
+    print(f"  Controls and n=30 come off disk, so every fit gets a free "
+          f"held-out check.\n")
+    print(f"  {'hero':14} {'A (own atk)':>12} {'M (stack)':>10} "
+          f"{'held-out n=30':>22}")
+
+    fitted: dict[str, tuple[float, float]] = {}
+    for h in todo:
+        got: dict[int, float] = {}
+        for n in (10, 50):
+            ov = dict(settings(), **{abb: h, lvl: "10", hp: "100%"})
+            ov.update(duel(1, "inf", 20, "inf", n))
+            try:
+                r = p.submit(ov, create=HERO_FIELDS)
+                got[n] = r.get("A.1.1")
+                record("hero_table", {"hero": h, "def_n": n, "level": 10,
+                                      "detail": dict(p.last_details),
+                                      "raw": dict(p.last_raw)}, r)
+            except (BareFormReturned, ValueError) as e:
+                print(f"  ! {h} n={n}: {e}", file=sys.stderr)
+                record("hero_table", {"hero": h, "def_n": n,
+                                      "error": str(e)}, {})
+        if got.get(10) is None or got.get(50) is None:
+            print(f"  {h:14} {'—':>12} {'—':>10} {'incomplete':>22}")
+            continue
+        fit = fit_hero({10: got[10], 30: at30[h], 50: got[50]}, DEF_COEF["inf"])
+        if not fit:
+            print(f"  {h:14} {'—':>12} {'—':>10} {'unfittable':>22}")
+            continue
+        pos, a, m, err = fit
+        # n=30 is held out of the solve (it uses the outer two), so quoting it
+        # back is a real check rather than a restatement of the input.
+        pred = (a * (1.0 if pos == "first" else
+                     effective_units(31) - effective_units(30))
+                + DEF_COEF["inf"] * m * ((effective_units(31) - 1) if pos == "first"
+                                         else effective_units(30)))
+        obs = at30[h]
+        fitted[h] = (a, m, pos)
+        flag = "OK" if err <= 0.005 else f"MISFIT {100 * err:.2f}%"
+        print(f"  {h:14} {a:12.2f} {m:10.4f} "
+              f"{f'{pred:.2f} vs {obs:.2f} {flag}':>22}  sits {pos}")
+
+    if not fitted:
+        print("\n  NO VERDICT — nothing was decomposed.")
+        return
+    pure_units = [h for h, (a, m, _) in fitted.items() if abs(m - 1) <= 0.005]
+    buffers = [h for h, (a, m, _) in fitted.items() if m > 1.005]
+    tail = [h for h, (_, _, pos) in fitted.items() if pos == "last"]
+    if tail:
+        print(f"\n  {len(tail)} sit AFTER the defending units in roster order "
+              f"({', '.join(tail)}), so they\n  draw from the saturated tail and "
+              f"contribute nothing at all to a full stack.")
+    print(f"\n  {len(pure_units)} are pure combat units (M = 1.00, they buff "
+          f"nobody): {', '.join(pure_units) or 'none'}")
+    print(f"  {len(buffers)} multiply the whole stack: "
+          + (", ".join(f"{h} x{fitted[h][1]:.2f}" for h in buffers) or "none"))
+    print("\n  A and M are only separable because the stack-size factor "
+          "saturates. On a\n  20-unit stack both halves would still be one "
+          "number.")
+
+
 def exp_terrain(p: Probe) -> None:
     """Each terrain against the same baseline; multipliers fall out as ratios."""
     terrains = p.select_options.get("A.1.terrain") or ["land", "air", "sea"]
@@ -3231,6 +3395,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "heroes": exp_heroes,
     "stack_limits": exp_stack_limits,
     "hero_scaling": exp_hero_scaling,
+    "hero_table": exp_hero_table,
     "buildings": exp_buildings,
     "trenches": exp_trenches,
     "air_vs_ground": exp_air_vs_ground,
@@ -3247,7 +3412,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
 # it is about to spend on someone else's ad-supported fan site before it starts
 # rather than after. Approximate by design: saturation re-runs add a few.
 REQUEST_ESTIMATE: dict[str, int] = {
-    "unit_stats": 20, "buildings": 14, "patrol": 18, "mixed_stacks": 8, "heroes": 23, "stack_limits": 4, "hero_scaling": 9, "trenches": 10, "air_vs_ground": 30,
+    "unit_stats": 20, "buildings": 14, "patrol": 18, "mixed_stacks": 8, "heroes": 23, "stack_limits": 4, "hero_scaling": 9, "hero_table": 28, "trenches": 10, "air_vs_ground": 30,
     "land_matrix": 100, "size_factor": 33, "hp_scaling": 10,
     "fortress": 6, "terrain": 5, "variance": 60,
 }

@@ -172,6 +172,30 @@ check("a building row is still excluded too",
            "B.1.bldg.1": {"lost": 8.5, "pct": 3.4, "delta": 1.0}},
           {"B.1": {"hp_lost": 11.33}}, quiet=True)["B.1.1"].get("lost_source") == 1.0)
 
+print("\n4c. fit_hero must try BOTH stack positions")
+# A hero is a unit plus a buff, and where it sits decides both effective
+# counts. Fitting only the 'first' shape silently mis-solved maeve: she adds
+# exactly nothing at n=50, the signature of a hero at the END of a saturated
+# stack, and forcing her into 'first' absorbed the mismatch into a fake
+# multiplier of 1.0083 that squeaked under tolerance.
+maeve = dp.fit_hero({10: 54.0, 30: 144.27, 50: 175.0})
+check("maeve is solved at the END of the stack", maeve[0] == "last", str(maeve))
+check("with a clean round attack of 4.0", abs(maeve[1] - 4.0) < 0.01, str(maeve[1]))
+check("and no stack multiplier at all", abs(maeve[2] - 1.0) < 0.005, str(maeve[2]))
+check("fitting her as 'first' would have invented a multiplier",
+      abs(maeve[2] - 1.0083) > 0.005)
+lucien = dp.fit_hero({10: 58.0, 30: 147.92, 50: 178.0})
+check("a front-of-stack hero is still solved there", lucien[0] == "first", str(lucien))
+check("A hero with a real buff keeps it",
+      abs(dp.fit_hero({10: 81.0, 30: 197.89, 50: 237.0})[2] - 1.30) < 0.005)
+check("every fit closes to well under a tenth of a percent",
+      all(dp.fit_hero(r)[3] < 0.001 for r in
+          ({10: 54.0, 30: 144.27, 50: 175.0},
+           {10: 58.0, 30: 147.92, 50: 178.0},
+           {10: 81.0, 30: 197.89, 50: 237.0})))
+check("and three readings are required — two cannot separate A from M",
+      dp.fit_hero({10: 54.0, 50: 175.0}) is None)
+
 print("\n5. the sweep sends what it claims to")
 out = run("landbuff")
 check("a hero code reached the server on every request but the control",

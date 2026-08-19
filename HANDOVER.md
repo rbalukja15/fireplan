@@ -619,9 +619,52 @@ is why it wins at scale and `kangal` wins on small stacks. Neither half alone
 fits: a pure unit cannot make the gap grow with stack size, and a pure
 multiplier cannot make it shrink.
 
-**Only these two heroes are decomposed.** The other 14 have a single reading
-each at n = 30, which confounds A and M exactly as before. Two more stack
-sizes per hero (~28 requests) would give the whole table.
+**The whole table, decomposed** — 28 further requests, buying only n = 10 and
+n = 50 per hero because the controls and every n = 30 reading were already on
+disk. Each n = 30 is therefore a **held-out** check the fit never saw, and all
+sixteen close to 0.002%.
+
+| hero | sits | A (own attack) | M (stack buff) |
+|---|---|---|---|
+| `kangal` | first | **20.0** | 1.00 |
+| `joffre` | first | 16.0 | 1.00 |
+| `joffre_home` | first | 16.0 | **1.30** |
+| `marco` | first | 15.0 | 1.00 |
+| `allen`, `larab` | first | 10.0 | 1.00 |
+| `alvin` | first | **8.30** | 1.00 |
+| `lucien`, `lucien_g`, `pershing` | first | 8.0 | 1.00 |
+| `georg`, `tatiana` | first | 6.0 | 1.00 |
+| `hank` | first | 6.0 | **1.09** |
+| `johan`, `tatiana_home` | first | 5.0 | 1.00 |
+| `maeve` | **last** | 4.0 | 1.00 |
+
+**Fourteen of sixteen are pure combat units** — very strong ones, at 5 to 20
+against infantry's 4 — that buff nobody. Only `joffre_home` (×1.30) and `hank`
+(×1.09) multiply the stack. Note `joffre` and `joffre_home` share an attack of
+16.0 and differ *only* in the multiplier: the Homeland variant is the same
+fighter plus 30% to everyone around him. `lucien` and `lucien_g` ("w/gas") are
+identical on land, and `tatiana` (Enemy Land) beats `tatiana_home` (Friendly
+Land) by exactly 1.0.
+
+**Position matters and is not uniform.** `maeve` adds *exactly nothing* at
+n = 50 — the signature of a hero drawing from the saturated tail, where
+`E(51) − E(50) = 0`. Fitting every hero as though it sat first mis-solved her,
+absorbing the mismatch into a fake multiplier of 1.0083 that squeaked under
+tolerance. Solved in the right position she is a clean 4.0 with no buff at all.
+`fit_hero()` now tries both and picks the better.
+
+Two things NOT to read into this table:
+
+- **Position is relative to infantry only.** Every reading defends with
+  infantry, the first unit in roster order, so "first" means "before infantry"
+  and `maeve` means "after it". Where each hero sits among the other eight land
+  types is untested.
+- **`alvin`'s 8.30 is the one non-round value in the set**, and every other
+  measured stat in this project is round. It fits all three of its own stack
+  sizes to 0.002%, so it is not noise — but it is the row to re-check first if
+  anything downstream looks wrong.
+
+Still level 10 throughout, and still defenders only.
 
 #### Sixteen of 22 changed a land battle; six are refused outright
 
