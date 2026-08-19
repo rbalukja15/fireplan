@@ -679,9 +679,41 @@ function makeSide(cfg, role, derivation, caveats) {
         caveats.push(`${label}: ${known.label} — ${anyInexact.note}.`);
       }
     } else if (refused) {
-      hero = { code: heroCfg.code, refused };
-      caveats.push(`${label}: ${refused.label} has nothing measured against a `
-        + `land stack — ${refused.why} No hero effect is applied.`);
+      // Refused on LAND, but measured on its own terrain. Applied only to an
+      // attacking air or naval stack, because that is the only side and the
+      // only level (10) any of the six was ever read at.
+      const groups = stackGroupsOf(rows);
+      const onOwn = groups.length === 1
+        && ((refused.terrain === 'air' && groups[0] === 'air')
+          || (refused.terrain === 'sea' && groups[0] === 'sea'));
+      if (onOwn && role === 'attacker' && refused.atkAttacking) {
+        const buffs = {};
+        for (const r of rows) {
+          const m = (refused.buffs || {})[r.unit.code] || 1;
+          buffs[r.unit.code] = { m, exact: true,
+            note: m === 1
+              ? `${refused.label} does not buff this unit type (measured)`
+              : `measured at level 10 on an attacking stack` };
+        }
+        const hit = rows.filter((r) => buffs[r.unit.code].m !== 1);
+        hero = { code: heroCfg.code, def: { ...refused, sits: 'first',
+                   maxLevel: refused.maxLevel || 20, pool: null },
+                 level: 10, atk: refused.atkAttacking, pool: null, buffs,
+                 buffedRows: hit.length, hpHits: 0, otherTerrain: true };
+        caveats.push(`${label}: ${refused.label} is applied at its measured `
+          + `ATTACKING value on ${refused.terrain === 'air' ? 'an air' : 'a naval'}`
+          + ` stack. Only level 10 was ever read, and only attacking — the land `
+          + `heroes showed both matter, so treat any other level as unknown. `
+          + `Its own HP pool on this terrain was never read either.`);
+      } else {
+        hero = { code: heroCfg.code, refused };
+        caveats.push(`${label}: ${refused.label} — ${refused.why} `
+          + (refused.terrain
+            ? `It works on ${refused.terrain === 'air' ? 'an AIR' : 'a NAVAL'} `
+              + `stack (measured), but only attacking and only at level 10, so `
+              + `it is not applied here.`
+            : 'No hero effect is applied.'));
+      }
     } else {
       caveats.push(`${label}: unrecognised hero "${heroCfg.code}" ignored.`);
     }
@@ -1272,11 +1304,26 @@ function runSimulation(config, derivation, caveats) {
       } else {
         const fAfter = (atk.pool - atkLostThis) / (nAlive * atk.perUnitMaxHP);
         const aliveE = effectiveUnits(nAlive);
-        atkOutput = atkCoef.value * aliveE * hpMultiplier(fAfter);
+        // An air hero fights and buffs on this path too. It was invisible
+        // here: the post-fire law is a separate branch that never consulted
+        // the hero, so Richthofen and von Thaden did nothing at all on the one
+        // terrain they work on.
+        const airHeroM = (atk.hero && atk.hero.buffs && atk.unit
+          && atk.hero.buffs[atk.unit.code]) ? atk.hero.buffs[atk.unit.code].m : 1;
+        const airHeroAtk = atk.hero && atk.hero.atk ? atk.hero.atk : 0;
+        atkOutput = atkCoef.value * aliveE * hpMultiplier(fAfter) * airHeroM
+          + airHeroAtk;
+        if (atk.hero) {
+          atk.hero.dealt = airHeroAtk;
+          atk.hero.heroEff = 1;
+        }
         derivation.push({
           label: `${tag}Attacker output (post-fire, air vs ground)`,
           formula: `${atkCoef.value} x E(${nAlive})=${round4(aliveE)} x m(${round4(fAfter)})=`
-            + `${round4(hpMultiplier(fAfter))} = ${round4(atkOutput)} — an air attacker's output is `
+            + `${round4(hpMultiplier(fAfter))}`
+            + `${airHeroM !== 1 ? ` x hero ${round4(airHeroM)}` : ''}`
+            + `${airHeroAtk ? ` + hero's own ${round4(airHeroAtk)}` : ''}`
+            + ` = ${round4(atkOutput)} — an air attacker's output is `
             + 'computed AFTER the round\'s incoming fire (measured: 30 cells, worst residual 0.005 HP)',
           value: atkOutput,
         });

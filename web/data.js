@@ -580,13 +580,48 @@ export const TARGET_FACTOR_DEFAULT = 1.00;
 // Accepted by the form but refused on land by the server, so nothing about
 // them is measured. Named so the app can offer them and say why it cannot
 // compute them, rather than pretending they do not exist.
+// The six the server refuses on a LAND stack. They are not inert: all six work
+// on their own terrain and all six change the battle, decomposed 2026-08-19
+// with two attacker types apiece so the hero's own attack is separated from
+// its multiplier. Attacking values at level 10; the defending column and the
+// level curves are untested, so the engine applies these only to an attacking
+// air or naval stack and says so.
+//
+// Each one buffs the thing its namesake actually commanded: Hersing the
+// U-boat captain buffs submarines, von Thaden the airship man buffs
+// zeppelins, Richthofen the fighter ace buffs fighters, Togo the admiral
+// buffs battleships. All of them at x1.30 except Togo-with-bombardment at
+// x1.28 -- the same figure the land heroes' curves reach at their caps.
+//
+// Each hero's own attack is the MIDPOINT of the readings that isolate it, not
+// the smallest: it shows up as an excess on every unit type the hero does not
+// buff, and those readings differ by up to 0.14 because each is a difference
+// of two spans printed to one decimal. Togo-with-bombardment is x1.2785 and
+// NOT the tidy 1.28 -- the bracket is about +/-0.0004 and excludes it.
+//
+// The multiplier acts on the side's OUTPUT as the engine computes it, which
+// for air attacking ground is the ATTENUATED, post-fire figure. Dividing the
+// excess by the un-attenuated coefficient instead gives Richthofen a bogus
+// x1.07; against the real baseline he is x1.30 like the rest.
 export const HEROES_LAND_REFUSED = {
-  otto:   { label: 'Otto Hersing',                 maxLevel: 15, why: "Can't have Otto Hersing on land. On a NAVAL stack it works and adds 40.00 — measured, not yet decomposed." },
-  togo:   { label: 'Tōgō Heihachirō',              maxLevel: null, why: "Can't have Tōgō Heihachirō on land. On a NAVAL stack it works and adds 15.00 — measured, not yet decomposed." },
-  togo_b: { label: 'Tōgō Heihachirō w/bombardment', maxLevel: null, why: "Can't have Tōgō Heihachirō w/bombardment on land. On a NAVAL stack it works and adds 64.34 — measured, not yet decomposed." },
-  ivan:   { label: 'Ivan “Vedmid” Kovalenko',      maxLevel: 10, why: "Can't have Ivan “Vedmid” Kovalenko on land. On a NAVAL stack it works and adds 1.00 — measured, not yet decomposed." },
-  rbaron: { label: 'Manfred Von Richthofen',       maxLevel: null, why: "Can't have Manfred Von Richthofen on land. On an AIR stack it works and adds 16.85 to the attack — measured, but not yet split into own-attack and multiplier." },
-  thaden: { label: 'Wilhelm von Thaden',           maxLevel: 15, why: "Can't have Wilhelm von Thaden on land. On an AIR stack it works and adds 10.14 — measured, not yet decomposed." },
+  otto:   { label: 'Otto Hersing', maxLevel: 15, terrain: 'sea', atkAttacking: 40.0,
+            buffs: { sub: 1.30 },
+            why: "Can't have Otto Hersing on land." },
+  togo:   { label: 'Tōgō Heihachirō', maxLevel: null, terrain: 'sea', atkAttacking: 15.0,
+            buffs: { bb: 1.30 },
+            why: "Can't have Tōgō Heihachirō on land." },
+  togo_b: { label: 'Tōgō Heihachirō w/bombardment', maxLevel: null, terrain: 'sea',
+            atkAttacking: 64.32, buffs: { bb: 1.2785 },
+            why: "Can't have Tōgō Heihachirō w/bombardment on land." },
+  ivan:   { label: 'Ivan “Vedmid” Kovalenko', maxLevel: 10, terrain: 'sea', atkAttacking: 1.0,
+            buffs: {},
+            why: "Can't have Ivan “Vedmid” Kovalenko on land." },
+  rbaron: { label: 'Manfred Von Richthofen', maxLevel: null, terrain: 'air', atkAttacking: 16.80,
+            buffs: { int: 1.30 },
+            why: "Can't have Manfred Von Richthofen on land." },
+  thaden: { label: 'Wilhelm von Thaden', maxLevel: 15, terrain: 'air', atkAttacking: 10.07,
+            buffs: { zep: 1.30 },
+            why: "Can't have Wilhelm von Thaden on land." },
 };
 
 export const FORM_DOMAINS = {
@@ -625,7 +660,8 @@ export const NOT_MEASURED = [
   { key: 'trench_10_pool', what: 'The level-10 pool multiplier beyond 2 decimal places.', why: 'Bracketed to [1.2382, 1.2463], which excludes the tidy 1.25.', closedBy: 'a larger stack, which tightens the bracket' },
   { key: 'fortress_edges', what: 'A fortress against AIR or NAVAL attackers, and fortress-trench interaction.', why: 'The fortress caps at level 5 (the server refuses 6) and works on the ATTACKING side with the identical law — 30% at level 1 either way. Both are now measured. What has never been submitted is a fortress against anything but a land attacker, or a fortress and a trench together.', closedBy: 'a handful of requests' },
   { key: 'building_caps', what: 'Workshop and factory level caps; workshop HP per level.', why: 'The sweep asked for 3, was not rejected, and never probed higher. Workshop shows 35 total at L3 with 20 in the top level, so HP is not uniform per level.', closedBy: 'two requests' },
-  { key: 'hero_other_terrain', what: 'What the six land-refused heroes DO on an air or naval stack.', why: 'All six work there and all six change the battle — rbaron +16.85 and thaden +10.14 on air, otto +40.00, togo +15.00, togo_b +64.34, ivan +1.00 on sea. That is one reading each, which confounds the hero\u2019s own attack with any multiplier, so nothing is applied. The help page also describes multi-round and positional skills for T\u014dg\u014d and Lucien, and this project has measured neither dimension.', closedBy: 'the two-configuration decomposition already used on land, run on an air stack and a naval one' },
+  { key: 'hero_other_terrain_levels', what: 'The six air/naval heroes DEFENDING, and at any level but 10.', why: 'All six are decomposed ATTACKING at level 10 — own attack separated from multiplier with two attacker types apiece — and each buffs the thing its namesake commanded: Hersing submarines, von Thaden zeppelins, Richthofen fighters, T\u014dg\u014d battleships. Ivan buffs nothing and attacks at 1.00. What none of them has been read at is a DEFENDING stack, or any level but 10, and the land heroes proved both of those matter — thirteen of sixteen have different attack and defence values, and every curve moves with level.', closedBy: 'the same two-configuration decomposition run defending, plus a level sweep' },
+
   { key: 'position_modelling', what: 'Range is MEASURED but not enforced by the engine.', why: 'A BINARY gate, not a falloff: artillery fires at 50 km and not at 51, the railgun at 150 and not at 151, infantry at 1 and not at 25. Inside range the figure is identical to zero distance; outside it there is no battle at all. Only three ranges were read and the app has no distance control.', closedBy: 'a range column for the whole roster plus a distance input' },
 ];
 

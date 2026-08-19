@@ -4998,6 +4998,84 @@ def exp_hero_output_curves(p: Probe) -> None:
               + ("" if drift < 0.005 else "  <-- NOT clean 2dp, quote as read"))
 
 
+def exp_hero_other_terrain(p: Probe) -> None:
+    """Decompose the six heroes that only work on air and naval stacks.
+
+    hero_sides showed all six work and all six change the battle, but read
+    each once -- which confounds the hero's own attack with any multiplier,
+    exactly as the first attacking sweep did. The fix is the same: two stack
+    configurations, one containing the types the hero might buff and one not.
+
+    Since nobody knows what an air or naval hero buffs, "plain" here is a
+    SINGLE unit type and "buffed" is a different one. If the excess is the same
+    in both, it is the hero's own attack and there is no multiplier to find. If
+    it differs, the difference names the type.
+    """
+    setups = {
+        "air": {"terrain": "air", "def_unit": "inf", "def_n": 40,
+                "probe": ["tac", "int", "zep"]},
+        "sea": {"terrain": "sea", "def_unit": "bb", "def_n": 30,
+                "probe": ["cl", "sub", "bb"]},
+    }
+    for terr, cfg in setups.items():
+        who = [h for h, t in HERO_OTHER_TERRAIN.items() if t == terr]
+        print(f"\n  {terr.upper()} — one row per hero, three attacker types "
+              f"each\n")
+        print(f"  {'hero':10} " + " ".join(f"{u:>10}" for u in cfg["probe"])
+              + "   reading")
+        base: dict[str, float] = {}
+        for hero in [None] + who:
+            cells = []
+            for unit in cfg["probe"]:
+                ov = settings()
+                ov.update(duel(1, unit, 10, cfg["def_unit"], cfg["def_n"],
+                               atk_terrain=cfg["terrain"],
+                               def_terrain="land" if terr == "air" else "sea"))
+                create: tuple[str, ...] = ()
+                if hero:
+                    ov.update({HERO_ATK_FIELDS[0]: hero,
+                               HERO_ATK_FIELDS[1]: "10",
+                               HERO_ATK_FIELDS[2]: "100%"})
+                    create = HERO_ATK_FIELDS
+                try:
+                    p.submit(ov, create=create)
+                except (BareFormReturned, ValueError) as e:
+                    record("hero_other_terrain", {"hero": hero, "unit": unit,
+                                                  "terrain": terr,
+                                                  "error": str(e)}, {})
+                    cells.append(None)
+                    continue
+                d = dict(p.last_details)
+                record("hero_other_terrain", {"hero": hero, "unit": unit,
+                                              "terrain": terr, "level": 10,
+                                              "detail": d},
+                       {k: (v or {}).get("lost") for k, v in d.items()})
+                b = d.get("B.1.1") or {}
+                cells.append(None if (b.get("lost") is None
+                                      or (b.get("pct") or 0) >= 99.9)
+                             else b["lost"])
+            if hero is None:
+                for u, c in zip(cfg["probe"], cells):
+                    if c is not None:
+                        base[u] = c
+                print(f"  {'(none)':10} "
+                      + " ".join(f"{c:10.2f}" if c is not None else f"{'—':>10}"
+                                 for c in cells) + "   baseline")
+                continue
+            ex = [None if (c is None or u not in base) else c - base[u]
+                  for u, c in zip(cfg["probe"], cells)]
+            good = [e for e in ex if e is not None]
+            same = (len(good) > 1
+                    and max(good) - min(good) <= 0.2)
+            print(f"  {hero:10} "
+                  + " ".join(f"{e:10.2f}" if e is not None else f"{'—':>10}"
+                             for e in ex)
+                  + ("   flat: own attack " + f"{good[0]:.2f}, no multiplier"
+                     if same else
+                     "   VARIES by attacker type — there is a multiplier"
+                     if good else "   nothing read"))
+
+
 def exp_variance(p: Probe, samples: int = 60) -> None:
     """Same battle repeatedly with variance ON, to characterise the roll.
 
@@ -5313,6 +5391,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "building_damage": exp_building_damage,
     "position": exp_position,
     "hero_output_curves": exp_hero_output_curves,
+    "hero_other_terrain": exp_hero_other_terrain,
     "buildings": exp_buildings,
     "trenches": exp_trenches,
     "air_vs_ground": exp_air_vs_ground,
@@ -5329,7 +5408,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
 # it is about to spend on someone else's ad-supported fan site before it starts
 # rather than after. Approximate by design: saturation re-runs add a few.
 REQUEST_ESTIMATE: dict[str, int] = {
-    "unit_stats": 20, "buildings": 14, "patrol": 18, "mixed_stacks": 8, "heroes": 23, "stack_limits": 4, "hero_scaling": 9, "hero_table": 28, "hero_levels": 16, "hero_caps": 30, "stack_ladder": 9, "stack_order": 5, "hero_output": 21, "hero_buff_confirm": 5, "allocation": 9, "hero_full": 24, "hero_hp_cap": 22, "hero_sides": 30, "multi_round": 8, "hero_curves": 110, "offdiag": 8, "trench_gaps": 12, "fortress_edges": 20, "building_damage": 9, "position": 15, "hero_output_curves": 70, "trenches": 10, "air_vs_ground": 30,
+    "unit_stats": 20, "buildings": 14, "patrol": 18, "mixed_stacks": 8, "heroes": 23, "stack_limits": 4, "hero_scaling": 9, "hero_table": 28, "hero_levels": 16, "hero_caps": 30, "stack_ladder": 9, "stack_order": 5, "hero_output": 21, "hero_buff_confirm": 5, "allocation": 9, "hero_full": 24, "hero_hp_cap": 22, "hero_sides": 30, "multi_round": 8, "hero_curves": 110, "offdiag": 8, "trench_gaps": 12, "fortress_edges": 20, "building_damage": 9, "position": 15, "hero_output_curves": 70, "hero_other_terrain": 24, "trenches": 10, "air_vs_ground": 30,
     "land_matrix": 100, "size_factor": 33, "hp_scaling": 10,
     "fortress": 6, "terrain": 7, "variance": 60,
 }

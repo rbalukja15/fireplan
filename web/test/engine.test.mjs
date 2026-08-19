@@ -1218,6 +1218,48 @@ console.log('\n12g. off-diagonal duels, trenches, fortress and hero curves');
   check('every hero output-curve level was replayed', hc >= 65, String(hc));
 }
 
+console.log('\n12h. the six heroes that only work on air and naval stacks');
+{
+  let n = 0;
+  for (const r of rows) {
+    const m = r.meta || {};
+    if (r.experiment !== 'hero_other_terrain' || m.error) continue;
+    const obs = ((m.detail || {})['B.1.1'] || {}).lost;
+    if (obs == null) continue;
+    n += 1;
+    const cfg = {
+      attacker: { rows: [{ unit: m.unit, count: 10, hpPct: 100 }] },
+      defender: m.terrain === 'air'
+        ? { unit: 'inf', count: 40, hpPct: 100 }
+        : { unit: 'bb', count: 30, hpPct: 100 },
+      rounds: 1,
+    };
+    if (m.hero) cfg.attacker.hero = { code: m.hero, level: m.level || 10 };
+    const res = simulate(cfg);
+    // +/-0.12: each hero figure is a DIFFERENCE of two spans printed to one
+    // decimal, and on the air path both are attenuated figures derived from a
+    // survivor count, so the error propagates further than a single reading's.
+    check(`${m.hero || 'no hero'} + 10 ${m.unit}: `
+      + `${res.defender.hpLost.toFixed(2)} vs measured ${obs}`,
+      Math.abs(res.defender.hpLost - obs) <= 0.12,
+      `${(res.defender.hpLost - obs).toFixed(3)} off`);
+  }
+  check('every air and naval hero reading was replayed', n >= 24, String(n));
+
+  // They must NOT fire on land, or on the defending side, because neither was
+  // ever measured.
+  const onLand = simulate({ attacker: { unit: 'inf', count: 10, hero: { code: 'otto' } },
+    defender: { unit: 'inf', count: 10 } });
+  check('a naval hero on a land stack applies nothing and says why',
+    onLand.coverage.caveats.some((c) => /Otto Hersing/.test(c) && /not applied/.test(c)),
+    onLand.coverage.caveats.join(' | ').slice(0, 150));
+  const defending = simulate({ attacker: { unit: 'bb', count: 30 },
+    defender: { rows: [{ unit: 'sub', count: 10 }], hero: { code: 'otto' } } });
+  check('and DEFENDING with one applies nothing either — it was never read there',
+    defending.coverage.caveats.some((c) => /only attacking/.test(c)),
+    defending.coverage.caveats.join(' | ').slice(0, 150));
+}
+
 console.log('\n13. heroes — replayed against every measured reading');
 // ===========================================================================
 // A hero is a unit plus a buff, and the app now models it. Replayed here
@@ -1297,7 +1339,7 @@ console.log('\n14. coverage of the record itself');
   const replayed = ['semantics', 'unit_stats', 'hp_scaling', 'air_vs_ground', 'trenches',
     'fortress', 'buildings', 'patrol', 'mixed_stacks', 'survivable_rig',
     'stack_order', 'allocation', 'hero_sides', 'multi_round',
-    'offdiag', 'trench_gaps', 'hero_output_curves',
+    'offdiag', 'trench_gaps', 'hero_output_curves', 'hero_other_terrain',
     // Heroes are now modelled and replayed above: the sweeps that measured
     // them are physics the engine reproduces, not declared omissions.
     'heroes', 'hero_scaling', 'hero_table', 'hero_levels', 'air_rounds'];
