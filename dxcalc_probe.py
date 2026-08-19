@@ -3330,6 +3330,24 @@ SURVIVOR_N = 60
 # it applies to INFANTRY output -- the only unit type the decomposition ever
 # put underneath a hero -- quoted at level 10. M = 1.00 means "no infantry buff
 # was found", which is emphatically not the same as "this hero buffs nothing".
+# The hero's attack value when ATTACKING. Different from the defending figure
+# for thirteen of sixteen -- a hero has two columns exactly as a unit does, and
+# every "A" this project measured before 2026-08-19 is the defending one.
+HERO_ATK_ATTACKING: dict[str, float] = {
+    "alvin": 25.00, "lucien": 8.00, "lucien_g": 8.00, "johan": 4.00,
+    "pershing": 62.00, "tatiana": 45.60, "tatiana_home": 10.00,
+    "joffre_home": 4.00, "joffre": 4.00, "marco": 24.60, "hank": 5.00,
+    "kangal": 10.00, "allen": 29.60, "georg": 16.80, "larab": 45.00,
+    "maeve": 4.00,
+}
+
+# Which side a hero's OUTPUT multiplier acts on. alvin and hank apply theirs
+# attacking and defending alike; joffre_home and kangal only when defending.
+HERO_BUFF_CHANNEL: dict[str, str] = {
+    "alvin": "both", "hank": "both",
+    "joffre_home": "defence", "kangal": "defence",
+}
+
 MEASURED_HEROES: dict[str, tuple[float, float]] = {
     "kangal": (20.0, 1.00), "joffre": (16.0, 1.00), "joffre_home": (16.0, 1.30),
     "marco": (15.0, 1.00), "allen": (10.0, 1.00), "larab": (10.0, 1.00),
@@ -4239,6 +4257,194 @@ def exp_hero_hp_cap(p: Probe) -> None:
                  else "MOVES with level; store the points, do not fit them"))
 
 
+# The six the server refuses on a land stack, and the terrain each is presumed
+# to belong to. Presumed, not known: that is what the experiment is for.
+HERO_OTHER_TERRAIN: dict[str, str] = {
+    "rbaron": "air", "thaden": "air",
+    "otto": "sea", "togo": "sea", "togo_b": "sea", "ivan": "sea",
+}
+
+
+def exp_hero_sides(p: Probe) -> None:
+    """Two holes left in the hero model: attacking, and the other two terrains.
+
+    ATTACKING. Every hero reading in this project put the hero on the DEFENDING
+    side. The model applies its own attack A and its per-type multiplier to
+    whichever side carries it, which is an assumption nobody has tested -- and
+    the attack and defence coefficient columns are different numbers, so the
+    prediction is different too. If A or the buff behaved differently on
+    attack, every attacking figure in the app would be wrong and nothing would
+    say so.
+
+    THE OTHER SIX. rbaron, thaden, otto, togo, togo_b and ivan are refused on a
+    land stack. What they do on their own terrain has never been submitted
+    once, so the app tells the user "nothing measured" -- accurate, and worth
+    only one request each to improve.
+    """
+    print("\n  1. the same hero, attacking instead of defending\n")
+    # TWO attacker configurations, because one cannot separate the hero's own
+    # attack from its multiplier -- the identical confound hero_table hit when
+    # it read a single stack size, and the reason that experiment uses two.
+    #
+    #   plain  none of the types any of these heroes buffs, so the excess is
+    #          the hero's own attack alone
+    #   buffed all nine, so the excess is that plus the multiplier's effect
+    #
+    # The first draft of this experiment read only the second and reported four
+    # heroes as "DIFFERS", which is true and says nothing about which term
+    # moved. One of them came out with a NEGATIVE own-attack, which is the
+    # signature of a confound rather than a finding.
+    PLAIN = ["cav", "lart", "art", "rrg", "lt", "ht"]
+    configs = {"plain": [(u, 2) for u in PLAIN],
+               "buffed": [(u, 2) for u in LAND_NINE]}
+    print(f"  Attacker: {len(PLAIN)} types with no buff between them, then all "
+          f"nine. Defender: 60 heavy tanks.\n")
+
+    def attack_once(hero: str | None, stack: list[tuple[str, int]]) -> float | None:
+        ov = settings()
+        ov.update(duel(1, stack[0][0], stack[0][1], "ht", 60))
+        ov.update(composite(1, "A", stack))
+        create = composite_fields("A", 1, len(stack))
+        if hero:
+            ov.update({HERO_ATK_FIELDS[0]: hero, HERO_ATK_FIELDS[1]: "10",
+                       HERO_ATK_FIELDS[2]: "100%"})
+            create = create + HERO_ATK_FIELDS
+        try:
+            p.submit(ov, create=create)
+        except (BareFormReturned, ValueError) as e:
+            print(f"  ! attacking {hero or 'no hero'}: {e}", file=sys.stderr)
+            record("hero_sides", {"side": "A", "hero": hero, "rows": stack,
+                                  "error": str(e)}, {})
+            return None
+        d = dict(p.last_details)
+        record("hero_sides", {"side": "A", "hero": hero, "level": 10,
+                              "rows": stack, "detail": d},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        b = d.get("B.1.1") or {}
+        if b.get("lost") is None:
+            return None
+        if (b.get("pct") or 0) >= 99.9:
+            print(f"  ! attacking {hero}: DEFENDER WIPED, discarded",
+                  file=sys.stderr)
+            return None
+        return b["lost"]
+
+    bases: dict[str, float] = {}
+    for name, stack in configs.items():
+        got = attack_once(None, stack)
+        want = sum(ATK_COEF[u] * c for u, c in stack)
+        if got is None:
+            print(f"  baseline {name}: did not read")
+            continue
+        bases[name] = got
+        print(f"  baseline {name:7} {got:9.2f} measured, {want:8.2f} predicted"
+              + ("  ok" if abs(got - want) / want < 0.01 else
+                 f"  OFF by {100 * abs(got - want) / want:.2f}% — read nothing "
+                 f"below until that is explained"))
+    print()
+    print(f"  {'hero':14} {'A attacking':>12} {'A defending':>12}  same?")
+    a_atk: dict[str, float] = {}
+    for hero in hero_options():
+        if hero not in MEASURED_HEROES:
+            continue
+        got = attack_once(hero, configs["plain"])
+        if got is None or "plain" not in bases:
+            print(f"  {hero:14} {'—':>12}")
+            continue
+        a_atk[hero] = got - bases["plain"]
+        a_def, _ = MEASURED_HEROES[hero]
+        print(f"  {hero:14} {a_atk[hero]:12.2f} {a_def:12.2f}  "
+              + ("yes" if abs(a_atk[hero] - a_def) < 0.05 else "NO"))
+    if a_atk and all(abs(v - MEASURED_HEROES[h][0]) < 0.05
+                     for h, v in a_atk.items()):
+        print("\n  A HERO HAS ONE ATTACK VALUE — the figure decomposed on "
+              "defence carries over.")
+    elif a_atk:
+        print("\n  A HERO HAS TWO VALUES, attack and defence, exactly as a "
+              "unit does. Everything\n  this project calls 'A' is the "
+              "DEFENDING one; the attacking column is new.")
+
+    print(f"\n  {'hero':14} {'buff term':>10} {'expected':>9}  "
+          f"does the multiplier carry over?")
+    for hero in sorted(HERO_OUTPUT_CURVES):
+        if hero not in a_atk:
+            continue
+        got = attack_once(hero, configs["buffed"])
+        if got is None or "buffed" not in bases:
+            print(f"  {hero:14} {'—':>10}")
+            continue
+        buff_term = (got - bases["buffed"]) - a_atk[hero]
+        want = sum((_curve_at(HERO_OUTPUT_CURVES.get(hero, {}).get(u), 10)
+                    - 1.0) * ATK_COEF[u] * 2
+                   for u in HERO_OUTPUT_CURVES.get(hero, {}))
+        print(f"  {hero:14} {buff_term:10.2f} {want:9.2f}  "
+              + ("yes — the same multiplier applies attacking"
+                 if abs(buff_term - want) <= 0.2 else
+                 ("NO — it is a DEFENCE-ONLY buff" if abs(buff_term) <= 0.2
+                  else f"differs by {buff_term - want:+.2f}, neither the "
+                       f"defending figure nor zero")))
+
+    print("\n  2. the six heroes the server refuses on land\n")
+    print(f"  {'hero':13} {'terrain':7} {'output':>9} {'excess':>8}  result")
+    for terrain, atk, n, dfn, dn in (("air", "tac", 10, "inf", 40),
+                                     ("sea", "cl", 10, "bb", 30)):
+        who = [h for h, t in HERO_OTHER_TERRAIN.items() if t == terrain]
+        base2 = None
+        for hero in [None] + who:
+            ov = settings()
+            ov.update(duel(1, atk, n, dfn, dn, atk_terrain=terrain,
+                           def_terrain="land" if terrain == "air" else "sea"))
+            create: tuple[str, ...] = ()
+            if hero:
+                ov.update({HERO_ATK_FIELDS[0]: hero, HERO_ATK_FIELDS[1]: "10",
+                           HERO_ATK_FIELDS[2]: "100%"})
+                create = HERO_ATK_FIELDS
+            try:
+                p.submit(ov, create=create)
+            except (BareFormReturned, ValueError) as e:
+                print(f"  {str(hero):13} {terrain:7} {'—':>9} {'—':>8}  "
+                      f"REFUSED: {str(e)[:44]}")
+                record("hero_sides", {"side": "A", "hero": hero,
+                                      "terrain": terrain, "error": str(e)}, {})
+                continue
+            d = dict(p.last_details)
+            record("hero_sides", {"side": "A", "hero": hero,
+                                  "terrain": terrain, "level": 10,
+                                  "detail": d},
+                   {k: (v or {}).get("lost") for k, v in d.items()})
+            out = (d.get("B.1.1") or {}).get("lost")
+            if out is None:
+                print(f"  {str(hero):13} {terrain:7} {'—':>9} {'—':>8}  "
+                      f"no defender row")
+                continue
+            if hero is None:
+                base2 = out
+                print(f"  {'(none)':13} {terrain:7} {out:9.2f} {'—':>8}  "
+                      f"baseline")
+                continue
+            ex = out - (base2 or 0.0)
+            print(f"  {hero:13} {terrain:7} {out:9.2f} {ex:8.2f}  "
+                  + ("accepted, and it CHANGES the battle" if abs(ex) > 0.2
+                     else "accepted but changed nothing measurable here"))
+
+
+def _curve_at(curve: dict[int, float] | None, level: int) -> float:
+    """A measured curve read at one level, interpolated, never extrapolated."""
+    if not curve:
+        return 1.0
+    if level in curve:
+        return curve[level]
+    pts = sorted(curve)
+    below = [x for x in pts if x < level]
+    above = [x for x in pts if x > level]
+    if not below:
+        return curve[pts[0]]
+    if not above:
+        return curve[pts[-1]]
+    lo, hi = below[-1], above[0]
+    return curve[lo] + (level - lo) / (hi - lo) * (curve[hi] - curve[lo])
+
+
 def exp_terrain(p: Probe) -> None:
     """Each terrain against the same baseline; multipliers fall out as ratios."""
     terrains = p.select_options.get("A.1.terrain") or ["land", "air", "sea"]
@@ -4559,6 +4765,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "allocation": exp_allocation,
     "hero_full": exp_hero_full,
     "hero_hp_cap": exp_hero_hp_cap,
+    "hero_sides": exp_hero_sides,
     "buildings": exp_buildings,
     "trenches": exp_trenches,
     "air_vs_ground": exp_air_vs_ground,
@@ -4575,7 +4782,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
 # it is about to spend on someone else's ad-supported fan site before it starts
 # rather than after. Approximate by design: saturation re-runs add a few.
 REQUEST_ESTIMATE: dict[str, int] = {
-    "unit_stats": 20, "buildings": 14, "patrol": 18, "mixed_stacks": 8, "heroes": 23, "stack_limits": 4, "hero_scaling": 9, "hero_table": 28, "hero_levels": 16, "hero_caps": 30, "stack_ladder": 9, "stack_order": 5, "hero_output": 21, "hero_buff_confirm": 5, "allocation": 9, "hero_full": 24, "hero_hp_cap": 22, "trenches": 10, "air_vs_ground": 30,
+    "unit_stats": 20, "buildings": 14, "patrol": 18, "mixed_stacks": 8, "heroes": 23, "stack_limits": 4, "hero_scaling": 9, "hero_table": 28, "hero_levels": 16, "hero_caps": 30, "stack_ladder": 9, "stack_order": 5, "hero_output": 21, "hero_buff_confirm": 5, "allocation": 9, "hero_full": 24, "hero_hp_cap": 22, "hero_sides": 30, "trenches": 10, "air_vs_ground": 30,
     "land_matrix": 100, "size_factor": 33, "hp_scaling": 10,
     "fortress": 6, "terrain": 5, "variance": 60,
 }

@@ -184,7 +184,9 @@ def make_handler(model="cumulative", buffs=None, order="in_use", alloc="pool",
                                       if r[1] in ROSTER else 99)
                 out, seen = 0.0, 0
                 if hero:
-                    out += dp.MEASURED_HEROES[hero][0] * (
+                    # A hero the record knows nothing about still occupies a
+                    # slot; the six land-refused ones have no measured attack.
+                    out += dp.MEASURED_HEROES.get(hero, (0.0, 1.0))[0] * (
                         dp.effective_units(1) - dp.effective_units(0))
                     seen = 1
                 ordered = sorted(rows, key=rank)
@@ -206,11 +208,13 @@ def make_handler(model="cumulative", buffs=None, order="in_use", alloc="pool",
                 return out
 
             b_hero = f.get("B.1.hero.abb") or None
+            a_hero = f.get("A.1.hero.abb") or None
             try:
-                hero_lvl = int(f.get("B.1.hero.lvl") or 10)
+                hero_lvl = int(f.get("B.1.hero.lvl")
+                               or f.get("A.1.hero.lvl") or 10)
             except ValueError:
                 hero_lvl = 10
-            a_out = output(a_rows, ATK)
+            a_out = output(a_rows, ATK, hero=a_hero)
             b_out = output(b_rows, DEF, hero=b_hero)
 
             def spread(rows, incoming, side, hero=None, foe=None):
@@ -241,7 +245,7 @@ def make_handler(model="cumulative", buffs=None, order="in_use", alloc="pool",
             a_first = a_rows[0][1] if a_rows else None
             b_first = b_rows[0][1] if b_rows else None
             self._send(render([
-                ("A.1", spread(a_rows, b_out, "A", None, b_first)),
+                ("A.1", spread(a_rows, b_out, "A", a_hero, b_first)),
                 ("B.1", spread(b_rows, a_out, "B", b_hero, a_first)),
             ]))
     return H
@@ -581,6 +585,33 @@ check("and the same level is re-asked at a different unit count",
       [l for l in out3.splitlines() if "3 units" in l][:1])
 check("a count-independent spike is called a level effect",
       "it is a level effect and not a count one" in out3)
+
+print("\n18. a hero on the ATTACKING side obeys the same law")
+out, err = run(dp.exp_hero_sides,
+               buffs={h: dict(b) for h, b in dp.HERO_OUTPUT_BUFFS.items()})
+check("both attacking baselines are checked against the attack coefficients",
+      out.count("predicted  ok") >= 2,
+      [l for l in out.splitlines() if "baseline" in l][:2])
+check("a hero that behaves identically is reported as such",
+      out.count("the same multiplier applies attacking") >= 3,
+      [l for l in out.splitlines() if "applies attacking" in l][:2])
+check("the hero's own attack is separated from its multiplier",
+      "A attacking" in out and "A defending" in out)
+check("all sixteen land-legal heroes get an attacking value",
+      all(f"  {h:14}" in out for h in dp.MEASURED_HEROES),
+      [h for h in dp.MEASURED_HEROES if f"  {h:14}" not in out] or "all 16")
+check("and a server where attack equals defence says so",
+      "A HERO HAS ONE ATTACK VALUE" in out)
+# A server where the buff simply does not apply on attack must be caught, not
+# absorbed: that is the whole reason to spend the requests.
+half = {h: {u: 1.0 for u in b} for h, b in dp.HERO_OUTPUT_BUFFS.items()}
+out2, _ = run(dp.exp_hero_sides, buffs=half)
+check("a server where the buff does NOT apply on attack is caught",
+      "DEFENCE-ONLY buff" in out2,
+      [l for l in out2.splitlines() if "DEFENCE-ONLY" in l][:2])
+check("the six land-refused heroes are each asked on their own terrain",
+      all(h in out for h in dp.HERO_OTHER_TERRAIN),
+      [h for h in dp.HERO_OTHER_TERRAIN if h not in out] or "all six")
 
 print(f"\nALL {ok} CHECKS PASSED — the rig separates a hero who buffs a unit "
       "type's output from one\nwho does not, which the wiped attacker could "
