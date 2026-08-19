@@ -3716,9 +3716,13 @@ def exp_hero_output(p: Probe) -> None:
 # The infantry entries come from hero_levels, which measured them years of
 # requests ago on single-type stacks; the rest come from the nine-type screen
 # and its bisection.
-HERO_OUTPUT_BUFFS: dict[str, dict[str, float]] = {
-    "joffre_home": {"inf": 1.30, "ac": 1.30},
-    "hank": {"inf": 1.09},
+HERO_OUTPUT_BUFFS: dict[str, dict[str, Any]] = {
+    # inf carries the level curve hero_levels measured; the others are the
+    # level-10 figure the nine-type screen found, pending exp_hero_full.
+    "joffre_home": {"inf": {1: 1.10, 2: 1.15, 4: 1.16, 5: 1.20, 9: 1.28,
+                            10: 1.30, 11: 1.32, 15: 1.40},
+                    "ac": 1.30},
+    "hank": {"inf": {1: 1.00, 2: 1.03, 5: 1.06, 9: 1.09, 10: 1.09}},
     "alvin": {"st": 1.40},
     "kangal": {"ac": 1.20},
 }
@@ -3743,7 +3747,9 @@ def exp_hero_buff_confirm(p: Probe) -> None:
     bad = 0
     for hero, buffs in HERO_OUTPUT_BUFFS.items():
         a, _ = MEASURED_HEROES[hero]
-        for unit, mult in buffs.items():
+        for unit, entry in buffs.items():
+            # An entry is either a level curve or a single level-10 figure.
+            mult = entry[10] if isinstance(entry, dict) else entry
             rows = [(unit, 2)]
             plain = DEF_COEF[unit] * 2
             got = _defender_output(p, rows, hero=hero)
@@ -3903,6 +3909,335 @@ def exp_allocation(p: Probe) -> None:
         print("  Allocation depends on the TARGET TYPE, so the shipped rule "
               "(the defending row's own\n  attack stat) is wrong for any "
               "mixture it was not fitted on.")
+
+# The heroes with a measured effect through either channel, and the levels to
+# read them at. Every non-infantry figure on record came from a single sweep at
+# level 10; joffre_home is the only hero whose curve was ever measured across
+# levels, and it runs 1.10 to 1.40, so one level is not a mechanic.
+HERO_LEVEL_PICKS: dict[str, list[int]] = {
+    "joffre_home": [1, 5, 10, 15],
+    "alvin": [1, 5, 10, 15, 20],
+    "kangal": [1, 5, 10],
+    "hank": [1, 5, 10],
+    "pershing": [1, 5, 10, 15, 20],
+    "marco": [1, 5, 10],
+}
+
+
+def exp_hero_full(p: Probe) -> None:
+    """Both hero channels, across levels, one request per (hero, level).
+
+    The nine-type stack reads OUTPUT and HP in the same response: the
+    attacker's loss is the stack's output, and each row's own span gives that
+    row's pool. So the two channels cost one sweep between them rather than
+    one each.
+
+    Two of each type is eighteen units, nineteen with the hero -- under the
+    twenty-unit knee, so E is linear and no stack law can confound the
+    reading. The attacker is sized so that no defender row is wiped: the
+    weakest here is two light artillery with a pool of 20, which takes 83% and
+    survives. A wiped row reports its own pool as the loss and its POOL as
+    unreadable, which is exactly the reading this whole rig exists to refuse.
+    """
+    stack = [(u, 2) for u in LAND_NINE]
+    print(f"\n  Defender: two of each land type. Attacker: {SURVIVOR_N} "
+          f"infantry.\n")
+    base = _defender_output(p, stack)
+    if not base:
+        print("  NO VERDICT — the baseline did not read.")
+        return
+    base_pool = {u: (base["detail"].get(f"B.1.{i}") or {}).get("pool")
+                 for i, (u, _) in enumerate(stack, start=1)}
+    print(f"  baseline output {base['out']:.2f}; pools "
+          + ", ".join(f"{u} {base_pool[u]}" for u, _ in stack[:4]) + " ...")
+
+    print(f"\n  {'hero':13} {'lvl':>4} {'output':>8} {'resid':>7} "
+          f"{'-> M':>18}   HP pools that moved")
+    out_curve: dict[str, dict[int, tuple[str, float]]] = {}
+    hp_curve: dict[str, dict[int, dict[str, float]]] = {}
+    for hero, levels in HERO_LEVEL_PICKS.items():
+        a, _ = MEASURED_HEROES[hero]
+        known_out = HERO_OUTPUT_BUFFS.get(hero, {})
+        for lvl in levels:
+            got = _defender_output(p, stack, hero=hero, level=lvl)
+            if not got:
+                print(f"  {hero:13} {lvl:>4} {'—':>8}")
+                continue
+            # OUTPUT. Everything the hero adds beyond its own attack, with the
+            # infantry part removed where hero_levels already measured a curve
+            # for it, so what is left belongs to the other unit type.
+            resid = got["out"] - base["out"] - a
+            inf_m = _hero_inf_multiplier(hero, lvl)
+            resid -= (inf_m - 1.0) * DEF_COEF["inf"] * 2
+            target = next((u for u in known_out if u != "inf"), None)
+            shown = "—"
+            if target:
+                m = 1.0 + resid / (DEF_COEF[target] * 2)
+                out_curve.setdefault(hero, {})[lvl] = (target, m)
+                shown = f"{target} x{m:.3f}"
+            elif abs(resid) > 0.2:
+                shown = f"UNEXPLAINED {resid:+.2f}"
+            # HP. A row's pool is lost/pct with pct printed to three
+            # significant figures, so a RATIO of two pools carries the error of
+            # both. Comparing point estimates against a flat 1% threshold
+            # invents buffs: it reported a 0.978 on artillery in the offline
+            # suite, from nothing but rounding. Flag a move only when the two
+            # brackets are disjoint, and quote the ratio's own range.
+            moved = {}
+            for i, (u, _) in enumerate(stack, start=1):
+                cell = got["detail"].get(f"B.1.{i}") or {}
+                bcell = base["detail"].get(f"B.1.{i}") or {}
+                if not cell.get("pool") or not bcell.get("pool"):
+                    continue
+                lo, hi = hp_bounds(cell, 1)
+                blo, bhi = hp_bounds(bcell, 1)
+                if lo > bhi or hi < blo:
+                    moved[u] = cell["pool"] / bcell["pool"]
+            if moved:
+                hp_curve.setdefault(hero, {})[lvl] = moved
+            print(f"  {hero:13} {lvl:>4} {got['out']:8.2f} {resid:7.2f} "
+                  f"{shown:>18}   "
+                  + (", ".join(f"{u} x{r:.3f}" for u, r in moved.items())
+                     or "none"))
+
+    print("\n  OUTPUT multiplier by level\n")
+    for hero, curve in out_curve.items():
+        pts = ", ".join(f"L{l}={m:.3f}" for l, (_, m) in sorted(curve.items()))
+        unit = next(iter(curve.values()))[0]
+        flat = max(m for _, m in curve.values()) - min(m for _, m in curve.values())
+        verdict = ("FLAT with level" if flat < 0.01
+                   else "MOVES with level — one level is not the mechanic")
+        print(f"  {hero:13} {unit:5} {pts}   -> {verdict}")
+
+    print("\n  HP multiplier by level\n")
+    for hero, curve in hp_curve.items():
+        units = sorted({u for lv in curve.values() for u in lv})
+        for u in units:
+            pts = ", ".join(f"L{l}={lv[u]:.3f}" for l, lv in sorted(curve.items())
+                            if u in lv)
+            vals = [lv[u] for lv in curve.values() if u in lv]
+            flat = max(vals) - min(vals) if vals else 0.0
+            print(f"  {hero:13} {u:5} {pts}   -> "
+                  + ("FLAT with level" if flat < 0.01 else "MOVES with level"))
+    if not hp_curve:
+        print("  none — no row's pool moved at any level tried.")
+
+
+def _hero_inf_multiplier(hero: str, level: int) -> float:
+    """The infantry output multiplier hero_levels measured, at this level.
+
+    Interpolated between measured points, never extrapolated into a formula:
+    joffre_home's curve is 1.10 / 1.15 / 1.16 / 1.20 over levels 1, 2, 4, 5,
+    which is neither a line nor a step.
+    """
+    curve = HERO_OUTPUT_BUFFS.get(hero, {}).get("inf")
+    if not curve:
+        return 1.0
+    pts = sorted(curve)
+    if level in curve:
+        return curve[level]
+    below = [x for x in pts if x < level]
+    above = [x for x in pts if x > level]
+    if not below:
+        return curve[pts[0]]
+    if not above:
+        return curve[pts[-1]]
+    lo, hi = below[-1], above[0]
+    t = (level - lo) / (hi - lo)
+    return curve[lo] + t * (curve[hi] - curve[lo])
+
+
+# "oops: B1.1.inf has more HP than is possible. Max hp for 2 Infantry is
+#  47.200000" -- the server states the BUFFED maximum outright, exactly, the
+# way it states a building's level cap. That is a better instrument than
+# dividing two pools that were each derived from a 3-significant-figure
+# percentage: it is exact, and it cannot be scrambled by a misparsed span.
+MAX_HP_RE = re.compile(r"Max\s+hp\s+for\s+(\d+)\s+([A-Za-z][A-Za-z ]*?)\s+is\s+"
+                       r"([\d.]+)", re.I)
+
+# Which hero/unit pairs raise max HP, from the level-10 screen, and the levels
+# to pin exactly.
+HERO_HP_PAIRS: list[tuple[str, str]] = [
+    ("pershing", "inf"), ("pershing", "ht"), ("alvin", "st"),
+    ("joffre_home", "ac"), ("marco", "lt"),
+]
+
+# Read EXACTLY off the server's refusal, level by level. Stored as measured
+# points and never fitted -- pershing's infantry curve is the reason why. It
+# climbs 1.00 / 1.50 / 1.50 / 1.70 / 1.70 over levels 1-5, then DROPS to 1.10
+# at level 6 and climbs again to 1.25 by level 20. That discontinuity is
+# reproducible and it is not a reading artifact: the same level reads the same
+# factor at three units as at two, and the pool derived from an independent
+# span agrees with the refusal to the decimal. Any formula through these points
+# would be an invention, and would be wrong on one side of level 6 or the
+# other.
+HERO_HP_CURVES: dict[str, dict[str, dict[int, float]]] = {
+    "pershing": {
+        "inf": {1: 1.00, 2: 1.50, 3: 1.50, 4: 1.70, 5: 1.70, 6: 1.10,
+                7: 1.10, 8: 1.12, 9: 1.12, 10: 1.14, 15: 1.18, 20: 1.25},
+        "ht": {1: 1.00, 5: 1.15, 10: 1.25, 15: 1.40, 20: 1.50},
+    },
+    "alvin": {"st": {1: 1.00, 5: 1.14, 10: 1.22, 15: 1.34, 20: 1.42}},
+    "joffre_home": {"ac": {1: 1.00, 5: 1.09, 10: 1.17, 15: 1.30}},
+    "marco": {"lt": {1: 1.00, 5: 1.07, 10: 1.12}},
+}
+
+# Output multipliers by level, from exp_hero_full. The infantry curves were
+# measured earlier by hero_levels; the rest came from the nine-type screen.
+HERO_OUTPUT_CURVES: dict[str, dict[str, dict[int, float]]] = {
+    "joffre_home": {"inf": {1: 1.10, 2: 1.15, 4: 1.16, 5: 1.20, 9: 1.28,
+                            10: 1.30, 11: 1.32, 15: 1.40},
+                    "ac": {1: 1.10, 5: 1.20, 10: 1.30, 15: 1.40}},
+    "hank": {"inf": {1: 1.00, 2: 1.03, 5: 1.06, 9: 1.09, 10: 1.09}},
+    "alvin": {"st": {1: 1.15, 5: 1.25, 10: 1.40, 15: 1.50, 20: 1.60}},
+    "kangal": {"ac": {1: 1.08, 5: 1.13, 10: 1.20}},
+}
+
+
+def _read_hp_cap(p: Probe, hero: str, unit: str, level: int,
+                 count: int) -> float | None:
+    """One request: the buffed max HP for `count` of `unit`, as a multiplier.
+
+    Returns None when the server does not refuse, or refuses without naming a
+    maximum -- never a guess.
+    """
+    ov = settings()
+    ov.update(duel(1, "inf", 20, unit, count, def_hp="99999"))
+    ov.update(composite(1, "B", [(unit, count)], hp="99999"))
+    ov.update({HERO_FIELDS[0]: hero, HERO_FIELDS[1]: str(level),
+               HERO_FIELDS[2]: "100%"})
+    try:
+        p.submit(ov, create=composite_fields("B", 1, 1) + HERO_FIELDS)
+        record("hero_hp_cap", {"hero": hero, "unit": unit, "level": level,
+                               "count": count, "accepted": True}, {})
+        return None
+    except BareFormReturned as e:
+        m = MAX_HP_RE.search(str(e))
+        if not m:
+            record("hero_hp_cap", {"hero": hero, "unit": unit, "level": level,
+                                   "count": count, "error": str(e)}, {})
+            return None
+        got = float(m.group(3))
+    except ValueError as e:
+        print(f"  ! {hero} {unit} L{level} x{count}: {e}", file=sys.stderr)
+        return None
+    plain = MEASURED_UNITS[unit][0] * count
+    record("hero_hp_cap", {"hero": hero, "unit": unit, "level": level,
+                           "count": count, "max_hp": got, "unbuffed": plain,
+                           "factor": got / plain}, {})
+    return got / plain
+
+
+def exp_hero_hp_cap(p: Probe) -> None:
+    """Read each hero's HP buff off the server's own refusal, exactly.
+
+    WHY NOT THE POOLS. hero_full derived these by dividing a buffed pool by an
+    unbuffed one, and each pool is lost/pct with pct printed to three
+    significant figures. Four of the five pairs came out clean and monotonic;
+    pershing's infantry row came out 1.00 / 1.70 / 1.14 / 1.25 across levels
+    1 / 5 / 10 / 20, which is not a curve, it is a broken reading. Deriving a
+    RATIO of two such pools carries both errors and there is no way to tell a
+    real jump from a bad span.
+
+    THE BETTER INSTRUMENT. Ask for more HP than the unit can have. The server
+    refuses and names the exact maximum, which is the buffed figure:
+
+        oops: B1.1.inf has more HP than is possible.
+              Max hp for 2 Infantry is 47.200000
+
+    One request per hero, unit and level, and the answer is exact rather than
+    bracketed. That is also why hero_full's level-15 pershing row failed: 100%
+    of a max of 47.2 computes fractionally ABOVE 47.2 in binary, and the
+    server's own check rejects it. The refusal was not our bug and it was not
+    noise -- it was the measurement.
+    """
+    print("\n  Asking for impossible HP, and reading the cap out of the "
+          "refusal.\n")
+    print(f"  {'hero':13} {'unit':5} {'lvl':>4} {'max HP (2 units)':>17} "
+          f"{'unbuffed':>9} {'factor':>8}")
+    curves: dict[tuple[str, str], dict[int, float]] = {}
+    for hero, unit in HERO_HP_PAIRS:
+        levels = HERO_LEVEL_PICKS.get(hero, [10])
+        for lvl in levels:
+            ov = settings()
+            ov.update(duel(1, "inf", 20, unit, 2, def_hp="99999"))
+            ov.update(composite(1, "B", [(unit, 2)], hp="99999"))
+            ov.update({HERO_FIELDS[0]: hero, HERO_FIELDS[1]: str(lvl),
+                       HERO_FIELDS[2]: "100%"})
+            got = None
+            try:
+                p.submit(ov, create=composite_fields("B", 1, 1) + HERO_FIELDS)
+                # No refusal means the field took an absurd value, so this
+                # instrument does not work and must not be reported as if it
+                # had.
+                print(f"  {hero:13} {unit:5} {lvl:>4}   accepted 99999 HP — "
+                      f"this probe cannot read the cap")
+                record("hero_hp_cap", {"hero": hero, "unit": unit,
+                                       "level": lvl, "accepted": True}, {})
+                continue
+            except BareFormReturned as e:
+                m = MAX_HP_RE.search(str(e))
+                if not m:
+                    print(f"  {hero:13} {unit:5} {lvl:>4}   refused without a "
+                          f"max: {str(e)[:60]}")
+                    record("hero_hp_cap", {"hero": hero, "unit": unit,
+                                           "level": lvl, "error": str(e)}, {})
+                    continue
+                got = float(m.group(3))
+            except ValueError as e:
+                print(f"  ! {hero} {unit} L{lvl}: {e}", file=sys.stderr)
+                continue
+            plain = MEASURED_UNITS[unit][0] * 2
+            f = got / plain
+            curves.setdefault((hero, unit), {})[lvl] = f
+            record("hero_hp_cap", {"hero": hero, "unit": unit, "level": lvl,
+                                   "max_hp": got, "unbuffed": plain,
+                                   "factor": f}, {})
+            print(f"  {hero:13} {unit:5} {lvl:>4} {got:17.4f} {plain:9.1f} "
+                  f"{f:8.4f}")
+
+    if not curves:
+        print("\n  NO VERDICT — no cap was readable.")
+        return
+
+    # A buff that goes DOWN as the hero levels up is either a real oddity worth
+    # naming or a defect in the reading. Either way it must not be averaged
+    # into a smooth curve and shipped. Densify around the drop, and re-ask at a
+    # different unit count so a count-specific artifact cannot masquerade as a
+    # level effect.
+    for (hero, unit), c in list(curves.items()):
+        pts = sorted(c)
+        drops = [(a, b) for a, b in zip(pts, pts[1:]) if c[b] < c[a] - 0.005]
+        if not drops:
+            continue
+        lo, hi = drops[0]
+        print(f"\n  ! {hero}/{unit} FALLS from L{lo} (x{c[lo]:.3f}) to L{hi} "
+              f"(x{c[hi]:.3f}). Densifying before reporting it.\n")
+        extra = [l for l in range(max(1, lo - 3), hi + 1) if l not in c]
+        for lvl in extra[:8]:
+            f = _read_hp_cap(p, hero, unit, lvl, 2)
+            if f is None:
+                continue
+            c[lvl] = f
+            print(f"    L{lvl:<3} x{f:.4f}")
+        # Same hero, same level, THREE units instead of two.
+        f3 = _read_hp_cap(p, hero, unit, lo, 3)
+        if f3 is not None:
+            print(f"\n    at 3 units instead of 2, L{lo} reads x{f3:.4f} — "
+                  + ("the same, so it is a level effect and not a count one"
+                     if abs(f3 - c[lo]) < 0.005 else
+                     "DIFFERENT, so the figure depends on the unit count and "
+                     "is not a\n    per-unit multiplier at all"))
+
+    print("\n  HP multiplier by level, exact\n")
+    for (hero, unit), c in curves.items():
+        pts = ", ".join(f"L{l}={f:.4f}" for l, f in sorted(c.items()))
+        span = max(c.values()) - min(c.values())
+        print(f"  {hero:13} {unit:5} {pts}")
+        print(f"  {'':13} {'':5} -> "
+              + ("FLAT with level" if span < 0.005
+                 else "MOVES with level; store the points, do not fit them"))
+
 
 def exp_terrain(p: Probe) -> None:
     """Each terrain against the same baseline; multipliers fall out as ratios."""
@@ -4222,6 +4557,8 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "hero_output": exp_hero_output,
     "hero_buff_confirm": exp_hero_buff_confirm,
     "allocation": exp_allocation,
+    "hero_full": exp_hero_full,
+    "hero_hp_cap": exp_hero_hp_cap,
     "buildings": exp_buildings,
     "trenches": exp_trenches,
     "air_vs_ground": exp_air_vs_ground,
@@ -4238,7 +4575,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
 # it is about to spend on someone else's ad-supported fan site before it starts
 # rather than after. Approximate by design: saturation re-runs add a few.
 REQUEST_ESTIMATE: dict[str, int] = {
-    "unit_stats": 20, "buildings": 14, "patrol": 18, "mixed_stacks": 8, "heroes": 23, "stack_limits": 4, "hero_scaling": 9, "hero_table": 28, "hero_levels": 16, "hero_caps": 30, "stack_ladder": 9, "stack_order": 5, "hero_output": 21, "hero_buff_confirm": 5, "allocation": 9, "trenches": 10, "air_vs_ground": 30,
+    "unit_stats": 20, "buildings": 14, "patrol": 18, "mixed_stacks": 8, "heroes": 23, "stack_limits": 4, "hero_scaling": 9, "hero_table": 28, "hero_levels": 16, "hero_caps": 30, "stack_ladder": 9, "stack_order": 5, "hero_output": 21, "hero_buff_confirm": 5, "allocation": 9, "hero_full": 24, "hero_hp_cap": 22, "trenches": 10, "air_vs_ground": 30,
     "land_matrix": 100, "size_factor": 33, "hp_scaling": 10,
     "fortress": 6, "terrain": 5, "variance": 60,
 }
