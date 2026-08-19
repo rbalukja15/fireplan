@@ -705,6 +705,36 @@ this project has measured neither dimension.
 **Read the help page before designing the next hero experiment.** It cost one
 request and it invalidated a headline conclusion.
 
+#### The HP channel, screened — 23 requests instead of 144
+
+All nine land types fit in one stack, so **one request per hero screens every
+unit type at once**: read each row's pool with and without the hero. Four
+heroes raise a specific unit type's max HP:
+
+| hero | unit type | HP pool |
+|---|---|---|
+| `alvin` | Stormtrooper | ×1.215 |
+| `pershing` | Infantry ×1.148, Heavy Tank | ×1.249 |
+| `joffre_home` | Armored Car | ×1.168 |
+| `marco` | Tank | ×1.118 |
+
+`joffre_home` therefore does **two different things through two different
+channels**: +30% to infantry OUTPUT and +17% to armoured-car HP. Nothing in
+the model represents the second.
+
+Also: `rbaron` and `thaden` are **refused on land** like the naval four, so six
+heroes are land-refused rather than four. Their earlier "accepted but inert"
+reading was wrong.
+
+**Flaw to know about in this screen:** the attacker was wiped in every run
+(400.0 of a 400.0 pool), so the OUTPUT column is meaningless in it. This
+screened the HP channel only. Output buffs on the eight non-infantry land types
+are still unscreened, and the same trick would find them with a survivable
+attacker.
+
+The ratios come from pools derived off 3-significant-figure percentages, so
+they are ~1% figures. Marco reads 1.121 measured alone and 1.118 in the screen.
+
 #### Sixteen of 22 changed a land battle; six are refused outright
 
 Naval heroes are **server-rejected on land**, cleanly:
@@ -850,6 +880,27 @@ leading hypothesis rather than a law; two more mixtures would settle it.
   four cells exactly and failed only the swapped pair — which is the signature
   of a right law with a wrong ordering, not a wrong law. Reporting "no fit"
   rather than taking the least-bad at 10.79% is what made that visible.
+
+### A direct air strike is ATOMIC, not roundless — corrected 2026-08-17
+
+An earlier section of this document claimed **"`maxRounds` is IGNORED in
+`air`"**. That was tested only at 0.25–1, where "one atomic strike" and "rounds
+ignored" are indistinguishable. dxcalc's own help page said otherwise and was
+right:
+
+| rounds | 0.5 | 1 | 2 | 3 | 5 | 10 |
+|---|---|---|---|---|---|---|
+| `air` | 295.01 | 295.01 | 585.23 | 871.68 | 1140 (wiped) | 1140 |
+| `patrol` | 149.69 | 298.15 | 591.58 | 881.08 | 1140 | 1140 |
+
+The rule is narrower than the old claim: **a strike cannot be subdivided**, so
+0.25/0.5/0.75 all deliver one whole strike — but **whole rounds repeat
+normally**. Patrol genuinely subdivides, which is the real difference between
+the two modes.
+
+Two rounds is not twice one round (585.23 against 590.02) because both sides
+attrit between rounds. The engine iterates and lands within 0.2%, which is
+flagged `estimated` since round-to-round carry-over was never measured directly.
 
 ### Patrol — measured 2026-08-17, and it is not air
 

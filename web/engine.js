@@ -36,6 +36,7 @@ import {
   STACK_GROUP_LABEL,
   HEROES,
   HEROES_LAND_REFUSED,
+  HERO_HP_BUFFS,
 } from './data.js';
 
 const EPS = 1e-9;
@@ -546,9 +547,22 @@ function makeSide(cfg, role, derivation, caveats) {
           + `the server states so outright and refuses anything higher, even `
           + `though the form offers 1-20 for every hero. Clamped.`);
       }
+      // A hero may also raise the max HP of one specific unit type. The engine
+      // has no term for that, so a battle containing such a pair is WRONG in
+      // the pool rather than merely uncertain, and must say so.
+      const hpBuffs = HERO_HP_BUFFS[heroCfg.code] || {};
+      const hit = rows.filter((r) => hpBuffs[r.unit.code]);
+      if (hit.length) {
+        caveats.push(`${label}: ${known.label} also raises the max HP of `
+          + hit.map((r) => `${r.unit.label} (x${hpBuffs[r.unit.code]})`).join(' and ')
+          + '. That is a measured effect on the HP POOL, and this engine has no '
+          + 'term for it — the pools below are too LOW for those rows, and the '
+          + 'deaths with them.');
+      }
       const buff = heroBuff(heroCfg.code, lvl);
       hero = { code: heroCfg.code, def: known, level: lvl,
                atk: known.atk, m: buff.m, exact: buff.exact, note: buff.note };
+      hero.hpBuffHits = hit.length;
       if (!buff.exact) {
         hero.interpolated = true;
         caveats.push(`${label}: ${known.label} — ${buff.note}.`);
@@ -743,6 +757,12 @@ function runSimulation(config, derivation, caveats) {
   // a reader actually looks. A caveat bullet under a green "Measured matchup"
   // headline is not enough — the app shipped exactly that for a moment.
   for (const sd of [atk, def]) {
+    if (sd.hero && sd.hero.hpBuffHits) {
+      level = worst(level, 'estimated');
+      reasons.push(`The ${sd.role}'s hero raises the max HP of a unit type in `
+        + 'its own stack, and this engine does not model HP buffs — those pools '
+        + 'are understated.');
+    }
     if (sd.hero && sd.hero.interpolated) {
       level = worst(level, 'estimated');
       reasons.push(`The ${sd.role}'s hero sits at a level that was never `
@@ -780,20 +800,31 @@ function runSimulation(config, derivation, caveats) {
       value: rounds,
     });
   } else if (patrol.ignoredRounds) {
-    // MEASURED: a direct air strike delivers once, whatever maxRounds says.
-    // 30.03 per unit at every rung of the same ladder.
-    if (rounds !== 1) {
-      caveats.push(`A direct air strike IGNORES maxRounds — the same ladder returned 30.03 per unit `
-        + `at 0.25, 0.5, 0.75 and 1 alike. The ${rounds} you asked for changes nothing; one strike `
-        + 'is computed. Switch to patrol if you want damage to scale with time on station.');
+    // MEASURED, and corrected: a direct strike is ATOMIC, not roundless. It
+    // cannot be subdivided, so 0.25/0.5/0.75 all deliver exactly one strike --
+    // but WHOLE rounds repeat normally (295.01 / 585.23 / 871.68 at 1, 2, 3).
+    //
+    // The earlier reading, "maxRounds is ignored in air", came from testing
+    // only 0.25 to 1, where the two behaviours are indistinguishable. dxcalc's
+    // own help page said otherwise and was right.
+    if (!Number.isInteger(rounds)) {
+      const up = Math.max(1, Math.ceil(rounds));
+      caveats.push(`A direct air strike cannot be subdivided: 0.25, 0.5 and 0.75 all `
+        + `deliver one whole strike (measured, byte-identical). Computing `
+        + `${up} round(s). Patrol DOES subdivide — switch mode if you want a partial tick.`);
+      rounds = up;
     }
     derivation.push({
       label: 'Mode: DIRECT STRIKE',
-      formula: 'maxRounds is ignored for terrain=air (measured: byte-identical results at '
-        + '0.25/0.5/0.75/1). One strike is delivered.',
-      value: 1,
+      formula: `An air strike is atomic — fractional rounds deliver one whole strike `
+        + `(measured) — but whole rounds repeat. Computing ${round4(rounds)}.`,
+      value: rounds,
     });
-    rounds = 1;
+    if (rounds > 1) {
+      level = worst(level, 'estimated');
+      reasons.push('Multi-round: the engine iterates rounds, and round-to-round '
+        + 'carry-over was never measured directly — only the totals were.');
+    }
   } else {
     if (!Number.isInteger(rounds)) {
       caveats.push(`Fractional rounds (${rounds}) are measured only for patrol, which does not `

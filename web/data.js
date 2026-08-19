@@ -418,6 +418,25 @@ export const DAMAGE_ALLOCATION = 'attack_times_count';
 // Every value below is a MEASUREMENT, decomposed from two stack sizes so that
 // A and M are separated rather than confounded. `maxLevel` is the server's own
 // refusal ("Max level is 10"), not the 1..20 the dropdown offers for everyone.
+// HP-CHANNEL BUFFS, screened 2026-08-17 by putting all nine land types in one
+// stack and reading each row's pool with and without the hero -- 23 requests
+// instead of the 144 a hero-by-unit sweep would have cost.
+//
+// This channel is NOT modelled. It is recorded so the app can say which
+// matchups it is wrong about instead of implying it is right about all of
+// them. A hero here raises the per-unit MAX HP of one specific unit type,
+// which nothing in `output = A * heroEff + coef * M * unitEff` represents.
+//
+// Ratios come from pools derived off 3-significant-figure percentages, so
+// treat them as ~1% figures, not exact ones. Marco reads 1.121 measured alone
+// and 1.118 in the nine-type screen.
+export const HERO_HP_BUFFS = {
+  alvin: { st: 1.215 },
+  pershing: { inf: 1.148, ht: 1.249 },
+  joffre_home: { ac: 1.168 },
+  marco: { lt: 1.118 },
+};
+
 export const HEROES = {
   kangal:       { label: 'Orhan “Kangal” Demir',        atk: 20.0, sits: 'first', maxLevel: 10 },
   joffre:       { label: 'Joseph Joffre (Non Homeland)', atk: 16.0, sits: 'first', maxLevel: 15 },
@@ -740,6 +759,17 @@ export const PROVENANCE = {
       + 'is the group size (land 9, air 4, sea 3, convoy 1), not the page maxUnits of 15 and '
       + 'certainly not the 8 this app first shipped. Every refusal was stated by the server, '
       + 'not inferred from a null reading.',
+  },
+  'HEROES.hpChannel': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=hero_targets: nine land types in one stack, each '
+      + 'hero screened against all of them at once.',
+    note: 'NOT MODELLED, only disclosed. Four heroes raise the per-unit max HP of a specific '
+      + 'unit type: alvin->Stormtrooper x1.215, pershing->Infantry x1.148 and Heavy Tank '
+      + 'x1.249, joffre_home->Armored Car x1.168, marco->Tank x1.118. The engine has no term '
+      + 'for an HP buff, so any battle involving these pairs is WRONG in the pool, not merely '
+      + 'uncertain. Note the screen wiped its attacker every time, so it tested the HP channel '
+      + 'ONLY -- output buffs on the eight non-infantry land types remain unscreened.',
   },
   'HEROES.law': {
     confidence: 'measured',

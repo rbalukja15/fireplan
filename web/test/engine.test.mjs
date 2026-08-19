@@ -828,6 +828,30 @@ console.log('\n12. composite stacks — replayed against the four measured mixtu
     `${crossClass.coverage.level} / ${crossClass.attacker.hpLost}`);
   check('and the reason quotes what the server actually says',
     /cannot share a stack/.test(crossClass.coverage.reason));
+
+  // A direct air strike is ATOMIC, not roundless. The earlier claim that
+  // maxRounds is ignored in air came from testing only 0.25-1, where "one
+  // atomic strike" and "rounds ignored" are indistinguishable. Whole rounds
+  // do repeat -- 295.01 / 585.23 / 871.68 at 1, 2, 3 -- and dxcalc's own help
+  // page said so while the model said otherwise.
+  const strikeAt = (r) => simulate({
+    mode: 'strike', attacker: { rows: [{ unit: 'tac', count: 10 }] },
+    defender: { rows: [{ unit: 'inf', count: 57 }] }, rounds: r,
+  }).defender.hpLost;
+  check('a fractional strike delivers one whole strike (measured)',
+    Math.abs(strikeAt(0.5) - strikeAt(1)) < 1e-9
+    && Math.abs(strikeAt(1) - 295.01) < 0.05,
+    `${strikeAt(0.5).toFixed(2)} / ${strikeAt(1).toFixed(2)}`);
+  check('but whole rounds DO repeat — the old "ignored" reading was wrong',
+    strikeAt(2) > strikeAt(1) * 1.9 && strikeAt(3) > strikeAt(2),
+    `${strikeAt(1).toFixed(2)} / ${strikeAt(2).toFixed(2)} / ${strikeAt(3).toFixed(2)}`);
+  check('two rounds reproduce the live 585.23 to within a fifth of a percent',
+    Math.abs(strikeAt(2) - 585.23) / 585.23 < 0.002,
+    `${strikeAt(2).toFixed(2)}`);
+  check('and a multi-round result is flagged estimated, not measured',
+    simulate({ mode: 'strike', attacker: { rows: [{ unit: 'tac', count: 10 }] },
+      defender: { rows: [{ unit: 'inf', count: 57 }] }, rounds: 3 })
+      .coverage.level !== 'measured');
   const withConvoy = simulate({
     attacker: { rows: [{ unit: 'inf', count: 10 }, { unit: 'convoy', count: 5 }] },
     defender: { rows: [{ unit: 'inf', count: 30 }] },
@@ -940,7 +964,10 @@ console.log('\n14. coverage of the record itself');
     'fortress', 'buildings', 'patrol', 'mixed_stacks',
     // Heroes are now modelled and replayed above: the sweeps that measured
     // them are physics the engine reproduces, not declared omissions.
-    'heroes', 'hero_scaling', 'hero_table', 'hero_levels'];
+    'heroes', 'hero_scaling', 'hero_table', 'hero_levels', 'air_rounds'];
+  // hero_targets is a DISCLOSURE sweep: it found HP-channel buffs the engine
+  // has no term for, so they are declared and escalate the banner rather than
+  // being replayed.
   const notReplayed = Object.keys(counts).filter((e) => !replayed.includes(e));
   console.log(`  note  replayed: ${replayed.map((e) => `${e} ${counts[e] || 0}`).join(', ')}`);
   console.log(`  note  NOT replayed: ${notReplayed.map((e) => `${e} ${counts[e]}`).join(', ') || 'none'}`);
@@ -957,6 +984,7 @@ console.log('\n14. coverage of the record itself');
   // SPECIFIC unit types and can act on the HP pool -- a channel this engine
   // has no term for, so it is declared rather than pretended.
   const declaredNonReplay = ['stack_limits', 'hero_caps', 'hero_targets'];
+  void declaredNonReplay;
   check('every unreplayed experiment is one the engine declares and explains',
     notReplayed.every((e) => declaredNonReplay.includes(e)),
     notReplayed.join(', ') || 'none');
@@ -965,6 +993,24 @@ console.log('\n14. coverage of the record itself');
     && /DELIBERATELY NOT MODELLED/.test(PROVENANCE['HEROES.measured'].note));
   check('and the app still declares heroes as a gap the user can see',
     NOT_MEASURED.some((g) => /hero/i.test(g.key) || /hero/i.test(g.what)));
+  // Four heroes raise a specific unit type's max HP. The engine cannot model
+  // that, so it must say the pool is wrong rather than quietly present it.
+  const marcoTanks = simulate({
+    attacker: { rows: [{ unit: 'inf', count: 20 }] },
+    defender: { rows: [{ unit: 'lt', count: 10 }], hero: { code: 'marco', level: 10 } },
+  });
+  check('an HP-buff pair escalates off measured',
+    marcoTanks.coverage.level === 'estimated', marcoTanks.coverage.level);
+  check('and names the unit type and the factor',
+    marcoTanks.coverage.caveats.some((c) => /max HP of Tank \(x1\.118\)/.test(c)),
+    marcoTanks.coverage.caveats.join(' | ').slice(0, 140));
+  check('while the same hero over infantry does not raise that caveat',
+    !simulate({ attacker: { rows: [{ unit: 'inf', count: 20 }] },
+      defender: { rows: [{ unit: 'inf', count: 30 }], hero: { code: 'marco', level: 10 } } })
+      .coverage.caveats.some((c) => /max HP of/.test(c)));
+  check('the HP channel is recorded as measured but unmodelled',
+    /NOT MODELLED, only disclosed/.test(PROVENANCE['HEROES.hpChannel'].note));
+
   check('the hero model states it was measured against infantry only',
     /INFANTRY defender only/.test(PROVENANCE['HEROES.law'].note)
     && /never "buffs nobody"/.test(PROVENANCE['HEROES.law'].note),
