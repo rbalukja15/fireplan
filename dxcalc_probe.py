@@ -2784,6 +2784,143 @@ def exp_stack_limits(p: Probe) -> None:
                                 "error": str(e)}, {})
 
 
+HERO_SCALE_COUNTS = [10, 30, 50]
+HERO_SCALE_PICKS = ["joffre_home", "kangal"]
+
+
+def exp_hero_scaling(p: Probe) -> None:
+    """HOW does a hero help — does it add, multiply, or just stand there?
+
+    The first hero sweep measured every hero against ONE stack size, 30
+    infantry. That answers "how much" and says nothing about "how", because at
+    a single stack size an additive bonus and a multiplicative one are the
+    same number: joffre_home's +56.22 IS x1.3968. This is the same blind spot
+    E(n) had before mixed_stacks — one configuration cannot separate two laws
+    that agree on it.
+
+    Three candidates, and the third is the interesting one:
+
+      MULTIPLIES   the hero scales the stack's output; the gap grows with n
+      ADDS FLAT    a constant bonus regardless of stack size
+      IS A UNIT    the hero contributes its own output like any other unit,
+                   which means its effective count is E(n+1) - E(n) -- and
+                   that is 1.0 at ten units, 0.65 at thirty, and EXACTLY ZERO
+                   at fifty, because the stack has already saturated
+
+    So the sharpest reading is at n = 50: if a hero is just another unit, it
+    does literally nothing to a saturated stack, while multiplication predicts
+    244 against a control of 175. Nothing subtle about that.
+    """
+    picks = [h for h in HERO_SCALE_PICKS if h in hero_options()]
+    if not picks:
+        print("  ! none of the chosen heroes are on the roster.", file=sys.stderr)
+        return
+    abb, lvl, hp = HERE_FIELDS if False else HERO_FIELDS
+    print(f"\n  20 infantry attack N infantry, with and without a hero at lvl 10")
+    print(f"  {'n':>4} {'control':>9} " + " ".join(f"{h:>13}" for h in picks))
+
+    base_out: dict[int, float] = {}
+    hero_out: dict[tuple[str, int], float] = {}
+    for n in HERO_SCALE_COUNTS:
+        ov = settings()
+        ov.update(duel(1, "inf", 20, "inf", n))
+        try:
+            r = p.submit(ov)
+            base_out[n] = r.get("A.1.1")
+            record("hero_scaling", {"hero": None, "def_n": n,
+                                    "detail": dict(p.last_details)}, r)
+        except (BareFormReturned, ValueError) as e:
+            print(f"  ! control n={n}: {e}", file=sys.stderr)
+            continue
+        cells = []
+        for h in picks:
+            ov = dict(settings(), **{abb: h, lvl: "10", hp: "100%"})
+            ov.update(duel(1, "inf", 20, "inf", n))
+            try:
+                r = p.submit(ov, create=HERO_FIELDS)
+                hero_out[(h, n)] = r.get("A.1.1")
+                record("hero_scaling", {"hero": h, "def_n": n, "level": 10,
+                                        "detail": dict(p.last_details),
+                                        "raw": dict(p.last_raw)}, r)
+                cells.append(f"{hero_out[(h, n)]:13.2f}")
+            except (BareFormReturned, ValueError) as e:
+                print(f"  ! {h} n={n}: {e}", file=sys.stderr)
+                cells.append(f"{'—':>13}")
+        print(f"  {n:>4} {base_out.get(n, float('nan')):9.2f} " + " ".join(cells))
+
+    print()
+    for h in picks:
+        pts = [(n, base_out[n], hero_out[(h, n)]) for n in HERO_SCALE_COUNTS
+               if n in base_out and (h, n) in hero_out
+               and base_out[n] and hero_out[(h, n)] is not None]
+        if len(pts) < 2:
+            print(f"  {h}: too few readings to rule.")
+            continue
+        deltas = [o - c for _, c, o in pts]
+        ratios = [o / c for _, c, o in pts]
+        as_unit = [(E := effective_units)(n + 1) - effective_units(n)
+                   for n, _, _ in pts]
+        spread = lambda v: (max(v) / min(v)) if min(v) > 1e-9 else float("inf")
+        print(f"  {h}:")
+        for (n, c, o), d, rr in zip(pts, deltas, ratios):
+            print(f"    n={n:<3} control {c:7.2f} -> {o:7.2f}   "
+                  f"delta {d:+7.2f}   ratio {rr:.4f}")
+        # THE LAW, fitted and then checked against a held-out point.
+        # addHero() inserts the hero's div BEFORE the first unit row, so under
+        # the measured roster-order saturation the hero takes E(1) = 1
+        # effective and the units get E(n+1) - 1. On top of that it multiplies
+        # what the units deal. Two parameters, and neither is free: solve them
+        # on the outer two stack sizes and PREDICT the middle one.
+        def model(a, m, n):
+            return a * 1.0 + DEF_COEF["inf"] * m * (effective_units(n + 1) - 1)
+
+        if len(pts) >= 3:
+            (n0, _, o0), (n1, _, o1), (n2, _, o2) = pts[0], pts[1], pts[-1]
+            u0 = DEF_COEF["inf"] * (effective_units(n0 + 1) - 1)
+            u2 = DEF_COEF["inf"] * (effective_units(n2 + 1) - 1)
+            if abs(u2 - u0) > 1e-9:
+                mm = (o2 - o0) / (u2 - u0)
+                aa = o0 - u0 * mm
+                held = model(aa, mm, n1)
+                err = abs(held - o1) / o1 if o1 else 1.0
+                print(f"    fit on n={n0} and n={n2}: hero attack {aa:.2f}, "
+                      f"unit multiplier {mm:.4f}")
+                print(f"    held-out n={n1}: predicted {held:.2f} vs "
+                      f"observed {o1:.2f}  ({100 * err:.3f}%)")
+                if err <= 0.005:
+                    print(f"    -> A HERO IS A UNIT PLUS A BUFF. It fights as one "
+                          f"unit placed first in the stack (attack {aa:.1f}) AND "
+                          f"multiplies what the rest of the stack deals "
+                          f"(x{mm:.2f}). Neither half alone fits: a pure unit "
+                          f"cannot grow the gap with stack size, and a pure "
+                          f"multiplier cannot shrink it.")
+                    continue
+                print(f"    -> the two-part model does not close either "
+                      f"({100 * err:.2f}% on the held-out point).")
+
+        flat = spread([abs(d) for d in deltas]) <= 1.02
+        flat = spread([abs(d) for d in deltas]) <= 1.02
+        mult = spread(ratios) <= 1.02
+        # "Is a unit" predicts the delta tracks E(n+1)-E(n), which hits zero at
+        # a saturated stack. Compare shapes rather than magnitudes.
+        unit_like = (as_unit[-1] < 1e-9 and abs(deltas[-1]) < 0.05)
+        if unit_like:
+            print(f"    -> IS JUST ANOTHER UNIT. The hero adds nothing to a "
+                  f"saturated stack, exactly as E(n+1)-E(n) = 0 predicts. Its "
+                  f"whole contribution is its own effective units.")
+        elif mult and not flat:
+            print(f"    -> MULTIPLIES the stack's output, x{sum(ratios)/len(ratios):.4f} "
+                  f"(spread x{spread(ratios):.4f} across {len(pts)} stack sizes).")
+        elif flat and not mult:
+            print(f"    -> ADDS A FLAT {sum(deltas)/len(deltas):+.2f}, independent "
+                  f"of stack size (spread x{spread([abs(d) for d in deltas]):.4f}).")
+        else:
+            print(f"    -> NONE OF THE THREE cleanly. deltas "
+                  f"{[round(d,2) for d in deltas]}, ratios "
+                  f"{[round(r,4) for r in ratios]}. The rows above are the "
+                  f"finding; do not compress them.")
+
+
 def exp_terrain(p: Probe) -> None:
     """Each terrain against the same baseline; multipliers fall out as ratios."""
     terrains = p.select_options.get("A.1.terrain") or ["land", "air", "sea"]
@@ -3093,6 +3230,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "mixed_stacks": exp_mixed_stacks,
     "heroes": exp_heroes,
     "stack_limits": exp_stack_limits,
+    "hero_scaling": exp_hero_scaling,
     "buildings": exp_buildings,
     "trenches": exp_trenches,
     "air_vs_ground": exp_air_vs_ground,
@@ -3109,7 +3247,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
 # it is about to spend on someone else's ad-supported fan site before it starts
 # rather than after. Approximate by design: saturation re-runs add a few.
 REQUEST_ESTIMATE: dict[str, int] = {
-    "unit_stats": 20, "buildings": 14, "patrol": 18, "mixed_stacks": 8, "heroes": 23, "stack_limits": 4, "trenches": 10, "air_vs_ground": 30,
+    "unit_stats": 20, "buildings": 14, "patrol": 18, "mixed_stacks": 8, "heroes": 23, "stack_limits": 4, "hero_scaling": 9, "trenches": 10, "air_vs_ground": 30,
     "land_matrix": 100, "size_factor": 33, "hp_scaling": 10,
     "fortress": 6, "terrain": 5, "variance": 60,
 }

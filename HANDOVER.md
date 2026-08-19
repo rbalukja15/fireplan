@@ -578,6 +578,51 @@ Each hero has its own HP pool, readable from its span: `tatiana` 15.1,
 HP** regardless of its own pool or its buff size, so allocation to the hero is
 not pool-proportional.
 
+#### How a hero helps: it is a UNIT PLUS A BUFF — measured exactly
+
+The first sweep measured every hero against **one** stack size, 30 infantry.
+That answers "how much" and says nothing about "how", because at a single
+stack size an additive bonus and a multiplicative one are the same number:
+`joffre_home`'s `+56.22` **is** `x1.3968`. Exactly the blind spot `E(n)` had
+before `mixed_stacks` — one configuration cannot separate two laws that agree
+on it.
+
+Three stack sizes separate them, and none of the three obvious candidates
+fits. `kangal`'s advantage SHRINKS with stack size (20.0 → 18.25 → 15.0) while
+`joffre_home`'s GROWS (31.0 → 56.22 → 62.0). Both are exactly described by one
+two-part law:
+
+```
+output = A * 1  +  unit_coef * M * (E(n+1) - 1)
+
+    A = the hero's own attack, fighting as ONE unit
+    M = a multiplier on everything the rest of the stack deals
+```
+
+The hero takes `E(1) = 1` effective unit and the real units get `E(n+1) - 1`,
+because `addHero()` inserts the hero's div **before the first unit row** and
+the stack saturates cumulatively in that order (§ Composite stacks).
+
+Fitted on n = 10 and 50, then **checked against a held-out n = 30**:
+
+| hero | A (own attack) | M (stack buff) | held-out n=30 |
+|---|---|---|---|
+| `kangal` | **20.0** | **1.00** | 159.92 predicted, 159.92 observed |
+| `joffre_home` | **16.0** | **1.30** | 197.89 predicted, 197.89 observed |
+
+Both parameters land on round numbers and the held-out point closes to 0.002%.
+
+So the two heroes are different *kinds* of thing. `kangal` is a pure combat
+unit — a strong one, attack 20 against infantry's 4 — that buffs nobody.
+`joffre_home` is a weaker fighter that adds **30% to the entire stack**, which
+is why it wins at scale and `kangal` wins on small stacks. Neither half alone
+fits: a pure unit cannot make the gap grow with stack size, and a pure
+multiplier cannot make it shrink.
+
+**Only these two heroes are decomposed.** The other 14 have a single reading
+each at n = 30, which confounds A and M exactly as before. Two more stack
+sizes per hero (~28 requests) would give the whole table.
+
 #### Sixteen of 22 changed a land battle; six are refused outright
 
 Naval heroes are **server-rejected on land**, cleanly:
@@ -1236,11 +1281,14 @@ Publishing requires one manual setting that no API can flip: **Settings → Page
   `buildings`-style run per unit would give the whole column. Still open, and
   now the cheapest unmeasured column in the model.
 - **PARTLY ANSWERED (2026-08-17).** Heroes measured at level 10 against a land
-  stack: 16 of 22 change the battle, up to x1.40, and a hero is a UNIT that
-  the summary table counts rather than a building it excludes. Levels 1-20,
-  the six land-refused heroes, and attacking heroes are all still open. See
-  §4. No earlier reading is contaminated — not one of the first 174 requests
-  carried a hero.
+  stack: 16 of 22 change the battle, up to x1.40. A hero is a UNIT that the
+  summary table counts, and its help is **two parts** — its own attack fighting
+  as one unit, plus a multiplier on the rest of the stack — decomposed exactly
+  for two heroes (`kangal` 20.0/x1.00, `joffre_home` 16.0/x1.30). The other 14
+  have one reading each, which confounds the two. Levels 1-20, the six
+  land-refused heroes, and attacking heroes are all still open. See §4. No
+  earlier reading is contaminated — not one of the first 174 requests carried
+  a hero.
 - `firestorm` appears throughout `bytro.js` but is not exposed on the S1914 form
   — likely shared code with dxter's Call of War calculator. Probably irrelevant,
   but it explains otherwise-confusing function names.
