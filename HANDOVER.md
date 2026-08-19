@@ -633,6 +633,38 @@ game*: a real stack is a mixture, and the form has always had the rows for it.
 
 Three findings, from 8 requests.
 
+#### 0. How big a stack is, and what may share one — measured 2026-08-17
+
+Both numbers this project used were assumptions nobody had checked.
+
+`duel()` blanks unit rows 2–8, an arbitrary "enough" from early on, and that
+**8 was then carried into the app as though it were the game's limit**. The
+page's own constant is `maxUnits = 15`. But the binding constraint is neither:
+it is which types may share a stack at all, and the server states every rule
+outright.
+
+```
+oops: Can't have ground and air units in same stack.
+oops: Convoys don't stack with land units.
+oops: Can't have Airplane Convoy in the air.
+```
+
+| group | types | may share a stack with |
+|---|---|---|
+| land | `inf cav ac lart art rrg lt ht st` — **9** | each other |
+| air | `bal int tac zep` — 4 | each other |
+| naval | `sub cl bb` — 3 | each other |
+| **`convoy`** | 1 | **nothing at all** |
+
+Nine land types in one stack were **accepted** and returned nine result rows,
+so the real cap is the group size, not 15 and certainly not 8. The Airplane
+Convoy is filed under land in this project's roster and stacks with neither
+land nor air — it is a class of one.
+
+Note what these are: **server refusals, not null readings.** Every one names
+its own rule. That is the cheapest kind of measurement in this project and it
+cost four requests.
+
 #### 1. A stack cannot contain the same unit type twice
 
 ```

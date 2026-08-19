@@ -32,6 +32,8 @@ import {
   PATROL,
   ROSTER_ORDER,
   MAX_UNIT_ROWS,
+  STACK_GROUP,
+  STACK_GROUP_LABEL,
 } from './data.js';
 
 const EPS = 1e-9;
@@ -236,6 +238,23 @@ export function normaliseRows(cfg) {
  * figure -- but a type late in the roster order draws from the saturated tail,
  * and that is the whole reason this matters.
  */
+/**
+ * Which rows the game would actually let share a stack.
+ *
+ * Measured: classes never mix, and the Airplane Convoy stacks with nothing.
+ * A stack the server refuses is not a battle with an uncertain answer -- it
+ * is not a battle at all -- so the engine reports the conflict rather than
+ * computing a number for an army that cannot be fielded.
+ */
+export function stackGroupsOf(rows) {
+  const groups = new Set();
+  for (const r of rows || []) {
+    const code = r && r.unit && (r.unit.code || r.unit);
+    if (code) groups.add(STACK_GROUP[code] || 'unknown');
+  }
+  return [...groups];
+}
+
 export function effectiveByRow(rows) {
   const list = (rows || []).map((r, i) => ({ r, i }));
   const rank = (r) => {
@@ -426,6 +445,7 @@ function num(v, fallback) {
 }
 
 function makeSide(cfg, role, derivation, caveats) {
+  let side_groupConflict = null;
   const label = role === 'attacker' ? 'Attacker' : 'Defender';
   const tf = trenchFactors(cfg && cfg.trench);
 
@@ -456,6 +476,19 @@ function makeSide(cfg, role, derivation, caveats) {
     r.damageDealt = null;
   }
 
+  // A stack the game refuses to field. Flagged on the side that carries it,
+  // and escalated to `unknown` below rather than quietly computed.
+  const groups = stackGroupsOf(rows);
+  side_groupConflict = null;
+  if (groups.length > 1) {
+    const names = groups.map((g) => STACK_GROUP_LABEL[g] || g).join(' and ');
+    side_groupConflict = `${label}: ${names} units cannot share a stack. The `
+      + 'server refuses this outright ("Can\'t have ground and air units in same '
+      + 'stack", "Convoys don\'t stack with land units"), so this is not an '
+      + 'uncertain battle — it is not a battle the game will run.';
+    caveats.push(side_groupConflict);
+  }
+
   const primary = rows.length ? rows[0].unit : resolveUnit(cfg && cfg.unit);
   const n = rows.reduce((t, r) => t + r.count, 0);
   const anyPoolUnknown = rows.some((r) => r.pool === null);
@@ -471,6 +504,7 @@ function makeSide(cfg, role, derivation, caveats) {
 
   const side = {
     role, label, unit, rows, n0: n, n, hpPct, tf,
+    groupConflict: side_groupConflict,
     perUnitMaxHP: null, poolFull: 0, pool: 0,
     hpLost: 0, deaths: 0, damageDealt: 0, outputRaw: 0, wiped: false,
     buildings: [],
@@ -626,6 +660,7 @@ function runSimulation(config, derivation, caveats) {
   const def = makeSide(config.defender, 'defender', derivation, caveats);
 
   const matchup = coverageOfStacks(atk.rows, def.rows);
+  const conflicts = [atk.groupConflict, def.groupConflict].filter(Boolean);
   let level = matchup.level;
   const reasons = [matchup.reason];
 
@@ -722,6 +757,24 @@ function runSimulation(config, derivation, caveats) {
       : `${defCoef.value} — ${defCoef.source} [${defCoef.level}]`,
     value: defCoef.value,
   });
+
+  if (conflicts.length) {
+    level = 'unknown';
+    reasons.length = 0;
+    reasons.push(conflicts.join(' '));
+    derivation.push({
+      label: 'Result withheld',
+      formula: 'This stack cannot exist. The game refuses to field it, so there '
+        + 'is no battle to compute and no number is offered.',
+      value: null,
+    });
+    return {
+      attacker: sideResult(atk, true),
+      defender: sideResult(def, true),
+      coverage: { level, reason: reasons.join(' '), caveats, pairs: matchup.pairs || [] },
+      derivation,
+    };
+  }
 
   if (atkCoef.value === null || defCoef.value === null
       || atk.pool === null || def.pool === null) {

@@ -345,8 +345,34 @@ export const ROSTER_ORDER = [
 //     "oops: The same unit can't be specified twice in same stack."
 // So a stack is a SET of types, each with a count. This is a hard constraint
 // on the input model, not a validation nicety.
-export const MAX_UNIT_ROWS = 8;
+// bytro.js declares maxUnits = 15. The 8 this app shipped with was inherited
+// from duel()'s arbitrary row-blanking range and was never a fact about the
+// game -- a land stack accepts 9 types, which 8 could not express.
+export const MAX_UNIT_ROWS = 15;
 export const DUPLICATE_UNITS_ALLOWED = false;
+
+// WHICH TYPES MAY SHARE A STACK. Measured 2026-08-17, 4 requests, every answer
+// stated outright by the server:
+//
+//   "Can't have ground and air units in same stack."
+//   "Convoys don't stack with land units."
+//   "Can't have Airplane Convoy in the air."
+//
+// So classes never mix, and the Airplane Convoy -- which this project's roster
+// files under land -- stacks with nothing at all. It is a class of one. The
+// practical row cap is therefore the size of the group, not maxUnits:
+//   land 9, air 4, sea 3, convoy 1.
+export const STACK_GROUP = {
+  inf: 'land', cav: 'land', ac: 'land', lart: 'land', art: 'land',
+  rrg: 'land', lt: 'land', ht: 'land', st: 'land',
+  convoy: 'convoy',
+  bal: 'air', int: 'air', tac: 'air', zep: 'air',
+  sub: 'sea', cl: 'sea', bb: 'sea',
+};
+export const STACK_GROUP_LABEL = {
+  land: 'land', convoy: 'Airplane Convoy (stacks with nothing)',
+  air: 'air', sea: 'naval',
+};
 
 // Incoming damage is split across rows in proportion to (attack value x unit
 // count) -- each row's raw offensive weight, ignoring saturation entirely.
@@ -633,6 +659,15 @@ export const PROVENANCE = {
       + 'ordinary Lost-HP span and the stack summary table counts it, unlike a building. It '
       + 'does not mitigate -- total incoming damage is unchanged, the hero just absorbs a '
       + 'share of it. Every figure this app produces assumes NO hero.',
+  },
+  'STACK.grouping': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=stack_limits: 4 requests.',
+    note: 'Classes never share a stack, and the Airplane Convoy shares one with nothing. Nine '
+      + 'land types in a single stack were ACCEPTED and returned nine result rows, so the cap '
+      + 'is the group size (land 9, air 4, sea 3, convoy 1), not the page maxUnits of 15 and '
+      + 'certainly not the 8 this app first shipped. Every refusal was stated by the server, '
+      + 'not inferred from a null reading.',
   },
   'integrity': {
     confidence: 'measured',

@@ -35,6 +35,7 @@ import { dirname, join } from 'node:path';
 
 import {
   UNITS, TRENCH_POOL, TRENCH_POOL_BRACKET, TRENCH_OUTPUT, PROVENANCE, NOT_MEASURED,
+  MAX_UNIT_ROWS,
 } from '../data.js';
 import {
   effectiveUnits, hpMultiplier, fortressDR, trenchFactors, coverageOf, simulate,
@@ -811,6 +812,44 @@ console.log('\n12. composite stacks — replayed against the four measured mixtu
     }
   }
 
+  // --- stacks the game refuses to field -----------------------------------
+  // Measured, and every refusal stated by the server. A stack it will not
+  // accept is not a battle with an uncertain answer; it is not a battle. The
+  // app shipped computing these, which is a number for an army that cannot
+  // exist.
+  const crossClass = simulate({
+    attacker: { rows: [{ unit: 'inf', count: 10 }, { unit: 'int', count: 10 }] },
+    defender: { rows: [{ unit: 'inf', count: 30 }] },
+  });
+  check('a cross-class stack is refused, not computed',
+    crossClass.coverage.level === 'unknown' && crossClass.attacker.hpLost === null,
+    `${crossClass.coverage.level} / ${crossClass.attacker.hpLost}`);
+  check('and the reason quotes what the server actually says',
+    /cannot share a stack/.test(crossClass.coverage.reason));
+  const withConvoy = simulate({
+    attacker: { rows: [{ unit: 'inf', count: 10 }, { unit: 'convoy', count: 5 }] },
+    defender: { rows: [{ unit: 'inf', count: 30 }] },
+  });
+  check('the Airplane Convoy stacks with nothing — measured, not assumed',
+    withConvoy.coverage.level === 'unknown', withConvoy.coverage.level);
+  check('a convoy ALONE is still a legal stack',
+    simulate({ attacker: { rows: [{ unit: 'convoy', count: 10 }] },
+      defender: { rows: [{ unit: 'convoy', count: 10 }] } }).coverage.level !== 'unknown');
+
+  // The cap was 8, inherited from duel()'s row-blanking range. A land stack
+  // takes 9 types -- the server accepted all nine and returned nine rows.
+  const nine = 'inf cav ac lart art rrg lt ht st'.split(' ')
+    .map((u) => ({ unit: u, count: 5 }));
+  const big = simulate({ attacker: { rows: nine },
+    defender: { rows: [{ unit: 'inf', count: 30 }] } });
+  check('all nine land types fit in one stack', big.attacker.rows.length === 9,
+    String(big.attacker.rows.length));
+  check('and the row cap now matches the page, not the old guess',
+    MAX_UNIT_ROWS === 15, String(MAX_UNIT_ROWS));
+  check('their effective units still sum to E(total)',
+    Math.abs(big.attacker.rows.reduce((t, r) => t + r.effective, 0)
+      - effectiveUnits(45)) < 1e-9);
+
   // Single-row configs must be untouched by any of this.
   const single = simulate({ attacker: { unit: 'inf', count: 30 },
     defender: { unit: 'inf', count: 30 } });
@@ -833,8 +872,10 @@ console.log('\n13. coverage of the record itself');
   // 'heroes' is measured but deliberately unmodelled: every reading is level
   // 10 and the 1-20 curve is untouched, so shipping one level as the mechanic
   // would put a confident number on 19 unmeasured ones. Declared, not dropped.
-  check('the only unreplayed experiment is heroes, and the engine says why',
-    notReplayed.length === 1 && notReplayed[0] === 'heroes',
+  // stack_limits is a constraints probe, not a physics sweep: its readings are
+  // server refusals, and they are encoded in STACK_GROUP rather than replayed.
+  check('the only unreplayed experiments are heroes and stack_limits',
+    notReplayed.length === 2 && notReplayed.every((e) => ['heroes', 'stack_limits'].includes(e)),
     notReplayed.join(', ') || 'none');
   check('heroes are recorded as measured but not modelled',
     PROVENANCE['HEROES.measured'].confidence === 'measured'

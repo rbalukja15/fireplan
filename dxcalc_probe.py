@@ -1138,8 +1138,10 @@ def duel(
     }
     # The stock form pre-fills extra unit rows. Any left populated joins the
     # fight and quietly ruins a single-variable measurement.
+    # maxUnits = 15 in bytro.js. Blanking only 2-8 was an arbitrary "enough"
+    # and would leave rows 9-15 populated if anything ever created them.
     for side in ("A", "B"):
-        for row in range(2, 9):
+        for row in range(2, 16):
             payload[f"{side}.{stack}.{row}.count"] = ""
             payload[f"{side}.{stack}.{row}.hp"] = ""
     return payload
@@ -2680,6 +2682,108 @@ def exp_heroes(p: Probe) -> None:
               "concluding anything about them.")
 
 
+def exp_stack_limits(p: Probe) -> None:
+    """How many unit rows can a stack actually hold, and of which classes?
+
+    Two numbers have been assumed all project and neither was ever checked.
+
+    ROW COUNT. duel() blanks rows 2-8, an arbitrary "enough" chosen early on,
+    and that 8 was then carried into the app as though it were the game's
+    limit. The page's own constant is maxUnits = 15. But a stack cannot repeat
+    a unit type (measured), so the real ceiling is the number of TYPES a stack
+    may hold, which is at most 17 and may be far fewer.
+
+    CLASS MIXING. If a land-terrain stack may only hold land units, the
+    ceiling for a land army is 10, not 15 -- and an air stack is capped at 4.
+    Nothing in the record says either way: every stack ever submitted held one
+    class, because every stack ever submitted held one TYPE.
+
+    Two requests settle both. A refusal here is an answer, not a null: the
+    server states its constraints outright ("The same unit can't be specified
+    twice in same stack", "Can't have Balloon in the air").
+    """
+    land = [u for u in UNIT_CLASSES["land"]
+            if u in (p.select_options.get(UNIT_FIELD) or [])]
+    rows_all_land = [(u, 5) for u in land]
+    fields = composite_fields("B", 1, max(len(rows_all_land), 2))
+
+    print(f"\n  the page declares maxUnits = 15; {len(land)} land types exist\n")
+
+    # 1. Every land type at once -- more rows than duel() has ever blanked.
+    ov = settings()
+    ov.update(duel(1, "inf", 20, "inf", 30))
+    ov.update(composite(1, "B", rows_all_land))
+    try:
+        r = p.submit(ov, create=fields)
+        d = dict(p.last_details)
+        got = sorted(k for k in d if RESULT_SLOT_RE.match(k) and k.startswith("B.1."))
+        print(f"  {len(rows_all_land)} land types in one stack: ACCEPTED — "
+              f"{len(got)} result rows came back")
+        record("stack_limits", {"case": "all_land_types",
+                                "rows": rows_all_land, "slots": got,
+                                "detail": d, "raw": dict(p.last_raw)}, r)
+    except (BareFormReturned, ValueError) as e:
+        print(f"  {len(rows_all_land)} land types in one stack: REFUSED -> {e}")
+        record("stack_limits", {"case": "all_land_types",
+                                "rows": rows_all_land, "error": str(e)}, {})
+
+    # 1b. The same, minus the convoy the server just objected to.
+    no_convoy = [(u, 5) for u, _ in rows_all_land if u != "convoy"]
+    ov = settings()
+    ov.update(duel(1, "inf", 20, "inf", 30))
+    ov.update(composite(1, "B", no_convoy))
+    try:
+        r = p.submit(ov, create=composite_fields("B", 1, len(no_convoy)))
+        d = dict(p.last_details)
+        got = sorted(k for k in d if RESULT_SLOT_RE.match(k) and k.startswith("B.1."))
+        print(f"  {len(no_convoy)} land types, no convoy: ACCEPTED — "
+              f"{len(got)} result rows. So a land stack holds "
+              f"{len(no_convoy)}, not the 8 this project assumed.")
+        record("stack_limits", {"case": "land_no_convoy", "rows": no_convoy,
+                                "slots": got, "detail": d,
+                                "raw": dict(p.last_raw)}, r)
+    except (BareFormReturned, ValueError) as e:
+        print(f"  {len(no_convoy)} land types, no convoy: REFUSED -> {e}")
+        record("stack_limits", {"case": "land_no_convoy", "rows": no_convoy,
+                                "error": str(e)}, {})
+
+    # 1c. Where does the convoy belong? It is classed land but land refuses it.
+    ov = settings()
+    ov.update(duel(1, "inf", 20, "int", 20, def_terrain="air"))
+    ov.update(composite(1, "B", [("int", 10), ("convoy", 10)]))
+    try:
+        p.submit(ov, create=composite_fields("B", 1, 2))
+        print("  convoy beside an air unit in AIR terrain: ACCEPTED — the "
+              "convoy is an air unit that our roster miscategorises as land")
+        record("stack_limits", {"case": "convoy_with_air",
+                                "detail": dict(p.last_details),
+                                "raw": dict(p.last_raw)}, {})
+    except (BareFormReturned, ValueError) as e:
+        print(f"  convoy beside an air unit in AIR terrain: REFUSED -> {e}")
+        print("  So the convoy stacks with nothing: it is its own class of one.")
+        record("stack_limits", {"case": "convoy_with_air", "error": str(e)}, {})
+
+    # 2. A land stack holding an air unit.
+    mixed = [("inf", 10), ("int", 10)]
+    ov = settings()
+    ov.update(duel(1, "inf", 20, "inf", 30))
+    ov.update(composite(1, "B", mixed))
+    try:
+        r = p.submit(ov, create=composite_fields("B", 1, 2))
+        print("  land stack holding an air unit: ACCEPTED — classes may mix, "
+              "so the ceiling is the type count (up to 17), not the class")
+        record("stack_limits", {"case": "class_mixing", "rows": mixed,
+                                "detail": dict(p.last_details),
+                                "raw": dict(p.last_raw)}, r)
+    except (BareFormReturned, ValueError) as e:
+        print(f"  land stack holding an air unit: REFUSED -> {e}")
+        print("  So a stack is one class, and the practical row cap is that "
+              "class's type count:\n    land 10, air 4, naval 3 — all well "
+              "under the page's maxUnits = 15.")
+        record("stack_limits", {"case": "class_mixing", "rows": mixed,
+                                "error": str(e)}, {})
+
+
 def exp_terrain(p: Probe) -> None:
     """Each terrain against the same baseline; multipliers fall out as ratios."""
     terrains = p.select_options.get("A.1.terrain") or ["land", "air", "sea"]
@@ -2988,6 +3092,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "unit_stats": exp_unit_stats,
     "mixed_stacks": exp_mixed_stacks,
     "heroes": exp_heroes,
+    "stack_limits": exp_stack_limits,
     "buildings": exp_buildings,
     "trenches": exp_trenches,
     "air_vs_ground": exp_air_vs_ground,
@@ -3004,7 +3109,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
 # it is about to spend on someone else's ad-supported fan site before it starts
 # rather than after. Approximate by design: saturation re-runs add a few.
 REQUEST_ESTIMATE: dict[str, int] = {
-    "unit_stats": 20, "buildings": 14, "patrol": 18, "mixed_stacks": 8, "heroes": 23, "trenches": 10, "air_vs_ground": 30,
+    "unit_stats": 20, "buildings": 14, "patrol": 18, "mixed_stacks": 8, "heroes": 23, "stack_limits": 4, "trenches": 10, "air_vs_ground": 30,
     "land_matrix": 100, "size_factor": 33, "hp_scaling": 10,
     "fortress": 6, "terrain": 5, "variance": 60,
 }
