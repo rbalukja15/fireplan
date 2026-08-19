@@ -248,8 +248,10 @@ export const FORTRESS = {
 // attacker's trench 20 left the defender's loss at exactly 40.0.
 
 export const TRENCH_POOL = {
-  0: 1.00, 1: 1.00, 2: 1.00, 3: 1.00,
-  4: 1.15, 5: 1.20, 10: 1.24, 15: 1.30, 20: 1.35,
+  0: 1.00, 1: 1.00, 2: 1.00, 3: 1.00, 4: 1.15, 5: 1.20,
+  6: 1.20, 7: 1.22, 8: 1.22, 9: 1.24, 10: 1.24, 11: 1.26, 12: 1.26,
+  13: 1.28, 14: 1.28, 15: 1.30, 16: 1.30, 17: 1.32, 18: 1.32,
+  19: 1.35, 20: 1.35,
 };
 
 // The brackets these point values came from. pool = lost / pct, and pct is
@@ -262,12 +264,20 @@ export const TRENCH_POOL_BRACKET = {
   15: [1.2943, 1.3031], 20: [1.3466, 1.3561],
 };
 
+// All 21 levels are now measured. Both curves are STAIRCASES, stepping in
+// pairs rather than sliding: output holds at 1.45 for two levels, then 1.50
+// for two, and so on. That is why interpolating them was flagged as risky
+// before the gaps were filled.
 export const TRENCH_OUTPUT = {
-  0: 1.00, 1: 1.25, 2: 1.30, 3: 1.35,
-  4: 1.40, 5: 1.40, 10: 1.54, 15: 1.62, 20: 1.75,
+  0: 1.00, 1: 1.25, 2: 1.30, 3: 1.35, 4: 1.40, 5: 1.40,
+  6: 1.45, 7: 1.45, 8: 1.50, 9: 1.50, 10: 1.54, 11: 1.54, 12: 1.58,
+  13: 1.58, 14: 1.62, 15: 1.62, 16: 1.66, 17: 1.66, 18: 1.70, 19: 1.70,
+  20: 1.75,
 };
 
-export const TRENCH_SAMPLED_LEVELS = [0, 1, 2, 3, 4, 5, 10, 15, 20];
+export const TRENCH_SAMPLED_LEVELS = [
+  0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+];
 export const TRENCH_MAX_LEVEL = 20;
 
 // ---------------------------------------------------------------------------
@@ -454,6 +464,46 @@ export const DAMAGE_ALLOCATION = 'attack_times_count';
 // Every value below is a MEASUREMENT, decomposed from two stack sizes so that
 // A and M are separated rather than confounded. `maxLevel` is the server's own
 // refusal ("Max level is 10"), not the 1..20 the dropdown offers for everyone.
+
+// EMBARKED LAND UNITS. In sea or debark terrain a land unit's own attack and
+// defence are REPLACED by a flat 1.0 -- not scaled. Infantry (4.0/5.0) and
+// cavalry (15.0/7.5) deal the identical 20 and 10 against the same target,
+// which no scaling of two different stats can produce. An embarked land unit
+// fights exactly as well as a convoy, which is 1.0/1.0 in the unit table.
+// Infantry are refused in air terrain outright.
+export const EMBARKED_COEF = 1.0;
+export const EMBARKED_TERRAIN = ['sea', 'debark'];
+
+// RANGE IS A BINARY GATE, measured by moving one side's position while the
+// other stays at 0. Inside range the figure is identical to zero distance;
+// outside it the server returns no result rows at all -- there is no battle.
+// Artillery fires at 50 and not at 51; the railgun at 150 and not at 151;
+// infantry at 1 and not at 25.
+export const UNIT_RANGE = { art: 50, rrg: 150, inf: 1 };
+
+// simulateVariance: ONE uniform +/-10% roll per side per round, NOT per unit.
+// 60 samples give sd 5.285 where a single roll predicts 5.774 and a per-unit
+// roll would predict 1.291. The whole stack moves together, so a big stack
+// cannot average its luck away. Observed range [0.9025, 1.0992] of the
+// variance-off figure.
+export const VARIANCE_BAND = { lo: 0.90, hi: 1.10, rolls: 'one per side per round' };
+
+// Damage to a BUILDING, per effective attacking unit. Its own column: nothing
+// in the unit table predicts it, and the ratio to the unit's attack value
+// ranges from 0.04 to 0.20. ht is a FLOOR, not a value -- it dealt exactly
+// 250.00 against a fortress holding 250.00, so the reading is censored.
+export const BUILDING_DAMAGE = {
+  inf: 0.30, lart: 0.30, ac: 1.00, st: 1.00, art: 1.50,
+  cav: 2.00, rrg: 4.00, lt: 6.00,
+};
+export const BUILDING_DAMAGE_FLOOR = { ht: 8.82 };
+
+// The fortress caps at level 5 -- the server refuses 6 and says so. That is
+// why the DR formula's value at level 6 (1.05, more than total immunity) never
+// arises. A fortress on the ATTACKING side works identically: 30% at level 1
+// either way.
+export const FORTRESS_MAX_LEVEL = 5;
+
 export const HEROES = {
   //  atkDefending / atkAttacking : a hero has TWO attack columns, exactly as a
   //    unit does. Thirteen of sixteen differ, pershing by a factor of eight.
@@ -468,25 +518,25 @@ export const HEROES = {
   //    these are exact rather than bracketed.
   kangal:       { label: 'Orhan “Kangal” Demir', atkDefending: 20.0, atkAttacking: 10.0,
                   pool: 90, sits: 'first', maxLevel: 10,
-                  buffs: { ac: { channel: 'defence', curve: { 1: 1.08, 5: 1.13, 10: 1.20 } } } },
+                  buffs: { ac: { channel: 'defence', curve: { 1: 1.08, 2: 1.10, 3: 1.12, 4: 1.12, 5: 1.13, 6: 1.14, 7: 1.16, 8: 1.18, 9: 1.20, 10: 1.20 } } } },
   joffre:       { label: 'Joseph Joffre (Non Homeland)', atkDefending: 16.0, atkAttacking: 4.0,
                   pool: 120, sits: 'first', maxLevel: 15 },
   joffre_home:  { label: 'Joseph Joffre (Homeland)', atkDefending: 16.0, atkAttacking: 4.0,
                   pool: 120, sits: 'first', maxLevel: 15,
-                  buffs: { inf: { channel: 'defence', curve: { 1: 1.10, 2: 1.15, 4: 1.16, 5: 1.20, 9: 1.28, 10: 1.30, 11: 1.32, 15: 1.40 } },
-                           ac:  { channel: 'defence', curve: { 1: 1.10, 5: 1.20, 10: 1.30, 15: 1.40 } } },
-                  hpBuffs: { ac: { 1: 1.00, 5: 1.09, 10: 1.17, 15: 1.30 } } },
+                  buffs: { inf: { channel: 'defence', curve: { 1: 1.10, 2: 1.15, 3: 1.15, 4: 1.16, 5: 1.20, 6: 1.22, 7: 1.24, 8: 1.26, 9: 1.28, 10: 1.30, 11: 1.32, 12: 1.34, 13: 1.36, 14: 1.38, 15: 1.40 } },
+                           ac:  { channel: 'defence', curve: { 1: 1.10, 2: 1.15, 3: 1.15, 4: 1.16, 5: 1.20, 6: 1.22, 7: 1.24, 8: 1.26, 9: 1.28, 10: 1.30, 11: 1.32, 12: 1.34, 13: 1.36, 14: 1.38, 15: 1.40 } } },
+                  hpBuffs: { ac: { 1: 1.00, 2: 1.00, 3: 1.05, 4: 1.05, 5: 1.09, 6: 1.09, 7: 1.13, 8: 1.13, 9: 1.17, 10: 1.17, 11: 1.21, 12: 1.21, 13: 1.25, 14: 1.25, 15: 1.30 } } },
   marco:        { label: 'Fiero “Marco” Martello', atkDefending: 15.0, atkAttacking: 24.6,
                   pool: 60, sits: 'first', maxLevel: 10,
-                  hpBuffs: { lt: { 1: 1.00, 5: 1.07, 10: 1.12 } } },
+                  hpBuffs: { lt: { 1: 1.00, 2: 1.00, 3: 1.05, 4: 1.06, 5: 1.07, 6: 1.08, 7: 1.09, 8: 1.10, 9: 1.11, 10: 1.12 } } },
   allen:        { label: 'Viscount Allenby', atkDefending: 10.0, atkAttacking: 29.6,
                   pool: 50, sits: 'first', maxLevel: 15 },
   larab:        { label: 'Lawrence of Arabia', atkDefending: 10.0, atkAttacking: 45.0,
                   pool: 75, sits: 'first', maxLevel: 20 },
   alvin:        { label: 'Alvin C. York', atkDefending: 8.30, atkAttacking: 25.0,
                   pool: 100, sits: 'first', maxLevel: 20,
-                  buffs: { st: { channel: 'both', curve: { 1: 1.15, 5: 1.25, 10: 1.40, 15: 1.50, 20: 1.60 } } },
-                  hpBuffs: { st: { 1: 1.00, 5: 1.14, 10: 1.22, 15: 1.34, 20: 1.42 } } },
+                  buffs: { st: { channel: 'both', curve: { 1: 1.15, 2: 1.15, 3: 1.20, 4: 1.25, 5: 1.25, 6: 1.30, 7: 1.30, 8: 1.35, 9: 1.35, 10: 1.40, 11: 1.40, 12: 1.45, 13: 1.45, 14: 1.50, 15: 1.50, 16: 1.55, 17: 1.55, 18: 1.60, 19: 1.60, 20: 1.60 } } },
+                  hpBuffs: { st: { 1: 1.00, 2: 1.05, 3: 1.10, 4: 1.10, 5: 1.14, 6: 1.14, 7: 1.18, 8: 1.18, 9: 1.22, 10: 1.22, 11: 1.26, 12: 1.26, 13: 1.30, 14: 1.30, 15: 1.34, 16: 1.34, 17: 1.38, 18: 1.38, 19: 1.42, 20: 1.42 } } },
   lucien:       { label: 'Lucien Laroche', atkDefending: 8.0, atkAttacking: 8.0,
                   pool: 40, sits: 'first', maxLevel: 15 },
   lucien_g:     { label: 'Lucien Laroche w/gas', atkDefending: 8.0, atkAttacking: 8.0,
@@ -497,15 +547,15 @@ export const HEROES = {
                   // climbs again. Measured exactly, reproduced at three units as
                   // well as two, and confirmed by an independently derived pool.
                   // No formula fits both sides of that step.
-                  hpBuffs: { inf: { 1: 1.00, 2: 1.50, 3: 1.50, 4: 1.70, 5: 1.70, 6: 1.10, 7: 1.10, 8: 1.12, 9: 1.12, 10: 1.14, 15: 1.18, 20: 1.25 },
-                             ht:  { 1: 1.00, 5: 1.15, 10: 1.25, 15: 1.40, 20: 1.50 } } },
+                  hpBuffs: { inf: { 1: 1.00, 2: 1.50, 3: 1.50, 4: 1.70, 5: 1.70, 6: 1.10, 7: 1.10, 8: 1.12, 9: 1.12, 10: 1.14, 11: 1.14, 12: 1.16, 13: 1.16, 14: 1.18, 15: 1.18, 16: 1.20, 17: 1.20, 18: 1.22, 19: 1.22, 20: 1.25 },
+                             ht:  { 1: 1.00, 2: 1.00, 3: 1.10, 4: 1.10, 5: 1.15, 6: 1.15, 7: 1.20, 8: 1.20, 9: 1.25, 10: 1.25, 11: 1.30, 12: 1.30, 13: 1.35, 14: 1.35, 15: 1.40, 16: 1.40, 17: 1.45, 18: 1.45, 19: 1.50, 20: 1.50 } } },
   georg:        { label: 'Georg Bruchmüller', atkDefending: 6.0, atkAttacking: 16.8,
                   pool: 40, sits: 'first', maxLevel: 20 },
   tatiana:      { label: 'Tatiana Minchakievich (Enemy Land)', atkDefending: 6.0, atkAttacking: 45.6,
                   pool: 15, sits: 'first', maxLevel: 20 },
   hank:         { label: 'Henry “Hank” Callahan', atkDefending: 6.0, atkAttacking: 5.0,
                   pool: 40, sits: 'first', maxLevel: 10,
-                  buffs: { inf: { channel: 'both', curve: { 1: 1.00, 2: 1.03, 5: 1.06, 9: 1.09, 10: 1.09 } } } },
+                  buffs: { inf: { channel: 'both', curve: { 1: 1.00, 2: 1.03, 3: 1.03, 4: 1.05, 5: 1.06, 6: 1.06, 7: 1.07, 8: 1.08, 9: 1.09, 10: 1.09 } } } },
   johan:        { label: 'Johan “Aardvark” Maes', atkDefending: 5.0, atkAttacking: 4.0,
                   pool: 40, sits: 'first', maxLevel: 20 },
   tatiana_home: { label: 'Tatiana Minchakievich (Friendly Land)', atkDefending: 5.0, atkAttacking: 10.0,
@@ -555,28 +605,13 @@ export const FORM_DOMAINS = {
 // footnote. Ranked roughly by how likely a user is to hit it.
 
 export const NOT_MEASURED = [
-  {
-    key: 'land_off_diagonal',
-    what: 'Land vs land: the per-pairing ATTACK coefficient. Largely answered — see why.',
-    why: 'A land attacker\u2019s TOTAL output does not depend on what it is shooting at. '
-      + 'Its diagonal coefficient x E(n) reproduces every reading on record to 0.23% — nine '
-      + 'attackers against a nine-type defender, plus two genuinely non-diagonal cases '
-      + '(25 ac + 25 st and 30 inf + 30 st against heavy tanks, both exact). The target '
-      + 'dependence that does exist lives entirely in how the damage is SPLIT, and that is '
-      + 'measured for all nine targets. So the 100-cell matrix is not 100 unknowns: it is '
-      + 'one diagonal plus a three-value target table. What is still untested is a duel '
-      + 'between two single types off the diagonal, which would confirm it directly rather '
-      + 'than through mixtures, and whether the same holds against AIR or NAVAL targets — '
-      + 'it demonstrably does not for an air attacker.',
-    closedBy: 'a handful of single-type off-diagonal duels, not the full 100-cell sweep',
-  },
   { key: 'naval_off_diagonal', what: 'Naval unit vs a different naval unit (6 of 9 pairings).', why: 'Only the three diagonals were flown.', closedBy: 'a 6-cell naval sweep' },
   { key: 'ground_attacking_air', what: 'A ground stack ATTACKING an air stack.', why: 'Only ground DEFENDING against air was measured. The roles are not interchangeable.', closedBy: 'a ground-attacks-air sweep' },
   { key: 'air_defending', what: 'An air stack DEFENDING against a ground attacker.', why: 'Never submitted.', closedBy: 'the same sweep' },
   { key: 'air_off_diagonal', what: 'Air vs a different air unit.', why: 'Only int/tac/zep diagonals exist; bal not even that.', closedBy: 'a 6-cell air sweep' },
   { key: 'sea_land_air', what: 'Any sea-vs-land or sea-vs-air pairing.', why: 'Entirely absent from the record.', closedBy: 'a cross-class sweep' },
   { key: 'balloon', what: 'The Balloon: max HP, attack, defence, class interactions — every quantity.', why: 'Sending bal in air terrain aborts the whole batch server-side with no error, so it has four rows in results.jsonl and all four are empty.', closedBy: 'unknown; the request itself fails' },
-  { key: 'building_damage_per_unit', what: 'Damage to buildings from any unit but infantry.', why: 'Infantry deal 0.3 per effective unit. Nothing else in the model predicts that number, so it cannot be inferred for other units.', closedBy: 'one request per unit type against a building' },
+  { key: 'building_damage_modelling', what: 'Damage to buildings per attacking unit type is MEASURED but not computed.', why: 'Its own column, which nothing else predicts: inf and lart 0.30, ac and st 1.00, art 1.50, cav 2.00, rrg 4.00, lt 6.00 per effective unit. Heavy tanks are CENSORED — they dealt exactly 250.00 against a fortress holding 250.00, so 8.82 is a floor and not a value. The engine still computes building damage for infantry only.', closedBy: 'wiring BUILDING_DAMAGE into the engine, plus one uncensored heavy-tank reading' },
   { key: 'multi_round_details', what: 'The reported DEATH count in a multi-round battle, and whether fortress DR decays across rounds.', why: 'The output law across rounds is now measured to 0.042% — survivors are whole units and m(f) applies to what those survivors have left. But the death count the page PRINTS does not follow floor(cumulative loss / per-unit HP): it reads one lower than that for rounds 2-5 of the ladder, and no simple per-round rule reproduces it either. Output is unaffected, since the survivor count that drives it does follow the floor rule. Fortress DR across rounds was not in the ladder.', closedBy: 'a ladder that varies the unit size so the death rule is over-determined, plus one fortress ladder' },
   { key: 'air_E_above_20', what: 'Which effective-count law an attenuated air stack above 20 units uses.', why: 'All 30 attenuated stacks were 10 units, where E(n) = n, so E(n_alive)·m(f_after) and a per-unit sum of m(f_i) are indistinguishable. They diverge above 20.', closedBy: 'one air_vs_ground cell with a 30-unit air stack' },
   { key: 'E_with_m_above_20', what: 'E(n) combined with m(f) for n > 20.', why: 'Only a 10-unit stack was ever damaged.', closedBy: 'an hp_scaling sweep at n=30' },
@@ -584,17 +619,14 @@ export const NOT_MEASURED = [
   { key: 'attenuation_scope', what: 'Whether post-fire evaluation applies to sea, or to air defending.', why: 'Only air-attacks-ground was measured; air-vs-air and sea-vs-sea are argued unattenuated from roundness, not read.', closedBy: 'a lopsided sea duel' },
   { key: 'm_f_generality', what: 'Whether m(f) applies to defenders and to units other than infantry.', why: 'The HP sweep varied only an ATTACKING infantry stack.', closedBy: 'an hp_scaling sweep on the defender' },
   { key: 'E_gaps', what: 'E(n) at n in 21-28, 31-44, 46-49, and above 113.', why: 'Interpolation only; the sampled endpoints bracket every gap.', closedBy: 'a few cheap counts' },
-  { key: 'terrain', what: 'Terrain modifiers, and debark semantics.', why: 'The terrain experiment has never run and debark has never been submitted once. Patrol IS modelled, but its attrition coefficient is a band (0.360-0.427) rather than a value, so patrol results are estimates.', closedBy: 'a terrain sweep, and a patrol count-sweep at fixed loss fraction to pin the coefficient' },
-  { key: 'variance', what: 'simulateVariance (a ±10% roll).', why: 'Never sampled. Unknown whether it rolls per unit or per unit-type per round.', closedBy: 'a repeated-request sweep' },
-  { key: 'trench_gaps', what: 'Trench levels 6-9, 11-14, 16-19 (12 of 21).', why: 'Never submitted. Neither trench curve is smooth — output plateaus at x1.40 across levels 4 and 5 — so interpolation is demonstrably risky.', closedBy: '12 requests' },
+  { key: 'terrain_modelling', what: 'Terrain is MEASURED but not computed by the engine.', why: 'Sea and debark replace a land unit’s attack and defence with a flat 1.0 (measured: infantry and cavalry deal identical figures, which no multiplier can produce), and infantry are refused in air outright. The app offers no terrain control, so every figure here is LAND. Patrol IS modelled, but its attrition coefficient is a band (0.360-0.427), so patrol results stay estimates.', closedBy: 'a terrain control plus the EMBARKED_COEF term; the measurement is done' },
+  { key: 'variance_modelling', what: 'simulateVariance is MEASURED but not applied.', why: 'ONE uniform ±10% roll per side per round, not per unit — 60 samples give sd 5.285 where a single roll predicts 5.774 and a per-unit roll 1.291. A big stack cannot average its luck away. Every figure here is the variance-OFF expectation; the band is in VARIANCE_BAND.', closedBy: 'showing the ±10% band beside each figure; the measurement is done' },
   { key: 'trench_generality', what: 'Trench multipliers for any unit but infantry, and whether the output bonus multiplies the stat or the effective unit count.', why: 'Only 10v10 infantry was flown, and at n=10 E(n)=n, so the two readings of the output bonus are indistinguishable.', closedBy: 'one trench row with a 30-unit stack' },
   { key: 'trench_10_pool', what: 'The level-10 pool multiplier beyond 2 decimal places.', why: 'Bracketed to [1.2382, 1.2463], which excludes the tidy 1.25.', closedBy: 'a larger stack, which tightens the bracket' },
-  { key: 'fortress_edges', what: 'A fortress on the ATTACKING side; a fortress against air or naval attackers; fortress-trench interaction; DR above level 5.', why: 'Only a level 1-5 fortress defending against infantry was measured. At level 6 the formula returns DR = 1.05, so it must saturate or the cap is real.', closedBy: 'a handful of requests' },
+  { key: 'fortress_edges', what: 'A fortress against AIR or NAVAL attackers, and fortress-trench interaction.', why: 'The fortress caps at level 5 (the server refuses 6) and works on the ATTACKING side with the identical law — 30% at level 1 either way. Both are now measured. What has never been submitted is a fortress against anything but a land attacker, or a fortress and a trench together.', closedBy: 'a handful of requests' },
   { key: 'building_caps', what: 'Workshop and factory level caps; workshop HP per level.', why: 'The sweep asked for 3, was not rejected, and never probed higher. Workshop shows 35 total at L3 with 20 in the top level, so HP is not uniform per level.', closedBy: 'two requests' },
-  { key: 'hero_level_gaps', what: 'Hero buff levels between the ones submitted — typically 2-4, 6-9, 11-14, 16-19.', why: 'Curves were read at 1, 5, 10, 15 and 20 and are INTERPOLATED between those points. Pershing\u2019s infantry HP curve proves interpolation can mislead: it drops from x1.70 to x1.10 between levels 5 and 6, so a gap can hide a step. The engine marks any unmeasured level as interpolated rather than exact.', closedBy: 'filling in the levels, ~15 requests per curve' },
   { key: 'hero_other_terrain', what: 'What the six land-refused heroes DO on an air or naval stack.', why: 'All six work there and all six change the battle — rbaron +16.85 and thaden +10.14 on air, otto +40.00, togo +15.00, togo_b +64.34, ivan +1.00 on sea. That is one reading each, which confounds the hero\u2019s own attack with any multiplier, so nothing is applied. The help page also describes multi-round and positional skills for T\u014dg\u014d and Lucien, and this project has measured neither dimension.', closedBy: 'the two-configuration decomposition already used on land, run on an air stack and a naval one' },
-  { key: 'hero_hp_level_gaps', what: 'Whether a hero\u2019s own HP pool or its 0.40 damage weight move with anything.', why: 'Both read constant across every level and stack size on record, but neither was swept deliberately — the readings are a by-product of other experiments.', closedBy: 'a handful of requests at the extremes' },
-  { key: 'position', what: 'Position / range effects.', why: 'Every run was at position 0.', closedBy: 'a position sweep' },
+  { key: 'position_modelling', what: 'Range is MEASURED but not enforced by the engine.', why: 'A BINARY gate, not a falloff: artillery fires at 50 km and not at 51, the railgun at 150 and not at 151, infantry at 1 and not at 25. Inside range the figure is identical to zero distance; outside it there is no battle at all. Only three ranges were read and the app has no distance control.', closedBy: 'a range column for the whole roster plus a distance input' },
 ];
 
 // ---------------------------------------------------------------------------

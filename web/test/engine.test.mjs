@@ -536,13 +536,15 @@ check('multi-round downgrades a measured matchup to \'estimated\' and says every
     return r.coverage.level === 'estimated'
       && r.coverage.caveats.some((c) => /maxRounds = 1|4 rounds/.test(c));
   })());
-check('an unsampled trench level is not exact, and brackets its sampled neighbours',
-  (() => {
-    const t = trenchFactors(7);
-    return t.exact === false && t.pool === TRENCH_POOL[5] && t.poolRange[1] === TRENCH_POOL[10]
-      && t.outputRange[0] === TRENCH_OUTPUT[5] && t.outputRange[1] === TRENCH_OUTPUT[10]
-      && /never submitted/.test(t.note);
-  })());
+// All 21 trench levels are measured now, so every one is exact and there are
+// no neighbours to bracket. What must still hold is that the tables are
+// complete, and that a level ABOVE the cap is refused rather than guessed.
+check('every trench level 0-20 is measured and exact',
+  Array.from({ length: 21 }, (_, i) => i).every((l) =>
+    TRENCH_POOL[l] !== undefined && TRENCH_OUTPUT[l] !== undefined
+    && trenchFactors(l).exact === true),
+  Array.from({ length: 21 }, (_, i) => i)
+    .filter((l) => !trenchFactors(l).exact).join(',') || 'all exact');
 check('a sampled trench level is exact', trenchFactors(15).exact === true && trenchFactors(0).exact === true);
 check('trench above 20 is clamped and flagged',
   trenchFactors(25).level === 20 && trenchFactors(25).exact === false);
@@ -602,17 +604,19 @@ check('every derivation entry carries a label, a formula and a value key',
 check('every constant in UNITS points at a PROVENANCE note that exists',
   Object.values(UNITS).every((u) => Object.values(u.provenance).every((k) => PROVENANCE[k])),
   Object.values(UNITS).flatMap((u) => Object.values(u.provenance).filter((k) => !PROVENANCE[k])).join(' '));
-check(`NOT_MEASURED lists ${NOT_MEASURED.length} open gaps, each with what/why/closedBy`,
-  NOT_MEASURED.length >= 20 && NOT_MEASURED.every((g) => g.key && g.what && g.why && g.closedBy));
-// It used to be described as the biggest gap, on the assumption that 90 of
-// 100 land pairings were unknown. They are not: the allocation sweep showed a
-// land attacker's total is target-independent, so the matrix is one diagonal
-// plus a three-value target table. The entry must now say what IS still open
-// rather than overstate it.
-check('the land off-diagonal entry states what remains, not the old 90-cell claim',
-  NOT_MEASURED.some((g) => g.key === 'land_off_diagonal'
-    && /does not depend on what it is shooting at/.test(g.why)
-    && !/biggest/.test(g.why)));
+// This used to pass with a malformed entry present: an edit removed a gap's
+// `key:` line and left the rest of the object behind, and the check said
+// nothing. Naming the offender is what makes it speak up.
+const malformed = NOT_MEASURED.filter(
+  (g) => !g.key || !g.what || !g.why || !g.closedBy);
+check(`NOT_MEASURED lists ${NOT_MEASURED.length} open gaps, each with key/what/why/closedBy`,
+  NOT_MEASURED.length >= 20 && malformed.length === 0,
+  malformed.length ? JSON.stringify(malformed[0]).slice(0, 140) : 'all well-formed');
+check('and every gap key is unique',
+  new Set(NOT_MEASURED.map((g) => g.key)).size === NOT_MEASURED.length);
+check('the land off-diagonal gap is gone from the list, having been closed',
+  !NOT_MEASURED.some((g) => g.key === 'land_off_diagonal'),
+  'eight single-type off-diagonal duels reproduced the diagonal exactly');
 
 // ===========================================================================
 console.log('\n11. patrol — replayed as an explicitly estimated band');
@@ -994,9 +998,16 @@ console.log('\n12c. hero output buffs land on unit types, not on the stack');
   const at10 = heroBuff('kangal', 10, 'ac');
   const at3 = heroBuff('kangal', 3, 'ac');
   check('kangal at level 10 is exact', at10.exact === true && at10.m === 1.20);
-  check('kangal at level 3 is interpolated between measured levels, and says so',
-    at3.exact === false && /interpolated between the measured/.test(at3.note)
-    && at3.m > 1.08 && at3.m < 1.13, at3.note);
+  // Every level of every hero curve is measured now, so nothing interpolates.
+  check('kangal at level 3 is measured directly, not interpolated',
+    at3.exact === true && at3.m === 1.12, at3.note);
+  check('every hero curve is complete to that hero\'s cap',
+    Object.entries(HEROES).every(([, h]) =>
+      Object.values(h.buffs || {}).every((b) =>
+        Object.keys(b.curve).length >= h.maxLevel)
+      && Object.values(h.hpBuffs || {}).every((c) =>
+        Object.keys(c).length >= h.maxLevel)),
+    'a curve short of its cap would silently interpolate');
   check('a DEFENCE-ONLY buff is not applied to an attacking stack',
     heroBuff('kangal', 10, 'ac', 'attacker').m === 1.0
     && /DEFENCE-ONLY/.test(heroBuff('kangal', 10, 'ac', 'attacker').note),
@@ -1144,6 +1155,69 @@ console.log('\n12f. multi-round — replayed against the maxRounds ladder');
     + `${r1.attacker.hpLost.toFixed(2)}`);
 }
 
+console.log('\n12g. off-diagonal duels, trenches, fortress and hero curves');
+{
+  // Single-type land duels off the diagonal. The one thing mixtures could not
+  // show directly.
+  let od = 0;
+  for (const r of rows) {
+    const m = r.meta || {};
+    if (r.experiment !== 'offdiag' || m.error) continue;
+    const obs = ((m.detail || {})['B.1.1'] || {}).lost;
+    if (obs == null) continue;
+    od += 1;
+    const res = simulate({
+      attacker: { unit: m.attacker, count: m.atk_n, hpPct: 100 },
+      defender: { unit: m.target, count: m.def_n, hpPct: 100 },
+      rounds: 1,
+    });
+    check(`${m.attacker} vs ${m.target}: ${res.defender.hpLost.toFixed(2)} vs ${obs}`,
+      Math.abs(res.defender.hpLost - obs) <= 0.05,
+      `${(res.defender.hpLost - obs).toFixed(3)} off`);
+  }
+  check('all eight off-diagonal duels were replayed', od === 8, String(od));
+
+  // Every trench level, from both the original sweep and the gap-fill.
+  let tr = 0;
+  for (const r of rows) {
+    const m = r.meta || {};
+    if (r.experiment !== 'trench_gaps' || m.error) continue;
+    const obs = ((m.detail || {})['A.1.1'] || {}).lost;
+    if (obs == null) continue;
+    tr += 1;
+    const res = simulate({
+      attacker: { unit: 'inf', count: 10, hpPct: 100 },
+      defender: { unit: 'inf', count: 10, hpPct: 100, trench: m.level },
+      rounds: 1,
+    });
+    check(`trench ${m.level}: attacker lost ${res.attacker.hpLost.toFixed(2)} vs ${obs}`,
+      Math.abs(res.attacker.hpLost - obs) <= 0.05,
+      `${(res.attacker.hpLost - obs).toFixed(3)} off`);
+  }
+  check('all twelve filled trench levels were replayed', tr === 12, String(tr));
+
+  // Hero output curves, read from single-type stacks.
+  let hc = 0;
+  for (const r of rows) {
+    const m = r.meta || {};
+    if (r.experiment !== 'hero_output_curves' || m.error) continue;
+    const obs = ((m.detail || {})['A.1.1'] || {}).lost;
+    if (obs == null) continue;
+    hc += 1;
+    const res = simulate({
+      attacker: { unit: 'inf', count: 60, hpPct: 100 },
+      defender: { rows: [{ unit: m.unit, count: 2, hpPct: m.hp_pct }],
+                  hero: { code: m.hero, level: m.level } },
+      rounds: 1,
+    });
+    check(`${m.hero} L${m.level} over ${m.unit}: `
+      + `${res.attacker.hpLost.toFixed(2)} vs ${obs}`,
+      Math.abs(res.attacker.hpLost - obs) <= 0.05,
+      `${(res.attacker.hpLost - obs).toFixed(3)} off`);
+  }
+  check('every hero output-curve level was replayed', hc >= 65, String(hc));
+}
+
 console.log('\n13. heroes — replayed against every measured reading');
 // ===========================================================================
 // A hero is a unit plus a buff, and the app now models it. Replayed here
@@ -1184,12 +1258,14 @@ console.log('\n13. heroes — replayed against every measured reading');
     Math.abs(heroBuff('joffre_home', 1, 'inf').m - 1.10) < 1e-9);
   check('and a measured level is flagged exact',
     heroBuff('joffre_home', 15, 'inf').exact === true);
-  check('while an unmeasured one is flagged interpolated, not exact',
-    heroBuff('joffre_home', 13, 'inf').exact === false
-    && /interpolated/.test(heroBuff('joffre_home', 13, 'inf').note),
+  check('every level of joffre_home\'s curve is now measured directly',
+    heroBuff('joffre_home', 13, 'inf').exact === true
+    && heroBuff('joffre_home', 13, 'inf').m === 1.36,
     heroBuff('joffre_home', 13, 'inf').note);
-  check('an interpolated buff lands between its two measured neighbours',
-    heroBuff('joffre_home', 13, 'inf').m > 1.32 && heroBuff('joffre_home', 13, 'inf').m < 1.40);
+  check('and its infantry and armoured-car curves are identical, as measured',
+    Array.from({ length: 15 }, (_, i) => i + 1).every((l) =>
+      heroBuff('joffre_home', l, 'inf').m === heroBuff('joffre_home', l, 'ac').m),
+    'one hero applies one curve to every type it buffs');
 
   // Caps are the server's own, not the dropdown's 1-20.
   const capped = simulate({
@@ -1221,6 +1297,7 @@ console.log('\n14. coverage of the record itself');
   const replayed = ['semantics', 'unit_stats', 'hp_scaling', 'air_vs_ground', 'trenches',
     'fortress', 'buildings', 'patrol', 'mixed_stacks', 'survivable_rig',
     'stack_order', 'allocation', 'hero_sides', 'multi_round',
+    'offdiag', 'trench_gaps', 'hero_output_curves',
     // Heroes are now modelled and replayed above: the sweeps that measured
     // them are physics the engine reproduces, not declared omissions.
     'heroes', 'hero_scaling', 'hero_table', 'hero_levels', 'air_rounds'];
@@ -1251,8 +1328,23 @@ console.log('\n14. coverage of the record itself');
   // ("Max hp for 2 Infantry is 47.200000") rather than a battle. The numbers
   // it yields are in HEROES[].hpBuffs and are asserted through the pools that
   // use them, which is a stronger check than replaying a refusal.
+  // Declared, with the reason each is not a battle to replay:
+  //   stack_limits / hero_caps / hero_hp_cap  server REFUSALS, not battles.
+  //     Their numbers live in STACK_GROUP, HEROES.maxLevel and HEROES.hpBuffs,
+  //     and are asserted through the pools and levels that use them.
+  //   hero_targets  the wiped-attacker screen; its output column is the
+  //     attacker's own pool repeated and carries no information.
+  //   hero_curves  superseded by hero_output_curves, which re-read the same
+  //     curves from single-type stacks with no baseline subtraction.
+  //   variance  stochastic by construction. A deterministic engine cannot
+  //     replay a roll; VARIANCE_BAND records what the 60 samples showed.
+  //   terrain / position / building_damage / fortress_edges  measured and
+  //     recorded as constants (EMBARKED_COEF, UNIT_RANGE, BUILDING_DAMAGE,
+  //     FORTRESS_MAX_LEVEL) but not yet computed by simulate(), so there is
+  //     nothing to replay them against. Each is named in NOT_MEASURED.
   const declaredNonReplay = ['stack_limits', 'hero_caps', 'hero_targets',
-    'hero_hp_cap'];
+    'hero_hp_cap', 'hero_curves', 'variance', 'terrain', 'position',
+    'building_damage', 'fortress_edges'];
   void declaredNonReplay;
   check('every unreplayed experiment is one the engine declares and explains',
     notReplayed.every((e) => declaredNonReplay.includes(e)),
