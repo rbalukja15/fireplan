@@ -886,6 +886,116 @@ console.log('\n12. composite stacks — replayed against the four measured mixtu
 }
 
 // ===========================================================================
+console.log('\n12b. the stack law, replayed against the ladder that overturned it');
+// ===========================================================================
+// This engine shipped ROSTER-order saturation until a nine-type ladder was
+// measured against an attacker large enough to survive it. Roster order is
+// wrong by 52.6% on the widest rung. Every rung, every held-out stack and
+// every hero screen row is replayed here, so the law cannot quietly revert.
+{
+  let rungs = 0;
+  let heroRows = 0;
+  for (const r of rows) {
+    const m = r.meta || {};
+    if (r.experiment !== 'survivable_rig' || m.error) continue;
+    if (!Array.isArray(m.rows) || !m.atk_n) continue;
+    const obs = ((m.detail || {})['A.1.1'] || {}).lost;
+    if (obs == null) continue;
+    // A wiped attacker reports its own pool, not the defender's output. The
+    // probe discards those; the replay must not resurrect them.
+    if (((m.detail || {})['A.1.1'] || {}).pct >= 99.9) continue;
+    const cfg = {
+      attacker: { unit: 'inf', count: m.atk_n, hpPct: 100 },
+      defender: { rows: m.rows.map(([unit, count]) => ({ unit, count, hpPct: 100 })) },
+      rounds: 1,
+    };
+    if (m.hero) cfg.defender.hero = { code: m.hero, level: m.level || 10 };
+    const res = simulate(cfg);
+    const label = `${m.hero || 'no hero'} / ${m.rows.map(([u, c]) => `${c} ${u}`).join(' + ')}`;
+    if (m.hero) heroRows += 1; else rungs += 1;
+    check(`${label}: output ${res.attacker.hpLost.toFixed(2)} vs measured ${obs}`,
+      Math.abs(res.attacker.hpLost - obs) <= 0.05,
+      `${(res.attacker.hpLost - obs).toFixed(3)} off`);
+  }
+  check('the whole ladder and the held-out stacks were replayed', rungs >= 12,
+    `${rungs} no-hero readings`);
+  check('and every hero screen row with it', heroRows >= 20,
+    `${heroRows} hero readings`);
+
+  // The ATTACKING side sorts by its own attack column, which is a different
+  // ranking: a stormtrooper out-attacks infantry 25 to 4 and out-defends it
+  // only 6.3 to 5.0.
+  let sides = 0;
+  for (const r of rows) {
+    const m = r.meta || {};
+    if (r.experiment !== 'stack_order' || m.error || m.side !== 'A') continue;
+    const obs = ((m.detail || {})['B.1.1'] || {}).lost;
+    if (obs == null) continue;
+    sides += 1;
+    const res = simulate({
+      attacker: { rows: m.rows.map(([unit, count]) => ({ unit, count, hpPct: 100 })) },
+      defender: { unit: 'ht', count: 60, hpPct: 100 },
+      rounds: 1,
+    });
+    check(`attacking ${m.rows.map(([u, c]) => `${c} ${u}`).join(' + ')}: `
+      + `${res.defender.hpLost.toFixed(2)} vs measured ${obs}`,
+      Math.abs(res.defender.hpLost - obs) <= 0.05,
+      `${(res.defender.hpLost - obs).toFixed(3)} off`);
+  }
+  check('both attacking-order readings were replayed', sides >= 2, String(sides));
+
+  // The finding a player can act on, and the one the old law got backwards.
+  const weakFirst = simulate({ attacker: { unit: 'inf', count: 60 },
+    defender: { rows: [{ unit: 'lart', count: 25 }, { unit: 'ht', count: 25 }] } });
+  const heavy = weakFirst.defender.rows[1];
+  const light = weakFirst.defender.rows[0];
+  check('the heavy tanks draw first and the light artillery takes the tail',
+    heavy.effective > light.effective && Math.abs(heavy.effective - effectiveUnits(25)) < 1e-9,
+    `ht ${heavy.effective} vs lart ${light.effective}`);
+  check('which is 2.3x the answer roster order gave',
+    Math.abs(weakFirst.attacker.hpLost - 1116.67) < 0.5,
+    `${weakFirst.attacker.hpLost.toFixed(2)} (roster order said 493.33)`);
+}
+
+console.log('\n12c. hero output buffs land on unit types, not on the stack');
+{
+  // joffre_home raises infantry AND armoured cars by 1.30 and nothing else.
+  // Applying one figure to the whole stack was the shape of the old model and
+  // would over-count every other row.
+  const res = simulate({
+    attacker: { unit: 'inf', count: 60 },
+    defender: {
+      rows: [{ unit: 'inf', count: 2 }, { unit: 'ac', count: 2 },
+             { unit: 'cav', count: 2 }],
+      hero: { code: 'joffre_home', level: 10 },
+    },
+    rounds: 1,
+  });
+  const byCode = {};
+  res.defender.rows.forEach((r) => { if (!r.isHero) byCode[r.unit] = r; });
+  check('infantry is buffed', Math.abs(byCode.inf.damageDealt - 5.0 * 2 * 1.30) < 1e-6,
+    String(byCode.inf.damageDealt));
+  check('armoured cars are buffed by the same measured 1.30',
+    Math.abs(byCode.ac.damageDealt - 12.0 * 2 * 1.30) < 1e-6, String(byCode.ac.damageDealt));
+  check('and cavalry, sitting in the same stack, is NOT',
+    Math.abs(byCode.cav.damageDealt - 7.5 * 2) < 1e-6, String(byCode.cav.damageDealt));
+
+  // A hero whose buff was only ever seen at one level must say so rather than
+  // quietly reuse the figure.
+  const at10 = heroBuff('kangal', 10, 'ac');
+  const at3 = heroBuff('kangal', 3, 'ac');
+  check('kangal at level 10 is exact', at10.exact === true && at10.m === 1.20);
+  check('kangal at level 3 is flagged as an assumption, not a measurement',
+    at3.exact === false && /only level 10 was ever measured/.test(at3.note), at3.note);
+  check('a hero with no buff for this unit type returns 1.0 and says which types it does buff',
+    heroBuff('joffre_home', 10, 'ht').m === 1.0
+    && /buffs inf and ac/.test(heroBuff('joffre_home', 10, 'ht').note),
+    heroBuff('joffre_home', 10, 'ht').note);
+  check('and a pure combat hero says it raised the stack by its attack alone',
+    heroBuff('marco', 10, 'lt').m === 1.0
+    && /pure combat unit/.test(heroBuff('marco', 10, 'lt').note));
+}
+
 console.log('\n13. heroes — replayed against every measured reading');
 // ===========================================================================
 // A hero is a unit plus a buff, and the app now models it. Replayed here
@@ -923,15 +1033,15 @@ console.log('\n13. heroes — replayed against every measured reading');
     battle({ code: 'joffre_home', level: 1 }, 30)
       < battle({ code: 'joffre_home', level: 15 }, 30));
   check('its level-1 buff is the measured 1.10',
-    Math.abs(heroBuff('joffre_home', 1).m - 1.10) < 1e-9);
+    Math.abs(heroBuff('joffre_home', 1, 'inf').m - 1.10) < 1e-9);
   check('and a measured level is flagged exact',
-    heroBuff('joffre_home', 15).exact === true);
+    heroBuff('joffre_home', 15, 'inf').exact === true);
   check('while an unmeasured one is flagged interpolated, not exact',
-    heroBuff('joffre_home', 13).exact === false
-    && /interpolated/.test(heroBuff('joffre_home', 13).note),
-    heroBuff('joffre_home', 13).note);
+    heroBuff('joffre_home', 13, 'inf').exact === false
+    && /interpolated/.test(heroBuff('joffre_home', 13, 'inf').note),
+    heroBuff('joffre_home', 13, 'inf').note);
   check('an interpolated buff lands between its two measured neighbours',
-    heroBuff('joffre_home', 13).m > 1.32 && heroBuff('joffre_home', 13).m < 1.40);
+    heroBuff('joffre_home', 13, 'inf').m > 1.32 && heroBuff('joffre_home', 13, 'inf').m < 1.40);
 
   // Caps are the server's own, not the dropdown's 1-20.
   const capped = simulate({
@@ -961,7 +1071,8 @@ console.log('\n14. coverage of the record itself');
   const counts = {};
   for (const r of rows) counts[r.experiment] = (counts[r.experiment] || 0) + 1;
   const replayed = ['semantics', 'unit_stats', 'hp_scaling', 'air_vs_ground', 'trenches',
-    'fortress', 'buildings', 'patrol', 'mixed_stacks',
+    'fortress', 'buildings', 'patrol', 'mixed_stacks', 'survivable_rig',
+    'stack_order',
     // Heroes are now modelled and replayed above: the sweeps that measured
     // them are physics the engine reproduces, not declared omissions.
     'heroes', 'hero_scaling', 'hero_table', 'hero_levels', 'air_rounds'];
@@ -1011,10 +1122,18 @@ console.log('\n14. coverage of the record itself');
   check('the HP channel is recorded as measured but unmodelled',
     /NOT MODELLED, only disclosed/.test(PROVENANCE['HEROES.hpChannel'].note));
 
-  check('the hero model states it was measured against infantry only',
-    /INFANTRY defender only/.test(PROVENANCE['HEROES.law'].note)
-    && /never "buffs nobody"/.test(PROVENANCE['HEROES.law'].note),
+  // This assertion used to demand the note say "measured against INFANTRY
+  // only". That limitation is gone -- all nine land types have been screened --
+  // so the test now demands the two things that are still true and still
+  // constrain a reader: the buff is per unit type, and the non-infantry
+  // figures come from one level.
+  check('the hero model states the buff is per unit type, not per stack',
+    /M IS PER UNIT TYPE/.test(PROVENANCE['HEROES.law'].note),
     PROVENANCE['HEROES.law'].note.slice(0, 120));
+  check('and discloses that the non-infantry figures are level 10 only',
+    /LEVEL 10 ONLY/.test(PROVENANCE['HEROES.law'].note));
+  check('and states the floor beneath which a buff would still be hiding',
+    /DETECTION FLOOR/.test(PROVENANCE['HEROES.law'].note));
   check('composite saturation and allocation are both recorded as measured',
     PROVENANCE['STACK.saturation'].confidence === 'measured'
     && PROVENANCE['STACK.allocation'].confidence === 'measured');

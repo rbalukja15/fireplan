@@ -323,18 +323,28 @@ export const PATROL = {
 // STACK COMPOSITION
 // ---------------------------------------------------------------------------
 // A stack is a MIXTURE of distinct unit types, and it saturates as a whole.
-// Measured 2026-08-17, 8 requests, four mixtures plus their single-type
-// controls. Worst error 0.002%.
 //
 //     effective_i = E(units through row i) - E(units before row i)
 //     output      = sum over rows of  coefficient_i * effective_i
 //
-// with rows taken in ROSTER order, not the order they were submitted -- the
-// swapped pair returns the identical figure, which is how we know the server
-// sorts before it computes. The consequence a player actually feels: a type
-// late in the roster order draws from the SATURATED TAIL. Forty artillery
-// beside ten infantry get E(50)-E(10) = 25 effective units, against E(40) =
-// 33.3 on their own, and no reordering can recover it.
+// with rows taken STRONGEST FIRST, ordered by the damage coefficient the side
+// is actually using -- the defence column when defending, the attack column
+// when attacking. Not the order they were submitted: the swapped pair returns
+// the identical figure, which is how we know the server sorts before it
+// computes.
+//
+// THIS FILE SAID "ROSTER ORDER" UNTIL 2026-08-19, AND THE APP COMPUTED IT.
+// The claim came from four mixtures that were all infantry + artillery, where
+// roster order and strongest-first are the same ordering -- infantry both
+// precedes artillery in the roster and out-damages it. A nine-type ladder
+// separated them and roster order was wrong by 52.6%. See STACK.saturation.
+//
+// The consequence a player actually feels is unchanged in shape and different
+// in who it hits: the WEAKEST type in a stack draws from the SATURATED TAIL.
+// Forty artillery beside ten infantry get E(50)-E(10) = 25 effective units
+// against E(40) = 33.3 alone, and no reordering can recover it -- but light
+// artillery beside heavy tanks is squeezed because it is weak, not because of
+// where the roster happens to list it.
 export const ROSTER_ORDER = [
   'inf', 'cav', 'ac', 'lart', 'art', 'rrg', 'lt', 'ht', 'convoy', 'st',
   'bal', 'int', 'tac', 'zep',
@@ -392,9 +402,10 @@ export const DAMAGE_ALLOCATION = 'attack_times_count';
 //
 //     output = A * heroEffective  +  unit_coef * M * unitEffective
 //
-// A is the hero's own attack, fighting as one unit; M multiplies everything
-// the rest of the stack deals. WHERE it sits decides both effective counts,
-// because a stack saturates cumulatively in roster order (see STACK.saturation).
+// A is the hero's own attack, fighting as one unit; M multiplies what the
+// stack deals -- but only for the unit types that hero actually buffs. WHERE
+// it sits decides both effective counts, because a stack saturates
+// cumulatively, strongest first (see STACK.saturation).
 //
 // A DOES NOT MOVE WITH LEVEL -- verified across levels 1, 2, 4, 5, 9, 10, 11
 // and 15, always the same figure.
@@ -411,9 +422,25 @@ export const DAMAGE_ALLOCATION = 'attack_times_count';
 // it is on the HP POOL rather than on output, which is a channel this model
 // does not represent at all.
 //
-// So `buff` below means "output multiplier, measured against infantry only".
-// Two heroes have one. What the other fourteen do to the eight land types
-// nobody has tested is UNKNOWN, not zero.
+// ALL NINE LAND TYPES HAVE NOW BEEN SCREENED, one request per hero, against
+// an attacker big enough to survive the answer. `buffs` below is therefore
+// per unit type and no longer infantry-only:
+//
+//     joffre_home   infantry x1.30 AND armoured car x1.30
+//     alvin         stormtrooper x1.40
+//     kangal        armoured car x1.20
+//     hank          infantry x1.09
+//
+// The other twelve raised a nine-type stack by exactly their own attack value
+// and nothing more, so they buff no land type's OUTPUT at all. That is now a
+// measurement rather than an absence of one -- down to a floor of 0.2 HP,
+// which on the weakest row in the screen is a 10% buff; anything smaller
+// would still be hiding.
+//
+// The non-infantry figures were all measured at LEVEL 10 only. joffre_home is
+// the one hero whose curve was measured across levels and it runs 1.10 to
+// 1.40, so treating one level as the mechanic would be an invention -- the
+// engine flags any other level as an assumption instead.
 //
 // Every value below is a MEASUREMENT, decomposed from two stack sizes so that
 // A and M are separated rather than confounded. `maxLevel` is the server's own
@@ -438,21 +465,24 @@ export const HERO_HP_BUFFS = {
 };
 
 export const HEROES = {
-  kangal:       { label: 'Orhan “Kangal” Demir',        atk: 20.0, sits: 'first', maxLevel: 10 },
+  kangal:       { label: 'Orhan “Kangal” Demir',        atk: 20.0, sits: 'first', maxLevel: 10,
+                  buffs: { ac: { 10: 1.20 } } },
   joffre:       { label: 'Joseph Joffre (Non Homeland)', atk: 16.0, sits: 'first', maxLevel: 15 },
   joffre_home:  { label: 'Joseph Joffre (Homeland)',     atk: 16.0, sits: 'first', maxLevel: 15,
-                  buff: { 1: 1.10, 2: 1.15, 4: 1.16, 5: 1.20, 9: 1.28, 10: 1.30, 11: 1.32, 15: 1.40 } },
+                  buffs: { inf: { 1: 1.10, 2: 1.15, 4: 1.16, 5: 1.20, 9: 1.28, 10: 1.30, 11: 1.32, 15: 1.40 },
+                           ac: { 10: 1.30 } } },
   marco:        { label: 'Fiero “Marco” Martello',      atk: 15.0, sits: 'first', maxLevel: 10 },
   allen:        { label: 'Viscount Allenby',            atk: 10.0, sits: 'first', maxLevel: 15 },
   larab:        { label: 'Lawrence of Arabia',          atk: 10.0, sits: 'first', maxLevel: 20 },
-  alvin:        { label: 'Alvin C. York',               atk: 8.30, sits: 'first', maxLevel: 20 },
+  alvin:        { label: 'Alvin C. York',               atk: 8.30, sits: 'first', maxLevel: 20,
+                  buffs: { st: { 10: 1.40 } } },
   lucien:       { label: 'Lucien Laroche',              atk: 8.0,  sits: 'first', maxLevel: 15 },
   lucien_g:     { label: 'Lucien Laroche w/gas',        atk: 8.0,  sits: 'first', maxLevel: 15 },
   pershing:     { label: 'John J. Pershing “Black Jack”', atk: 8.0, sits: 'first', maxLevel: 20 },
   georg:        { label: 'Georg Bruchmüller',           atk: 6.0,  sits: 'first', maxLevel: 20 },
   tatiana:      { label: 'Tatiana Minchakievich (Enemy Land)', atk: 6.0, sits: 'first', maxLevel: 20 },
   hank:         { label: 'Henry “Hank” Callahan',       atk: 6.0,  sits: 'first', maxLevel: 10,
-                  buff: { 1: 1.00, 2: 1.03, 5: 1.06, 9: 1.09, 10: 1.09 } },
+                  buffs: { inf: { 1: 1.00, 2: 1.03, 5: 1.06, 9: 1.09, 10: 1.09 } } },
   johan:        { label: 'Johan “Aardvark” Maes',       atk: 5.0,  sits: 'first', maxLevel: 20 },
   tatiana_home: { label: 'Tatiana Minchakievich (Friendly Land)', atk: 5.0, sits: 'first', maxLevel: 20 },
   maeve:        { label: 'Fiona “Maeve” Porter',        atk: 4.0,  sits: 'last',  maxLevel: 15 },
@@ -513,7 +543,9 @@ export const NOT_MEASURED = [
   { key: 'trench_10_pool', what: 'The level-10 pool multiplier beyond 2 decimal places.', why: 'Bracketed to [1.2382, 1.2463], which excludes the tidy 1.25.', closedBy: 'a larger stack, which tightens the bracket' },
   { key: 'fortress_edges', what: 'A fortress on the ATTACKING side; a fortress against air or naval attackers; fortress-trench interaction; DR above level 5.', why: 'Only a level 1-5 fortress defending against infantry was measured. At level 6 the formula returns DR = 1.05, so it must saturate or the cap is real.', closedBy: 'a handful of requests' },
   { key: 'building_caps', what: 'Workshop and factory level caps; workshop HP per level.', why: 'The sweep asked for 3, was not rejected, and never probed higher. Workshop shows 35 total at L3 with 20 in the top level, so HP is not uniform per level.', closedBy: 'two requests' },
-  { key: 'heroes', what: 'Heroes — 22 of them, levels 1-20, one per stack.', why: 'Now measured at LEVEL 10 only: 16 of 22 change a land battle, up to x1.40, so the effect is large. The level curve is completely untouched, so the app models no hero at all rather than pretend one level is the mechanic. Every figure here assumes no hero.', closedBy: 'a level 1-20 sweep on one hero, plus the six naval heroes against an air or naval stack' },
+  { key: 'hero_levels', what: 'Every hero output buff except infantry, at any level but 10.', why: 'The nine-type screen that found them ran entirely at level 10. joffre_home is the only hero whose curve was measured across levels, and it runs x1.10 to x1.40 — so reusing a level-10 figure elsewhere could be well off. The engine flags those levels rather than presenting them as measured.', closedBy: 'a level sweep on alvin, kangal and joffre_home over the unit type each buffs' },
+  { key: 'hero_hp_channel', what: 'A hero raising a unit type\u2019s max HP: alvin/stormtrooper x1.215, pershing/infantry x1.148 and heavy tank x1.249, joffre_home/armoured car x1.168, marco/tank x1.118.', why: 'Measured, but this engine has no term for an HP-pool buff. Affected pools and death counts here are too LOW. Screened at level 10 only, like the output buffs.', closedBy: 'adding a pool term to the engine, and a level sweep to see whether the HP channel moves with level' },
+  { key: 'heroes_non_land', what: 'The six heroes the server refuses on land, and any hero on an air or naval stack.', why: 'rbaron, thaden and four naval heroes are refused outright against a land stack (\u201cCan\u2019t have Otto Hersing on land\u201d). What they do on their own terrain has never been submitted.', closedBy: 'the same screen run against an air stack and a naval stack' },
   { key: 'position', what: 'Position / range effects.', why: 'Every run was at position 0.', closedBy: 'a position sweep' },
 ];
 
@@ -704,24 +736,30 @@ export const PROVENANCE = {
   },
   'STACK.composition': {
     confidence: 'measured',
-    source: 'results.jsonl, experiment=mixed_stacks: 8 rows, four distinct mixtures plus '
-      + 'their single-type controls.',
-    note: 'A REAL STACK IS A MIXTURE, and the app now models one. The law is '
-      + 'known exactly: a stack saturates as a whole, and each unit type draws from what is '
-      + 'left in ROSTER order -- effective_i = E(units through i) - E(units before i). All '
-      + 'four measured mixtures fit to 0.002%. Submission order is irrelevant (the server '
-      + 'sorts first), but a type late in the roster order draws from the saturated tail: 40 '
-      + 'artillery beside 10 infantry get 25 effective units against 33.3 on their own. The '
-      + 'server also refuses a repeated unit type in one stack, so a stack is a SET of types. '
-      + 'See STACK.saturation and STACK.allocation.',
+    source: 'results.jsonl, experiment=mixed_stacks (8 rows) plus survivable_rig (a 1-to-9 '
+      + 'type ladder and three held-out stacks) and stack_order (2 attacking stacks).',
+    note: 'A REAL STACK IS A MIXTURE, and the app models one. A stack saturates as a whole '
+      + 'and each unit type draws from what is left, STRONGEST FIRST -- effective_i = '
+      + 'E(units through i) - E(units before i), ordered by the coefficient in use. Fits '
+      + 'every rung of the ladder to 0.002% and predicted three stacks it was not fitted to '
+      + 'at the same figure. Submission order is irrelevant (the server sorts first). The '
+      + 'server also refuses a repeated unit type in one stack, so a stack is a SET of '
+      + 'types. See STACK.saturation and STACK.allocation.',
   },
   'STACK.saturation': {
     confidence: 'measured',
-    source: 'results.jsonl, experiment=mixed_stacks: four mixtures (25+25 both orders, '
-      + '40+10, 10+40) plus 50-, 25- and 25-unit single-type controls.',
-    note: 'effective_i = E(units through row i) - E(units before it), rows in ROSTER order. '
-      + 'Worst error 0.002%, against 25.3% for per-type saturation and 10.8% for one '
-      + 'saturation split by count share. Submission order is irrelevant; the server sorts.',
+    source: 'results.jsonl, experiment=survivable_rig: a ladder from one to nine unit types '
+      + '(6 each) against 60 infantry, plus three held-out stacks whose predictions were '
+      + 'written down before the requests went out; experiment=stack_order for the attack '
+      + 'side; experiment=mixed_stacks for the original four mixtures.',
+    note: 'effective_i = E(units through row i) - E(units before it), rows ordered STRONGEST '
+      + 'FIRST by the damage coefficient in use -- the defence column when defending, the '
+      + 'attack column when attacking (25 armoured cars + 25 stormtroopers attack for 677.08, '
+      + 'which is by-attack exactly and by-defence 407.92). Worst error 0.002% across all '
+      + 'nine rungs, against 43.2% for per-type saturation, 41.6% for one saturation split by '
+      + 'count share, and 77.7% for ROSTER order -- which is what this app shipped until '
+      + '2026-08-19. Roster order fitted the original four mixtures only because every one of '
+      + 'them was infantry + artillery, an ordering the two laws agree on.',
   },
   'STACK.allocation': {
     confidence: 'measured',
@@ -774,18 +812,26 @@ export const PROVENANCE = {
   'HEROES.law': {
     confidence: 'measured',
     source: 'results.jsonl, experiments heroes / hero_scaling / hero_table / hero_levels / '
-      + 'hero_caps: 100+ requests.',
-    note: 'SCOPE: measured against an INFANTRY defender only. dxcalc\'s help page says hero '
-      + 'buffs apply to "the appropriate units in the stack", and Marco proves it -- M = 1.00 '
-      + 'against infantry but a Tank stack pool goes 1750.5 -> 1961.7 (x1.121) with him. His '
-      + 'buff is also on the POOL, a channel this model has no term for. A 1.00 below means '
-      + '"does not buff infantry", never "buffs nobody". '
-      + 'output = A * heroEffective + unit_coef * M * unitEffective. All 16 land-legal '
-      + 'heroes decomposed from two stack sizes so A and M are separated, each validated '
-      + 'against a held-out third stack size to 0.002%. A does NOT move with level (checked '
-      + 'at 1, 2, 4, 5, 9, 10, 11, 15). 14 of 16 are pure combat units with M = 1.00 at every '
-      + 'level tested; only joffre_home and hank buff, and their curves are stored as measured '
-      + 'points rather than fitted, because neither is a clean line or a clean step.',
+      + 'hero_caps / survivable_rig (a nine-type screen, one request per hero, against an '
+      + 'attacker that survives) / hero_buff_confirm: 130+ requests.',
+    note: 'output = A * heroEffective + unit_coef * M(unit type) * unitEffective. All 16 '
+      + 'land-legal heroes decomposed from two stack sizes so A and M are separated, each '
+      + 'validated against a held-out third stack size to 0.002%. A does NOT move with level '
+      + '(checked at 1, 2, 4, 5, 9, 10, 11, 15). '
+      + 'M IS PER UNIT TYPE. All nine land types were screened together at level 10: '
+      + 'joffre_home buffs infantry AND armoured cars (both x1.30), alvin buffs stormtroopers '
+      + '(x1.40), kangal buffs armoured cars (x1.20), hank buffs infantry (x1.09), and the '
+      + 'other twelve raised the stack by exactly their own attack and nothing else. Each of '
+      + 'those five was then re-measured alone with the unit type it buffs and reproduced '
+      + 'exactly. An earlier version of this file said the effect was infantry-only and that '
+      + 'M = 1.00 meant "buffs nobody" -- it did not, and does not. '
+      + 'DETECTION FLOOR 0.2 HP, which on the weakest row in the screen is a 10% buff; a '
+      + 'smaller buff on a weak unit type would still be hiding. '
+      + 'The non-infantry figures are LEVEL 10 ONLY. joffre_home is the only hero whose curve '
+      + 'was measured across levels and it runs 1.10 to 1.40, so the engine flags any other '
+      + 'level as an assumption rather than reusing the figure silently. '
+      + 'SEPARATE HP CHANNEL: see HEROES.hpChannel. A hero can buff output, the HP pool, or '
+      + 'both -- joffre_home does both, on different unit types.',
   },
   'HEROES.levels': {
     confidence: 'estimated',

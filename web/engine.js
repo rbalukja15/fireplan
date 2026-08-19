@@ -258,32 +258,51 @@ export function normaliseRows(cfg) {
  * levels 1-4 read 1.10 / 1.15 / - / 1.16 and fit nothing. Fitting a formula
  * through that would be inventing nineteen values from eight.
  */
-export function heroBuff(code, level) {
+export function heroBuff(code, level, unitCode) {
   const h = HEROES[code];
   if (!h) return { m: null, exact: false, note: 'unknown hero' };
-  if (!h.buff) {
+  const table = h.buffs || {};
+  const curve = unitCode ? table[unitCode] : null;
+  if (!curve) {
+    const targets = Object.keys(table);
     return { m: 1.0, exact: true,
-             note: `${h.label} is a pure combat unit — measured at M = 1.00 at every level tried.` };
+             note: targets.length
+               ? `${h.label} buffs ${targets.join(' and ')}, not this unit type `
+                 + '(measured: its excess over its own attack was zero on the '
+                 + 'other seven land types)'
+               : `${h.label} is a pure combat unit — it raised a nine-type `
+                 + 'stack by exactly its own attack value and nothing more.' };
   }
   const lv = Math.max(1, Math.min(h.maxLevel || 20, Math.round(num(level, 1))));
-  const pts = Object.keys(h.buff).map(Number).sort((a, b) => a - b);
-  if (h.buff[lv] !== undefined) {
-    return { m: h.buff[lv], exact: true,
-             note: `measured directly at level ${lv}` };
+  const pts = Object.keys(curve).map(Number).sort((a, b) => a - b);
+  if (curve[lv] !== undefined) {
+    return { m: curve[lv], exact: true, note: `measured directly at level ${lv}` };
+  }
+  // A single measured level is not a curve. The non-infantry buffs were found
+  // by a screen run entirely at level 10, so every other level is an
+  // assumption -- and joffre_home's infantry curve, the only one measured
+  // across levels, is neither a line nor a step, so there is no shape to
+  // borrow with a straight face.
+  if (pts.length === 1) {
+    return { m: curve[pts[0]], exact: false,
+             note: `only level ${pts[0]} was ever measured for this unit type `
+               + `(x${curve[pts[0]]}); level ${lv} assumes the same figure, and `
+               + `the one hero whose curve WAS measured across levels moves `
+               + `from x1.10 to x1.40, so this could be well off` };
   }
   const below = pts.filter((x) => x < lv).pop();
   const above = pts.find((x) => x > lv);
   if (below === undefined || above === undefined) {
     const near = below === undefined ? above : below;
-    return { m: h.buff[near], exact: false,
+    return { m: curve[near], exact: false,
              note: `level ${lv} is outside the measured range (${pts[0]}-`
                + `${pts[pts.length - 1]}); using level ${near}` };
   }
   const t = (lv - below) / (above - below);
-  return { m: h.buff[below] + t * (h.buff[above] - h.buff[below]), exact: false,
+  return { m: curve[below] + t * (curve[above] - curve[below]), exact: false,
            note: `level ${lv} was never submitted; interpolated between the `
-             + `measured levels ${below} (x${h.buff[below]}) and ${above} `
-             + `(x${h.buff[above]})` };
+             + `measured levels ${below} (x${curve[below]}) and ${above} `
+             + `(x${curve[above]})` };
 }
 
 export function stackGroupsOf(rows) {
@@ -295,14 +314,25 @@ export function stackGroupsOf(rows) {
   return [...groups];
 }
 
-export function effectiveByRow(rows) {
+export function effectiveByRow(rows, column) {
+  const col = column === 'atk' ? 'atk' : 'def';
   const list = (rows || []).map((r, i) => ({ r, i }));
+  // STRONGEST FIRST, by the column the side is actually using. Measured on a
+  // ladder from one to nine unit types: fits every rung to 0.002%, and
+  // predicted three held-out stacks it was not fitted to, to the same figure.
+  //
+  // This engine shipped ROSTER order until that ladder was run. The two are
+  // the same function whenever the roster happens to list a stack's types
+  // strongest-first, which is exactly what every mixture measured before it
+  // did -- all of them were infantry + artillery, and infantry both precedes
+  // artillery in the roster and out-damages it. On a stack of light artillery
+  // and heavy tanks the two differ by 2.3x.
   const rank = (r) => {
-    const code = r && r.unit && (r.unit.code || r.unit);
-    const at = ROSTER_ORDER.indexOf(code);
-    return at < 0 ? ROSTER_ORDER.length : at;
+    const u = r && r.unit;
+    const v = u && typeof u[col] === 'number' ? u[col] : null;
+    return v === null ? -Infinity : v;
   };
-  list.sort((a, b) => rank(a.r) - rank(b.r) || a.i - b.i);
+  list.sort((a, b) => rank(b.r) - rank(a.r) || a.i - b.i);
   const eff = new Array((rows || []).length).fill(0);
   let seen = 0;
   for (const { r, i } of list) {
@@ -495,7 +525,8 @@ function makeSide(cfg, role, derivation, caveats) {
   // per-row arithmetic reduces exactly to what it was before.
   const rawRows = (cfg && Array.isArray(cfg.rows) && cfg.rows.length)
     ? cfg.rows : null;
-  const rows = effectiveByRow(normaliseRows(cfg));
+  const rows = effectiveByRow(normaliseRows(cfg),
+                              role === 'attacker' ? 'atk' : 'def');
   const dropped = rawRows
     ? rawRows.length - normaliseRows(cfg).length : 0;
   if (dropped > 0) {
@@ -559,13 +590,35 @@ function makeSide(cfg, role, derivation, caveats) {
           + 'term for it — the pools below are too LOW for those rows, and the '
           + 'deaths with them.');
       }
-      const buff = heroBuff(heroCfg.code, lvl);
-      hero = { code: heroCfg.code, def: known, level: lvl,
-               atk: known.atk, m: buff.m, exact: buff.exact, note: buff.note };
+      // A hero's output buff is PER UNIT TYPE, not per stack. joffre_home
+      // raises infantry AND armoured cars by 1.30 and leaves the other seven
+      // land types alone; alvin raises only stormtroopers, by 1.40. Applying
+      // one figure to the whole stack over-counts every row it does not cover.
+      const buffs = {};
+      let anyInexact = null;
+      for (const r of rows) {
+        const b = heroBuff(heroCfg.code, lvl, r.unit.code);
+        buffs[r.unit.code] = b;
+        if (b.m !== 1 && !b.exact) anyInexact = b;
+      }
+      const hitOut = rows.filter((r) => buffs[r.unit.code].m !== 1);
+      const infBuff = heroBuff(heroCfg.code, lvl, 'inf');
+      hero = { code: heroCfg.code, def: known, level: lvl, atk: known.atk,
+               buffs, m: infBuff.m, exact: infBuff.exact, note: infBuff.note,
+               buffedRows: hitOut.length };
       hero.hpBuffHits = hit.length;
-      if (!buff.exact) {
+      if (hitOut.length) {
+        derivation.push({
+          label: `${label} hero output buff`,
+          formula: hitOut.map((r) => `${r.unit.label} x`
+            + `${round4(buffs[r.unit.code].m)}`).join(', ')
+            + ` — ${known.label} at level ${lvl}; every other row is unbuffed`,
+          value: buffs[hitOut[0].unit.code].m,
+        });
+      }
+      if (anyInexact) {
         hero.interpolated = true;
-        caveats.push(`${label}: ${known.label} — ${buff.note}.`);
+        caveats.push(`${label}: ${known.label} — ${anyInexact.note}.`);
       }
     } else if (refused) {
       hero = { code: heroCfg.code, refused };
@@ -619,9 +672,12 @@ function makeSide(cfg, role, derivation, caveats) {
       derivation.push({
         label: `${label} stack saturation`,
         formula: `${n} units total. Each type draws from E(${n})=`
-          + `${round4(effectiveUnits(n))} in ROSTER order, so a type listed later `
-          + `gets what is left: ${rows.map((r) => `${r.unit.code} ${round4(r.effective)}`).join(', ')}`
-          + ' (measured, worst error 0.002% over four mixtures)',
+          + `${round4(effectiveUnits(n))} STRONGEST FIRST, by its own `
+          + `${role === 'attacker' ? 'attack' : 'defence'} value, so the `
+          + `weakest type in the stack gets what is left: `
+          + `${rows.map((r) => `${r.unit.code} ${round4(r.effective)}`).join(', ')}`
+          + ' (measured on a nine-type ladder, 0.002%, and held out on three '
+          + 'stacks it was not fitted to)',
         value: effectiveUnits(n),
       });
     }
@@ -1026,9 +1082,10 @@ function runSimulation(config, derivation, caveats) {
             formula: `${pt.coef} attack x ${round4(pt.mul)} effective = `
               + `${round4(pt.out)} — fights as one unit, sitting `
               + `${def.hero.def.sits} in the stack`
-              + (def.hero.m > 1
-                ? `; it also multiplies the units below by x${round4(def.hero.m)}`
-                : '; it buffs nobody (M = 1.00, measured)'),
+              + (def.hero.buffedRows
+                ? `; it also multiplies ${def.hero.buffedRows} row(s) of the `
+                  + 'stack — see the output buff line above'
+                : '; it buffs no unit type in this stack (measured)'),
             value: pt.out,
           });
           continue;
@@ -1037,7 +1094,7 @@ function runSimulation(config, derivation, caveats) {
           label: `${tag}Defender output: ${pt.row.unit.label}`,
           formula: `${pt.coef} x ${round4(pt.row.effective)} effective x `
             + `m(${round4(pt.row.hpPct / 100)})=${round4(pt.mul)}`
-            + (def.hero && def.hero.m !== 1 ? ` x hero ${round4(def.hero.m)}` : '')
+            + (pt.heroM && pt.heroM !== 1 ? ` x hero ${round4(pt.heroM)}` : '')
             + ` = ${round4(pt.out)}`,
           value: pt.out,
         });
@@ -1163,12 +1220,30 @@ function runSimulation(config, derivation, caveats) {
     } else {
       const atkParts = stackOutput(atk, (u) => attackCoefficient(u, def.unit).value, 1);
       atkOutput = atkParts.total === null ? null : atkParts.total;
-      if (atk.rows.length > 1 && atkOutput !== null) {
+      if ((atk.rows.length > 1 || atk.hero) && atkOutput !== null) {
         for (const pt of atkParts.parts) {
+          // A hero part carries no row. The defender's loop has always
+          // handled that; this one did not, and an attacking hero beside a
+          // second unit row read pt.row.unit off undefined.
+          if (pt.hero) {
+            derivation.push({
+              label: `${tag}Attacker hero: ${atk.hero.def.label}`,
+              formula: `${pt.coef} attack x ${round4(pt.mul)} effective = `
+                + `${round4(pt.out)} — fights as one unit, sitting `
+                + `${atk.hero.def.sits} in the stack`
+                + (atk.hero.buffedRows
+                  ? `; it also multiplies ${atk.hero.buffedRows} row(s) of the stack`
+                  : '; it buffs no unit type in this stack (measured)'),
+              value: pt.out,
+            });
+            continue;
+          }
           derivation.push({
             label: `${tag}Attacker output: ${pt.row.unit.label}`,
             formula: `${pt.coef} x ${round4(pt.row.effective)} effective x `
-              + `m(${round4(pt.row.hpPct / 100)})=${round4(pt.mul)} = ${round4(pt.out)}`,
+              + `m(${round4(pt.row.hpPct / 100)})=${round4(pt.mul)}`
+              + (pt.heroM && pt.heroM !== 1 ? ` x hero ${round4(pt.heroM)}` : '')
+              + ` = ${round4(pt.out)}`,
             value: pt.out,
           });
         }
@@ -1349,7 +1424,12 @@ function stackOutput(side, coefFor, scale, mulEach) {
       unitScale = 1;
     }
   }
-  const m = hero ? hero.m : 1;
+  // Per unit type, not per stack — see makeSide.
+  const mFor = (unit) => {
+    if (!hero || !hero.buffs) return 1;
+    const b = hero.buffs[unit && unit.code];
+    return b && typeof b.m === 'number' ? b.m : 1;
+  };
   let total = 0;
   const parts = [];
   if (hero) {
@@ -1368,10 +1448,10 @@ function stackOutput(side, coefFor, scale, mulEach) {
     // They did not, and the UI's row-vs-total sanity check caught it: a
     // defender on trench 10 reported rows totalling 141.67 against a stack
     // figure of 218.17, the same number times the 1.54 trench bonus.
-    const out = c * r.effective * unitScale * mm * m * k;
+    const out = c * r.effective * unitScale * mm * mFor(r.unit) * k;
     r.damageDealt = out;
     total += out;
-    parts.push({ row: r, coef: c, mul: mm, out });
+    parts.push({ row: r, coef: c, mul: mm, out, heroM: mFor(r.unit) });
   }
   return { total, parts };
 }

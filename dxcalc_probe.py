@@ -3703,6 +3703,65 @@ def exp_hero_output(p: Probe) -> None:
             print(f"  {h:14} narrowed to {'/'.join(cands)}, not resolved")
 
 
+# Output buffs found by exp_hero_output: hero -> {unit: multiplier at level 10}.
+# The infantry entries come from hero_levels, which measured them years of
+# requests ago on single-type stacks; the rest come from the nine-type screen
+# and its bisection.
+HERO_OUTPUT_BUFFS: dict[str, dict[str, float]] = {
+    "joffre_home": {"inf": 1.30, "ac": 1.30},
+    "hank": {"inf": 1.09},
+    "alvin": {"st": 1.40},
+    "kangal": {"ac": 1.20},
+}
+
+
+def exp_hero_buff_confirm(p: Probe) -> None:
+    """Re-measure each recorded output buff on its own, one request each.
+
+    The screen localises a buff by bisection: it removes groups of unit types
+    and watches whether the unexplained excess survives. Every step of that is
+    a live reading rather than an inference, but the whole procedure assumes
+    ONE buffed type per hero, and a second one hiding in the same half would
+    bend the answer without making it look wrong.
+
+    A stack containing only the named type settles it in a single request, and
+    it is worth keeping runnable: if the site rebalances a hero, this is the
+    experiment that goes red, and it costs one request per buff to ask.
+    """
+    print("\n  Each hero alone with the unit type it is said to buff.\n")
+    print(f"  {'hero':14} {'unit':5} {'measured':>9} {'if buffed':>10} "
+          f"{'if not':>9} {'implied x':>10}")
+    bad = 0
+    for hero, buffs in HERO_OUTPUT_BUFFS.items():
+        a, _ = MEASURED_HEROES[hero]
+        for unit, mult in buffs.items():
+            rows = [(unit, 2)]
+            plain = DEF_COEF[unit] * 2
+            got = _defender_output(p, rows, hero=hero)
+            if not got:
+                print(f"  {hero:14} {unit:5} {'—':>9}")
+                bad += 1
+                continue
+            implied = (got["out"] - a) / plain
+            print(f"  {hero:14} {unit:5} {got['out']:9.2f} "
+                  f"{a + mult * plain:10.2f} {a + plain:9.2f} "
+                  f"{implied:10.3f}")
+            if abs(implied - mult) > 0.01:
+                print(f"    ! recorded as x{mult:.2f}, measures x{implied:.3f}"
+                      f" — the screen's bisection put this on the wrong type,"
+                      f"\n    ! or the site has changed. Do not ship the "
+                      f"recorded figure.")
+                bad += 1
+    if bad:
+        print(f"\n  {bad} recorded buff(s) did not reproduce. The table above "
+              f"is what the server says\n  today; HERO_OUTPUT_BUFFS is what "
+              f"this repo claims. Reconcile them before shipping.")
+    else:
+        print("\n  Every recorded output buff reproduces in isolation, so the "
+              "bisection put each one\n  on the right unit type and no hero "
+              "here buffs a second type it was not caught at.")
+
+
 def exp_terrain(p: Probe) -> None:
     """Each terrain against the same baseline; multipliers fall out as ratios."""
     terrains = p.select_options.get("A.1.terrain") or ["land", "air", "sea"]
@@ -4019,6 +4078,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "stack_ladder": exp_stack_ladder,
     "stack_order": exp_stack_order,
     "hero_output": exp_hero_output,
+    "hero_buff_confirm": exp_hero_buff_confirm,
     "buildings": exp_buildings,
     "trenches": exp_trenches,
     "air_vs_ground": exp_air_vs_ground,
@@ -4035,7 +4095,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
 # it is about to spend on someone else's ad-supported fan site before it starts
 # rather than after. Approximate by design: saturation re-runs add a few.
 REQUEST_ESTIMATE: dict[str, int] = {
-    "unit_stats": 20, "buildings": 14, "patrol": 18, "mixed_stacks": 8, "heroes": 23, "stack_limits": 4, "hero_scaling": 9, "hero_table": 28, "hero_levels": 16, "hero_caps": 30, "stack_ladder": 9, "stack_order": 5, "hero_output": 21, "trenches": 10, "air_vs_ground": 30,
+    "unit_stats": 20, "buildings": 14, "patrol": 18, "mixed_stacks": 8, "heroes": 23, "stack_limits": 4, "hero_scaling": 9, "hero_table": 28, "hero_levels": 16, "hero_caps": 30, "stack_ladder": 9, "stack_order": 5, "hero_output": 21, "hero_buff_confirm": 5, "trenches": 10, "air_vs_ground": 30,
     "land_matrix": 100, "size_factor": 33, "hp_scaling": 10,
     "fortress": 6, "terrain": 5, "variance": 60,
 }

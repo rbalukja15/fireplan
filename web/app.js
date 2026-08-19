@@ -222,11 +222,14 @@ const UNIT_CODES = Object.keys(UNITS);
 const BUILDING_CODES = Object.keys(BUILDINGS);
 
 /**
- * The canonical roster order. It is not cosmetic: the server sorts a stack's
- * rows into this order before it computes, and each type then draws its
- * effective units from what the types before it have already used up. Rows are
- * displayed in it for that reason — a player who sees artillery sitting below
- * infantry can see why the artillery is cheap.
+ * The canonical roster order, used for DISPLAY and for the add-unit menu.
+ *
+ * It is not the order the server computes in. That was the claim here until a
+ * nine-type ladder was measured: a stack draws its effective units STRONGEST
+ * FIRST, by the damage coefficient in use, and roster order only looked right
+ * because every mixture measured before it was infantry + artillery — an
+ * ordering the two rules agree on. Each row's own readout shows what it
+ * actually drew.
  */
 const ROSTER_ORDER = (DATA && Array.isArray(DATA.ROSTER_ORDER) && DATA.ROSTER_ORDER.length)
   ? DATA.ROSTER_ORDER.filter((c) => UNITS[c])
@@ -742,7 +745,9 @@ function renderHero(side) {
     for (const [code, h] of Object.entries(HEROES)) {
       const o = document.createElement('option');
       o.value = code;
-      o.textContent = `${h.label} — atk ${h.atk}${h.buff ? ', buffs the stack' : ''}`;
+      const tg = h.buffs ? Object.keys(h.buffs) : [];
+      o.textContent = `${h.label} — atk ${h.atk}`
+        + (tg.length ? ` — buffs ${tg.map((c) => (UNITS[c] || {}).label || c).join(' + ')}` : '');
       known.appendChild(o);
     }
     sel.appendChild(known);
@@ -792,18 +797,30 @@ function renderHero(side) {
     note.textContent = 'Every figure on this page assumes no hero unless one is chosen here.';
     note.className = 'field-note';
   } else if (def) {
-    const b = ENGINE.heroBuff(cur.code, Number(lvlBox.value));
+    const lvl = Number(lvlBox.value);
     const pieces = [`Fights as one unit at attack ${def.atk}`];
-    // NOT "buffs nobody". Every hero here was measured against INFANTRY, and
-    // dxcalc's help page says buffs apply to "the appropriate units" — Marco
-    // reads 1.00 against infantry while lifting a Tank stack's pool by 12%.
-    pieces.push(b.m > 1
-      ? `and multiplies infantry output by ×${b.m.toFixed(2)}`
-      : 'and does not buff infantry (what it does for the other eight land '
-        + 'types was never measured)');
+    // Per unit type. All nine land types were screened together, so a hero
+    // with no entry here buffs no land type's OUTPUT — that is a measurement
+    // now, not an untested gap. The HP channel is separate and unmodelled.
+    const targets = def.buffs ? Object.keys(def.buffs) : [];
+    const shown = targets.map((c) => {
+      const b = ENGINE.heroBuff(cur.code, lvl, c);
+      return { code: c, b, label: (UNITS[c] || {}).label || c };
+    });
+    const inexact = shown.find((x) => !x.b.exact);
+    pieces.push(shown.length
+      ? 'and multiplies ' + shown.map((x) => `${x.label} output by ×${x.b.m.toFixed(2)}`)
+        .join(' and ')
+      : 'and buffs no land unit type\u2019s output (all nine were screened together)');
     pieces.push(`(caps at level ${def.maxLevel} — the server refuses higher)`);
-    note.textContent = pieces.join(' ') + '. ' + b.note + '.';
-    note.className = b.exact ? 'field-note' : 'field-note is-warn';
+    const hp = (DATA && DATA.HERO_HP_BUFFS ? DATA.HERO_HP_BUFFS[cur.code] : null);
+    const hpTxt = hp ? ' It also raises the max HP of '
+      + Object.keys(hp).map((c) => `${(UNITS[c] || {}).label || c} (×${hp[c]})`).join(' and ')
+      + ', which this model has no term for — those pools read too low.' : '';
+    note.textContent = pieces.join(' ') + '.'
+      + (inexact ? ' ' + inexact.b.note.charAt(0).toUpperCase()
+                     + inexact.b.note.slice(1) + '.' : '') + hpTxt;
+    note.className = inexact || hp ? 'field-note is-warn' : 'field-note';
   } else {
     const r = HEROES_REFUSED[cur.code];
     note.textContent = r ? `${r.why} No effect is applied — nothing about this `
@@ -1689,11 +1706,12 @@ function renderSticky(result) {
  * The per-row readouts under each unit row, and the stack's saturation line.
  *
  * This is the one thing this app can teach that a per-unit-type calculator
- * cannot: a stack saturates AS A WHOLE, cumulatively, in roster order, so a
- * type sitting low in the roster draws from the tail that the types above it
- * have already eaten. Forty artillery beside ten infantry are worth 25
- * effective units, not 33.3, and no reordering recovers it. If the row is
- * paying that penalty, the row says so.
+ * cannot: a stack saturates AS A WHOLE, cumulatively, and its types draw from
+ * that pool STRONGEST FIRST — so the weakest type in a stack lives on the tail
+ * the stronger ones have already eaten. Forty artillery beside ten infantry
+ * are worth 25 effective units, not 33.3, and no reordering recovers it,
+ * because the order is the units' own strength and not anything the player
+ * controls. If the row is paying that penalty, the row says so.
  */
 function updateRowNotes(side) {
   const rows = rowsOf(side);

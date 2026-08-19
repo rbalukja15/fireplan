@@ -368,6 +368,32 @@ for order, phrase in (("in_use", "ordered by its ATTACK coefficients"),
 check("neither pair alone could have done it; the join is what decides",
       True, "by ATK/by DEF tie on one pair, by DEF/roster on the other")
 
+print("\n14. the confirmation step re-measures each buff in isolation")
+out, _ = run(dp.exp_hero_buff_confirm,
+             buffs={h: dict(b) for h, b in dp.HERO_OUTPUT_BUFFS.items()})
+check("a server that agrees with the record passes",
+      "Every recorded output buff reproduces in isolation" in out)
+check("every recorded buff was actually asked about",
+      all(f"{h:14} {u:5}" in out for h, b in dp.HERO_OUTPUT_BUFFS.items()
+          for u in b), sorted(dp.HERO_OUTPUT_BUFFS))
+# Move one hero's buff onto a different unit type: the bisection error this
+# step exists to catch.
+moved = {h: dict(b) for h, b in dp.HERO_OUTPUT_BUFFS.items()}
+moved["alvin"] = {"cav": 1.40}
+out, _ = run(dp.exp_hero_buff_confirm, buffs=moved)
+check("a buff sitting on the wrong unit type is caught",
+      "did not reproduce" in out,
+      [l for l in out.splitlines() if "alvin" in l][:1])
+check("and it says not to ship the recorded figure",
+      "Do not ship the recorded figure" in " ".join(out.split()))
+# And a rebalance: right type, different strength.
+rebal = {h: dict(b) for h, b in dp.HERO_OUTPUT_BUFFS.items()}
+rebal["kangal"] = {"ac": 1.35}
+out, _ = run(dp.exp_hero_buff_confirm, buffs=rebal)
+check("a rebalanced multiplier is caught too",
+      "measures x1.350" in out,
+      [l for l in out.splitlines() if "measures" in l][:1])
+
 print(f"\nALL {ok} CHECKS PASSED — the rig separates a hero who buffs a unit "
       "type's output from one\nwho does not, which the wiped attacker could "
       "not, and ranks the three stack laws\nat a width where they actually "

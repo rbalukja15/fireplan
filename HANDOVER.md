@@ -26,14 +26,20 @@ What that session established, in one place:
   its full damage. It also turns out to explain air-to-ground entirely, when
   applied post-fire — what was recorded as a separate "return fire" law is
   just `m(f)` evaluated at the right moment, and fits 44x better.
-- **A stack is a MIXTURE, and mixtures saturate cumulatively in roster order.**
-  Measured exactly (0.002%). Every earlier experiment was single-type, so this
-  was invisible; it is the most consequential finding here for a real player.
+- **A stack is a MIXTURE, and mixtures saturate cumulatively — STRONGEST
+  FIRST.** Measured exactly (0.002%) on a nine-type ladder and held out on
+  three stacks it was not fitted to. This document said "in roster order" until
+  2026-08-19 and the app computed it that way; roster order is wrong by 52.6%
+  on a wide stack. See §4 "The size factor saturates per STACK".
+- **A hero's output buff is PER UNIT TYPE, and all nine land types have now
+  been screened.** Four heroes buff output; twelve buff none, which is now a
+  measurement rather than an untested gap.
 - **Patrol is a different attack from a direct air strike**, measured after the
   question was raised: the same base stat, but a much lighter attrition charge
   (c ~ 0.36-0.43 against 1.000), so patrol beats a direct attack by up to 22%
-  against a target with real anti-air. And `maxRounds` scales patrol damage
-  linearly while being **ignored entirely** in `air`.
+  against a target with real anti-air. A strike **cannot be subdivided** —
+  0.25, 0.5 and 0.75 all deliver one whole strike — while patrol genuinely
+  does; whole rounds repeat in both.
 
 **Read §1 before anything else: the next session needs to start in the right
 environment, and that cannot be fixed once it is running.**
@@ -94,6 +100,31 @@ one look at how it was computed.
 
 Seven of those eight were the rig reporting something false with confidence,
 not reporting nothing. "Treat a null result as a defect report" is too narrow.
+
+**2026-08-19 added a ninth, and it is the one worth internalising: a CENSORED
+reading looks exactly like a small one.** The hero screen read "the attacker's
+HP loss" as "the defender's output". Its attacker was 20 infantry, pool 400, and
+all sixteen runs returned `400.0 of 400.0` — the pool, a constant. Sixteen
+identical numbers were recorded as sixteen measurements, and the output channel
+was reported as covered when it had not been probed at all. The same ceiling
+hid the stack-saturation error for the whole project: the true output of a
+nine-type stack is 631, so every wide stack anyone might have tried would have
+pinned at 400 too.
+
+The fix is mechanical and belongs in any experiment that reads one side's loss
+as the other side's output: `_defender_output()` returns **None** when the
+attacker is at ≥99.9%, and the caller prints a dash. A refusal to answer is
+recoverable; a pool recorded as an output is not.
+
+**A tenth, of a different kind: a law can fit everything you have and still be
+wrong, if the scope of the fit was narrower than the claim.** "The stack
+saturates in ROSTER order" fitted four mixtures to 0.002% and was written down
+as a property of the roster. Every one of those mixtures was infantry +
+artillery — a pair on which roster order and the true rule, strongest-first,
+are the same function. Nothing about the fit was weak. What was weak was the
+inference from *one pair* to *ten types*, and no amount of precision on the
+data at hand would have exposed it. Only a configuration the law had never seen
+did. **Before generalising a fit, ask which of its inputs actually varied.**
 
 **And note how the patrol gap was found: someone asked whether it had been
 tested.** Nothing in the rig flagged it. `results.jsonl` had 150 rows and not
@@ -601,7 +632,9 @@ output = A * 1  +  unit_coef * M * (E(n+1) - 1)
 
 The hero takes `E(1) = 1` effective unit and the real units get `E(n+1) - 1`,
 because `addHero()` inserts the hero's div **before the first unit row** and
-the stack saturates cumulatively in that order (§ Composite stacks).
+the stack saturates cumulatively from there (§ Composite stacks). Every hero
+reading is at n ≤ 50 against infantry; the hero screen below stays under the
+20-unit knee precisely so that this positioning cannot confound it.
 
 Fitted on n = 10 and 50, then **checked against a held-out n = 30**:
 
@@ -656,9 +689,10 @@ tolerance. Solved in the right position she is a clean 4.0 with no buff at all.
 Two things NOT to read into this table:
 
 - **Position is relative to infantry only.** Every reading defends with
-  infantry, the first unit in roster order, so "first" means "before infantry"
-  and `maeve` means "after it". Where each hero sits among the other eight land
-  types is untested.
+  infantry, so "first" means "before infantry" and `maeve` means "after it".
+  Where each hero sits among the other eight land types is untested — and note
+  that the stack sorts by strength, not by roster position, so "before
+  infantry" does not by itself say "before everything".
 - **`alvin`'s 8.30 is the one non-round value in the set**, and every other
   measured stat in this project is round. It fits all three of its own stack
   sizes to 0.002%, so it is not noise — but it is the row to re-check first if
@@ -691,10 +725,10 @@ Two consequences, both of which shrink what is known:
 
 1. **What the other fourteen do to the eight untested land types is UNKNOWN,
    not zero.** The full question is 16 heroes × 9 land types, of which one
-   column is measured.
+   column is measured. — *Closed 2026-08-19; see "The output channel" below.*
 2. **A buff can act on the HP POOL, not just on output.** The model's `M` is an
    output multiplier and has no term for this at all. Marco's entire effect is
-   invisible to it.
+   invisible to it. — *Still open: measured, disclosed, not modelled.*
 
 The help page also documents mechanics nothing here has touched: Tōgō's
 bombardment runs **6 rounds** and hits anything within **40 km**, Lucien's gas
@@ -725,6 +759,63 @@ the model represents the second.
 Also: `rbaron` and `thaden` are **refused on land** like the naval four, so six
 heroes are land-refused rather than four. Their earlier "accepted but inert"
 reading was wrong.
+
+**That screen had a defect, and it is the reason for the next section.** Its
+attacker was 20 infantry, pool 400, and every one of the sixteen runs came back
+`400.0 of 400.0` — wiped. A wiped attacker reports *its own pool*, a constant,
+so the OUTPUT column of that sweep could not have distinguished a hero who
+doubles damage from one who does nothing. It measured the HP channel by
+accident and the output channel not at all. Sixteen readings of the same
+number were written down and the output channel was reported as covered.
+
+#### The output channel, screened properly — 2026-08-19
+
+Same idea, an attacker that lives: **60 infantry, pool 1200**, and a defender of
+**two of each land type** — 18 units, 19 with the hero, deliberately under the
+20-unit knee so that `E` is linear, every row contributes `coefficient × count`,
+and *all* the stack laws agree. That last point matters: this screen does not
+depend on which saturation law is right.
+
+A hero with no output buff must raise the stack's output by **exactly its own
+attack `A`**, already measured. So the whole screen is one subtraction, with two
+built-in positive controls: the no-hero baseline must reproduce 232.40, and
+`joffre_home` must come out at `A + 0.30 × 5.0 × 2 = A + 3.00`.
+
+Both landed exactly (baseline 0.00% off; `hank` 6.90 = `A` + its own 1.09 on two
+infantry). The result:
+
+| hero | unit type | output |
+|---|---|---|
+| `joffre_home` | Infantry **and** Armored Car | ×1.30 each |
+| `alvin` | Stormtrooper | ×1.40 |
+| `kangal` | Armored Car | ×1.20 |
+| `hank` | Infantry | ×1.09 |
+
+**The other twelve raised the stack by exactly their own attack and nothing
+more.** That is now a measurement, not an absence of one — down to a floor of
+**0.2 HP**, which on the weakest row in the screen (light artillery, 2.00) is a
+10% buff. Anything smaller is still hiding.
+
+Each of the five was then **re-measured alone with the unit type it buffs**
+(`--run hero_buff_confirm`, 5 requests) and reproduced exactly, so the
+bisection that located them put each on the right type:
+
+| | measured | if buffed | if not |
+|---|---|---|---|
+| `joffre_home` + 2 inf | 29.00 | **29.00** | 26.00 |
+| `joffre_home` + 2 ac | 47.20 | **47.20** | 40.00 |
+| `hank` + 2 inf | 16.90 | **16.90** | 16.00 |
+| `alvin` + 2 st | 25.94 | **25.94** | 20.90 |
+| `kangal` + 2 ac | 48.80 | **48.80** | 44.00 |
+
+**The two channels are separate.** `pershing` and `marco` buff HP and *not*
+output; `kangal` buffs output and not HP; `joffre_home` and `alvin` do both, and
+`joffre_home` does them on different unit types (infantry + armoured car
+output, armoured car HP).
+
+**Still level 10 only** for every non-infantry figure. `joffre_home` is the one
+hero whose curve was measured across levels and it runs ×1.10 to ×1.40, so the
+app flags any other level as an assumption rather than reusing the number.
 
 **Flaw to know about in this screen:** the attacker was wiped in every run
 (400.0 of a 400.0 pool), so the OUTPUT column is meaningless in it. This
@@ -832,35 +923,75 @@ Server-enforced. A stack is a set of **distinct** types, each with a count. This
 kills the obvious control (25 inf + 25 inf against 50 inf) outright, and it is
 a hard constraint on any data model built on top.
 
-#### 2. The size factor saturates per STACK, cumulatively, in ROSTER order
+#### 2. The size factor saturates per STACK, cumulatively, STRONGEST FIRST
+
+**This section said "in ROSTER order" until 2026-08-19, and the web app shipped
+that. It was wrong, by 52.6% on a wide stack.**
 
 ```
 effective_i = E(units through row i) - E(units before row i)
 output      = sum over rows of  coefficient_i * effective_i
 
-    rows taken in the order the ROSTER lists them, NOT as submitted
+    rows taken STRONGEST FIRST, by the damage coefficient in USE --
+    the defence column when defending, the attack column when attacking.
+    NOT as submitted, and NOT in roster order.
 ```
 
-| layout | measured | per-type | shared | this law |
+**Why roster order survived so long.** Every mixture ever measured was
+`inf` + `art`, and infantry both precedes artillery in the roster *and*
+out-damages it 5.0 to 2.7. The two laws are the same function on that pair, so
+four mixtures and their controls could not tell them apart, and the fit was
+perfect either way. Nothing was sloppy about the original measurement; its
+*scope* was one pair wide and the conclusion was written as though it were the
+whole roster.
+
+**The ladder that separated them.** One unit type at a time, six each, against
+60 infantry (pool 1200) — an attacker big enough to report the answer instead
+of its own pool:
+
+| rows | units | measured | per_type | shared | roster | strongest-first |
+|---|---|---|---|---|---|---|
+| 4 | 24 | 152.73 | 153.00 | 151.30 | 152.73 | **152.73** |
+| 5 | 30 | 167.08 | 169.20 | 159.80 | 165.15 | **167.08** |
+| 6 | 36 | 201.69 | 209.40 | 184.58 | 187.93 | **201.69** |
+| 7 | 42 | 369.79 | 389.40 | 314.61 | 253.93 | **369.79** |
+| 8 | 48 | 619.76 | 659.40 | 479.90 | 298.93 | **619.76** |
+| 9 | 54 | 631.01 | 697.20 | 451.89 | 299.35 | **631.01** |
+
+Worst error **0.002%**, against 10.5% / 28.4% / **52.6%**.
+
+Ordering by max HP instead of by damage was also tried and is excluded: it
+misses the nine-row rung by 2.35 HP, forty times the reading resolution.
+
+**Held out, predictions written down before the requests went out:**
+
+| stack | predicted | measured |
+|---|---|---|
+| 30 lart + 30 art + 30 rrg | 207.83 | **207.83** |
+| 25 lart + 25 ht | 1116.67 | **1116.67** |
+| 30 inf + 30 ac + 30 lt | 930.00 | **930.00** |
+
+against 43.2% / 41.6% / 77.7% worst error for the three rivals.
+
+**Each side sorts by its own column.** An attacking stack orders by ATTACK
+coefficients, not by any fixed ranking of units:
+
+| attacking | measured | by attack | by defence | roster |
 |---|---|---|---|---|
-| 25 inf + 25 art | 151.04 | 189.29 | 134.75 | **151.04** |
-| 25 art + 25 inf | 151.04 | 189.29 | 134.75 | **151.04** |
-| 40 inf + 10 art | 171.17 | 193.67 | 158.90 | **171.17** |
-| 10 inf + 40 art | 117.50 | 140.00 | 110.60 | **117.50** |
+| 25 ac + 25 st | 677.08 | **677.08** | 407.92 | 407.92 |
+| 30 inf + 30 st | 735.00 | **735.00** | 735.00 | 280.00 |
 
-Worst error **0.002%** across all four, against 25% and 11% for the rivals.
+Neither pair alone separates all three — the first ties defence with roster,
+the second ties defence with attack — but no two hypotheses agree on *both*, so
+they must be scored jointly. A per-pair vote deadlocks on the ties.
 
-**Submission order is irrelevant** — the swapped pair returns the identical
-figure, which is what says the server sorts before computing. What matters is
-that a type sitting late in the roster order draws from the *saturated tail*:
-40 artillery beside 10 infantry get `E(50) - E(10) = 25` effective units,
-against `E(40) = 33.3` on their own. **Mixing costs the later type, and you
-cannot reorder your way out of it.**
-
-This is the single most consequential thing in §4 for an actual player, and it
-was invisible for the whole project because every measurement was single-type,
-so `E(n)`'s argument was simultaneously "units of this type" and "units in this
-stack" and nothing could separate them.
+**What it means for a player.** The shape of the penalty is unchanged and who
+pays it is different: the **weakest** type in a stack lives on the saturated
+tail. Forty artillery beside ten infantry are worth 25 effective units against
+33.3 alone — and light artillery parked with heavy tanks is squeezed because it
+is weak, not because of where the roster happens to list it. **You cannot
+reorder your way out of it**, and now that is true for a stronger reason than
+before: the order is the units' own strength, not anything you control.
 
 #### 3. Incoming damage is not split in proportion to pool
 
@@ -1098,7 +1229,7 @@ errors, and because the same failure modes will recur.
 | Max HP quoted as a midpoint | `175.44` presented as a measurement when the reading only supports `174.92–175.96` | `hp_bounds()` / `sole_integer_in()`; the bracket is the result |
 | `patrol` never run, and its sweep sent 1 attacker at 1 target | Every air figure silently described a direct attack only; the queued experiment could not have seen a target rule or corrected for return fire | Rewritten: 10 attackers, 3 targets, reads the air half back off disk, corrects attrition |
 | Patrol ratio spread read as target dependence | One changed attrition coefficient looks exactly like a target rule through a raw ratio | Fits `c` per cell against the base stat from the air cells; an impossible `c` means it really is the stat |
-| Air's falling per-round rate read as attrition | `maxRounds` is ignored in `air`, so damage is constant and the rate falls as 1/rounds | Checks whether the damage itself is constant before calling anything attrition |
+| Air's falling per-round rate read as attrition | Below 1 round a strike is atomic, so damage is constant and the rate falls as 1/rounds | Checks whether the damage itself is constant before calling anything attrition — and tests whole rounds, where it is not |
 | `hp_scaling` printed no fit at all | Ten raw records appended, the law worked out by hand afterwards and easy to skip | Prints the ratio table and rules on it, including the wiped-stack question |
 
 ---
@@ -1166,7 +1297,9 @@ errors, and because the same failure modes will recur.
 | Comparing absolute HP lost across a defensive sweep | Cannot separate "bigger pool" from "no effect"; both hold HP lost constant | Compare the derived pool, and the deaths, not the loss |
 | Comparing damage across targets that differ in return fire | A flat attacker reads as target-dependent | Correct by `(1 - own fraction lost)` — but only after checking the raw row slopes |
 | Quoting a derived pool or max HP to 2 dp | Implies precision the 3 s.f. percentage does not support | `hp_bounds()`; report the bracket |
-| Varying `maxRounds` against an `air` attacker | Every rung reads identically; looks like a flat law | `maxRounds` is ignored in `air`. Use `patrol` if you want duration |
+| Varying `maxRounds` against an `air` attacker below 1 | Every rung reads identically; looks like a flat law | A strike cannot be SUBDIVIDED; whole rounds do repeat. Test at 2 and 3 before concluding anything |
+| **Reading one side's loss as the other side's output** | A wiped side reports its own pool — a constant. Sixteen runs returned `400.0 of 400.0` and were recorded as sixteen measurements | Size the target to exceed the largest output ANY candidate predicts, and discard the reading at ≥99.9%. `_defender_output()` returns `None`, never a number |
+| Generalising a fit whose inputs never varied | Roster order fitted four mixtures at 0.002% and was wrong by 52.6%; all four were the one pair on which it coincides with the true law | Ask which input actually varied. A ladder that walks the dimension beats any number of repeats at one point |
 | Fitting a coefficient from a low-`f` cell | `c = (1 - raw/base)/f` divides a tiny difference by a tiny number; error is (reading error)/`f` | Weight or filter by `f`; `exp_patrol` drops cells below 0.05 |
 | `bal` in `patrol` | `oops: Can't have Balloon in the air` — patrol counts as the air | Widen `guard_payload()`; the roster hole is permanent by this route |
 
@@ -1232,7 +1365,7 @@ instead of "Unknown experiment":
 | `damage_sea` | `unit_stats` |
 | `damage_air` | `air_vs_ground` |
 
-### Tests — 253 checks, no network needed
+### Tests — 314 checks, no network needed
 
 ```bash
 python3 test_probe_offline.py       # 45  transport, parsing, slot association
@@ -1244,7 +1377,9 @@ python3 test_trench_design.py       # 27  proves the trench sweep can discrimina
 python3 test_matchup_design.py      # 30  proves the matrix can discriminate
 python3 test_patrol_design.py       # 22  proves patrol can be told from air
 python3 test_mixed_stacks_design.py # 21  proves composite saturation can be read
-python3 test_hero_design.py         # 21  separates an ignored hero from an irrelevant one
+python3 test_hero_design.py         # 29  separates an ignored hero from an irrelevant one
+python3 test_survivable_rig_design.py # 53 proves a WIPED attacker cannot answer
+                                    #     the question, and a surviving one can
 ```
 
 These serve the site's courtesy budget as much as correctness: they run against
@@ -1294,7 +1429,17 @@ Step 0 is `curl -sS -o /dev/null -w '%{http_code}\n' https://dxcalc.com/s1914`.
 
 Steps 1–5 of the previous list are **done** (2026-08-17): `buildings`,
 `trenches`, `air_vs_ground`, `unit_stats` re-run, `hp_scaling` re-verified.
-Results are in §4 and in `results.jsonl`. What remains:
+Also done (2026-08-19): `stack_ladder`, `stack_order`, `hero_output`,
+`hero_buff_confirm` — which between them overturned the stack-saturation law
+and closed the hero output channel. What remains:
+
+0. **The hero HP channel is measured and still not modelled.** Five hero/unit
+   pairs raise max HP (`alvin`/st ×1.215, `pershing`/inf ×1.148 and ht ×1.249,
+   `joffre_home`/ac ×1.168, `marco`/lt ×1.118). The engine has no pool term, so
+   affected pools and death counts read **too low**; the app says so rather than
+   pretending. Adding the term is a code change, not an experiment — but a level
+   sweep is needed to know whether the HP channel moves with level, as the
+   output channel does. **This is the cheapest real improvement left.**
 
 1. **`--run land_matrix`** — ~100 requests, so weigh it, but it is now the
    single highest-value experiment left. `air_vs_ground` proved attack is
@@ -1320,8 +1465,20 @@ Results are in §4 and in `results.jsonl`. What remains:
    buildings against 4.0 to units. One `buildings`-style run per attacker gives
    the whole column, and nothing else in the model predicts it.
 
+**Use the survivable rig.** `_defender_output()` in the probe refuses a
+censored reading instead of returning the attacker's pool as though it were
+data, and `SURVIVOR_N = 60` is sized for the largest output any candidate law
+predicts. Every sweep that reads "the attacker's loss" should go through it.
+Two separate conclusions in this project were wrong because a wiped attacker's
+reading looks exactly like a small one.
+
 Cheap and worth doing at some point:
 
+- A hero level sweep on `alvin`, `kangal` and `joffre_home` over the unit type
+  each buffs — the non-infantry multipliers are all level 10 only, and the one
+  curve that *was* measured across levels runs ×1.10 to ×1.40.
+- The same nine-type hero screen run against an **air** stack and a **naval**
+  one, which is the only way to learn what the six land-refused heroes do.
 - Two requests settle the workshop's odd HP curve (35 total at level 3 with 20
   in the top level).
 - The `hours` and resource columns are no longer entirely unexplained — see
@@ -1353,9 +1510,17 @@ actually printed; no expected value in it is a constant the engine itself
 carries. Tolerances follow the page's print precision (§4): ±0.005 where the
 summary table gave two decimals, ±0.05 from a span alone, deaths exact, and a
 stack pool asserted inside its bracket rather than as a point — the midpoint
-mistake from §4 is a test failure here, not a style preference. **All eight
-experiments in the file are replayed**, and the suite asserts that no experiment
-is left out.
+mistake from §4 is a test failure here, not a style preference. **Every physics
+experiment in the file is replayed** — including the nine-rung stack ladder, the
+three held-out stacks and all 46 hero-screen readings — and the suite asserts
+that no experiment is left out, so a new sweep cannot be added without either
+replaying it or declaring why not.
+
+That test is what makes a correction cheap. When the stack law turned out to be
+strongest-first rather than roster order, changing `effectiveByRow` and running
+the suite was enough to know that every one of the 400-odd readings on disk
+still reproduced — and that the mixtures which had "confirmed" roster order
+were among them.
 
 Patrol is the interesting case, because the two halves of it have very different
 confidence and the app has to carry both:
@@ -1374,7 +1539,7 @@ That split is the app working as intended: it would have been easy to quote a
 single coefficient to three decimals and be believed.
 
 ```bash
-node web/test/engine.test.mjs      # 609 checks, no network
+node web/test/engine.test.mjs      # 754 checks, no network
 ```
 
 The app is also where §0 gets enforced rather than merely written down. Every
@@ -1413,17 +1578,19 @@ Publishing requires one manual setting that no API can flip: **Settings → Page
 - Do other units have a separate building-damage stat like infantry's 0.3? One
   `buildings`-style run per unit would give the whole column. Still open, and
   now the cheapest unmeasured column in the model.
-- **PARTLY ANSWERED (2026-08-17), and narrower than it first looked.** The
-  buff is per unit type and every reading is infantry, so "M = 1.00" means
-  "does not buff infantry". A buff can also act on the HP pool, which the
-  model has no term for. Heroes measured against a land stack: 16 of 22 change the battle, up to x1.40. A hero is a UNIT that the
-  summary table counts, and its help is **two parts** — its own attack fighting
-  as one unit, plus a multiplier on the rest of the stack — decomposed exactly
-  for two heroes (`kangal` 20.0/x1.00, `joffre_home` 16.0/x1.30). The other 14
-  have one reading each, which confounds the two. Levels 1-20, the six
-  land-refused heroes, and attacking heroes are all still open. See §4. No
-  earlier reading is contaminated — not one of the first 174 requests carried
-  a hero.
+- **ANSWERED for the output channel (2026-08-19).** A hero is a UNIT that the
+  summary table counts, and its effect is **two parts** — its own attack `A`
+  fighting as one unit, plus a multiplier `M` **on specific unit types**, not
+  on the stack. All 16 land-legal heroes are decomposed for `A`; all nine land
+  types are screened for `M`. Four heroes buff output (`joffre_home` inf+ac
+  ×1.30, `alvin` st ×1.40, `kangal` ac ×1.20, `hank` inf ×1.09) and twelve buff
+  none — a measurement now, to a floor of 0.2 HP. Each of the five was
+  re-measured alone and reproduced exactly. See §4.
+  **Still open:** every non-infantry multiplier is **level 10 only**; the
+  **HP-pool channel** is measured but has no term in the model (five hero/unit
+  pairs, so those pools read too low); the six land-refused heroes are untested
+  on their own terrain; attacking heroes are unmodelled. No earlier reading is
+  contaminated — not one of the first 174 requests carried a hero.
 - `firestorm` appears throughout `bytro.js` but is not exposed on the S1914 form
   — likely shared code with dxter's Call of War calculator. Probably irrelevant,
   but it explains otherwise-confusing function names.
