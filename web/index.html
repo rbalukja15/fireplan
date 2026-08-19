@@ -260,18 +260,19 @@
         next to the enemy.</li>
       <li><strong>Variance.</strong> The game rolls roughly &plusmn;10%. Nothing here is rolled;
         these are the variance-off figures.</li>
-      <li><strong>Heroes.</strong> A hero fights as one unit, and its output buff has now
-        been screened against <strong>all nine land types</strong> &mdash; so
-        &ldquo;buffs nothing&rdquo; here is a measurement rather than an untested
-        assumption. Four heroes buff output: Joffre (Homeland) lifts infantry
-        <em>and</em> armoured cars, Alvin York lifts stormtroopers, Kangal lifts armoured
-        cars, Hank lifts infantry. Two limits remain. Every non-infantry figure was
-        measured at <strong>level 10 only</strong>, and the one hero whose curve was
-        measured across levels runs &times;1.10 to &times;1.40, so other levels are
-        flagged as assumptions. And a separate <strong>HP-pool</strong> buff exists
-        &mdash; five hero/unit pairs raise max HP &mdash; which this model has no term
-        for, so those pools read too low. Attacking heroes and a hero's own damage taken
-        are still unmodelled.</li>
+      <li><strong>Heroes.</strong> Fully modelled on land, in both channels: a hero
+        fights as one unit with its own HP pool, takes a share of every round, raises
+        the <em>output</em> of specific unit types, and separately raises their
+        <em>max HP</em>. A hero has two attack columns like a unit does &mdash; Pershing
+        attacks at 62 and defends at 8 &mdash; and some buffs are
+        <strong>defence-only</strong> (Joffre&rsquo;s and Kangal&rsquo;s measure exactly
+        zero on an attacking stack). Every curve is stored as measured points and
+        interpolated, never fitted: Pershing&rsquo;s infantry HP buff climbs to
+        &times;1.70 by level 5, <em>drops</em> to &times;1.10 at level 6, and climbs
+        again. What is still missing: the six heroes the server refuses on land
+        (Otto, Tōgō, Ivan, Richthofen, von Thaden) <em>do</em> work on air and naval
+        stacks and all six change the battle &mdash; measured, but not yet split into
+        own-attack and multiplier, so no hero effect is applied there.</li>
       <li><strong>The Balloon.</strong> Not one quantity was ever measured &mdash; the calculator
         refuses to accept it in the air.</li>
     </ul>

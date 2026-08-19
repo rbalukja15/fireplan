@@ -31,9 +31,16 @@ What that session established, in one place:
   three stacks it was not fitted to. This document said "in roster order" until
   2026-08-19 and the app computed it that way; roster order is wrong by 52.6%
   on a wide stack. See §4 "The size factor saturates per STACK".
-- **A hero's output buff is PER UNIT TYPE, and all nine land types have now
-  been screened.** Four heroes buff output; twelve buff none, which is now a
-  measurement rather than an untested gap.
+- **The hero model is complete on land, in both channels.** A hero has TWO
+  attack columns (pershing 62 attacking, 8 defending), its own HP pool, and a
+  0.40 weight in the damage split. Its output buff is per unit type, per level
+  AND per side — joffre_home's and kangal's are defence-only. A second channel
+  raises a unit type's max HP, read exactly off the server's own refusal.
+- **Damage allocation is a property of the TARGET, not the attacker:**
+  `weight = TARGET_FACTOR[unit] x count`, infantry 0.50, cavalry 0.75, all else
+  1.00, a hero 0.40. The app shipped the defending row's own attack stat, which
+  is out by 40% of the stack total on a nine-row stack — the third law here
+  fitted on one pair of unit types and stated as a rule.
 - **Patrol is a different attack from a direct air strike**, measured after the
   question was raised: the same base stat, but a much lighter attrition charge
   (c ~ 0.36-0.43 against 1.000), so patrol beats a direct attack by up to 22%
@@ -115,6 +122,16 @@ The fix is mechanical and belongs in any experiment that reads one side's loss
 as the other side's output: `_defender_output()` returns **None** when the
 attacker is at ≥99.9%, and the caller prints a dash. A refusal to answer is
 recoverable; a pool recorded as an output is not.
+
+**An eleventh, which is the tenth again and is why it is worth stating twice.**
+The damage-allocation rule had the same defect and was found the same way. The
+app split incoming damage "in proportion to the defending row's own attack
+value", fitted at 0.002% on four mixtures — all of them infantry + artillery,
+whose own attack values are 4.0 and 8.0, which is exactly the 0.5 : 1.0 ratio
+the real rule gives that one pair. Against nine rows it is out by 40% of the
+stack total. **Three separate laws in this project were fitted on the single
+pair `inf` + `art` and written down as properties of the roster.** If a fit
+rests on one pair of anything, say so in the note.
 
 **A tenth, of a different kind: a law can fit everything you have and still be
 wrong, if the scope of the fit was narrower than the claim.** "The stack
@@ -768,6 +785,89 @@ doubles damage from one who does nothing. It measured the HP channel by
 accident and the output channel not at all. Sixteen readings of the same
 number were written down and the output channel was reported as covered.
 
+#### The whole hero model, 2026-08-19 — both channels, both sides, by level
+
+Everything above was a level-10 snapshot of a DEFENDING hero. None of that
+survives contact with the other three dimensions.
+
+**A hero has an attack column and a defence column, exactly as a unit does.**
+Every hero reading before this one put the hero on the defending side, so every
+`A` on record is the defending figure. Thirteen of sixteen differ:
+
+| hero | attacking | defending |
+|---|---|---|
+| `pershing` | **62.00** | 8.00 |
+| `tatiana` | **45.60** | 6.00 |
+| `larab` | **45.00** | 10.00 |
+| `allen` | **29.60** | 10.00 |
+| `alvin` | **25.00** | 8.30 |
+| `marco` | **24.60** | 15.00 |
+| `georg` | **16.80** | 6.00 |
+| `kangal` | 10.00 | **20.00** |
+| `joffre`, `joffre_home` | 4.00 | **16.00** |
+
+Only `lucien`, `lucien_g` and `maeve` are the same on both sides.
+
+**A buff has a side too.** `alvin` and `hank` apply theirs attacking and
+defending alike; `joffre_home` and `kangal` measure **exactly 0.00** attacking
+against an expected 6.00 and 2.40, so theirs are defence-only.
+
+**Every buff moves with level, in both channels.**
+
+| hero | unit | channel | by level |
+|---|---|---|---|
+| `joffre_home` | inf, ac | output (def only) | 1.10 / 1.20 / 1.30 / 1.40 at L1/5/10/15 |
+| `alvin` | st | output (both) | 1.15 / 1.25 / 1.40 / 1.50 / 1.60 |
+| `kangal` | ac | output (def only) | 1.08 / 1.13 / 1.20 at L1/5/10 |
+| `pershing` | ht | HP | 1.00 / 1.15 / 1.25 / 1.40 / 1.50 |
+| `alvin` | st | HP | 1.00 / 1.14 / 1.22 / 1.34 / 1.42 |
+
+`joffre_home`'s armoured-car curve is its infantry curve exactly — same four
+values at the same four levels — so one hero applies ONE curve to every type it
+buffs.
+
+**Read the HP channel off the server's own refusal.** Ask for more HP than a
+unit can have and it answers:
+
+```
+oops: B1.1.inf has more HP than is possible. Max hp for 2 Infantry is 47.200000
+```
+
+That is the buffed maximum stated exactly — the same trick as a building's
+level cap, and far better than dividing two pools each derived from a
+3-significant-figure percentage. It matters: the pool method gave
+`pershing`/infantry as 1.00 / 1.70 / 1.14 / 1.25, which looks exactly like a
+broken reading. **It is not.** The refusal gives the same numbers, and
+densifying around the drop shows a real discontinuity:
+
+| level | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 15 | 20 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| factor | 1.00 | 1.50 | 1.50 | 1.70 | **1.70** | **1.10** | 1.10 | 1.12 | 1.12 | 1.14 | 1.18 | 1.25 |
+
+Something changes at level 6. The same level reads the same factor at three
+units as at two, so it is a level effect and not a count artifact. **Store the
+points. Any formula through them is wrong on one side of level 6**, and this is
+the single best argument in the project for never fitting a curve you have only
+sampled.
+
+Why one `hero_full` request was refused outright: 100% of a max of 47.2
+computes fractionally *above* 47.2 in binary and the server's own check rejects
+it. Not our bug, not noise — it was the measurement, and it pointed at the
+better instrument.
+
+**The hero itself.** Free from readings already on disk, no requests spent: its
+own HP pool (`joffre` 120, `alvin` 100, `kangal` 90, `pershing` 80, `larab` 75,
+`marco` 60, `allen` 50, four at 40, `maeve` 20, two at 15), level-independent
+across the eight levels `joffre_home` appears at; a **0.40** weight in the
+damage split, the same constant for all sixteen and independent of attack, pool
+and level, bracketed to [0.398, 0.4005]; and no death count, ever.
+
+**The six "land-refused" heroes all work on their own terrain**, and all six
+change the battle: `rbaron` +16.85 and `thaden` +10.14 on an air stack, `otto`
++40.00, `togo` +15.00, `togo_b` +64.34, `ivan` +1.00 on a naval one. One
+reading each, which confounds own-attack with any multiplier, so nothing is
+applied — but the app no longer claims nothing was measured.
+
 #### The output channel, screened properly — 2026-08-19
 
 Same idea, an attacker that lives: **60 infantry, pool 1200**, and a defender of
@@ -993,7 +1093,37 @@ is weak, not because of where the roster happens to list it. **You cannot
 reorder your way out of it**, and now that is true for a stronger reason than
 before: the order is the units' own strength, not anything you control.
 
-#### 3. Incoming damage is not split in proportion to pool
+#### 3. Incoming damage splits by a TARGET factor — corrected 2026-08-19
+
+```
+weight_i = TARGET_FACTOR[unit_i] * count_i
+
+    infantry 0.50    cavalry 0.75    everything else 1.00    a hero 0.40
+```
+
+**This app shipped "the defending row's own attack value x count" and was out
+by 40% of the stack total.** Same trap as roster order, a third time: all four
+mixtures it was fitted on were infantry + artillery, whose own attack values
+are 4.0 and 8.0 — exactly the 0.5 : 1.0 ratio the real table gives that pair.
+
+It is a property of the TARGET, not the attacker. One request per attacking
+type against the same nine-type defender reads a whole row of the land matrix
+at once, and all nine rows give the identical three-value pattern:
+
+| target | inf | cav | everything else |
+|---|---|---|---|
+| bracket over all nine attackers | [0.4979, 0.5023] | [0.7449, 0.7559] | [0.9918, 1.0083] |
+
+Infantry soak **half** of what any other type takes; cavalry three quarters.
+The attacker's TOTAL is unaffected — still `coefficient x E(n)` whatever the
+mix, confirmed for all nine — so these are allocation weights and not damage
+values, which is the opposite of how air behaves.
+
+Held out on data not used to fit it: the asymmetric `mixed_stacks` splits
+(40 inf + 10 art → 2:1, 10 inf + 40 art → 1:7.989) come out exactly, which also
+confirms the weight is proportional to RAW count.
+
+#### 3b. The original two-row reading, for the record
 
 25 inf + 25 art, near-identical pools (500.9 and 498.1), took **26.70 and
 53.30** of an 80.00 total — exactly 1:2, matching their attack values 4.0 and
@@ -1365,7 +1495,7 @@ instead of "Unknown experiment":
 | `damage_sea` | `unit_stats` |
 | `damage_air` | `air_vs_ground` |
 
-### Tests — 314 checks, no network needed
+### Tests — 343 checks, no network needed
 
 ```bash
 python3 test_probe_offline.py       # 45  transport, parsing, slot association
@@ -1378,8 +1508,9 @@ python3 test_matchup_design.py      # 30  proves the matrix can discriminate
 python3 test_patrol_design.py       # 22  proves patrol can be told from air
 python3 test_mixed_stacks_design.py # 21  proves composite saturation can be read
 python3 test_hero_design.py         # 29  separates an ignored hero from an irrelevant one
-python3 test_survivable_rig_design.py # 53 proves a WIPED attacker cannot answer
-                                    #     the question, and a surviving one can
+python3 test_survivable_rig_design.py # 82 proves a WIPED attacker cannot answer
+                                    #     the question, and a surviving one can;
+                                    #     covers both hero channels and the split
 ```
 
 These serve the site's courtesy budget as much as correctness: they run against
@@ -1433,13 +1564,12 @@ Also done (2026-08-19): `stack_ladder`, `stack_order`, `hero_output`,
 `hero_buff_confirm` — which between them overturned the stack-saturation law
 and closed the hero output channel. What remains:
 
-0. **The hero HP channel is measured and still not modelled.** Five hero/unit
-   pairs raise max HP (`alvin`/st ×1.215, `pershing`/inf ×1.148 and ht ×1.249,
-   `joffre_home`/ac ×1.168, `marco`/lt ×1.118). The engine has no pool term, so
-   affected pools and death counts read **too low**; the app says so rather than
-   pretending. Adding the term is a code change, not an experiment — but a level
-   sweep is needed to know whether the HP channel moves with level, as the
-   output channel does. **This is the cheapest real improvement left.**
+0. **Heroes are DONE on land** — both channels, both sides, across levels, and
+   modelled rather than disclosed. What remains of them is small and named:
+   the levels between the ones submitted (curves are interpolated, and
+   `pershing` proves a gap can hide a step), and decomposing the six heroes
+   that only work on air and naval stacks. Both are in `NOT_MEASURED` in
+   `web/data.js`.
 
 1. **`--run land_matrix`** — ~100 requests, so weigh it, but it is now the
    single highest-value experiment left. `air_vs_ground` proved attack is
@@ -1539,7 +1669,7 @@ That split is the app working as intended: it would have been easy to quote a
 single coefficient to three decimals and be believed.
 
 ```bash
-node web/test/engine.test.mjs      # 754 checks, no network
+node web/test/engine.test.mjs      # 904 checks, no network
 ```
 
 The app is also where §0 gets enforced rather than merely written down. Every

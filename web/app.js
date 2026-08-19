@@ -798,29 +798,57 @@ function renderHero(side) {
     note.className = 'field-note';
   } else if (def) {
     const lvl = Number(lvlBox.value);
-    const pieces = [`Fights as one unit at attack ${def.atk}`];
+    // A hero has two attack columns. Show the one this side actually uses,
+    // and name the other, because thirteen of sixteen differ and pershing
+    // differs by a factor of eight.
+    const mine = side === 'attacker' ? def.atkAttacking : def.atkDefending;
+    const other = side === 'attacker' ? def.atkDefending : def.atkAttacking;
+    const pieces = [`Fights as one unit at attack ${mine} `
+      + `(${side === 'attacker' ? 'attacking' : 'defending'}; it is ${other} `
+      + `${side === 'attacker' ? 'defending' : 'attacking'})`
+      + `, with ${def.pool} HP of its own`];
     // Per unit type. All nine land types were screened together, so a hero
     // with no entry here buffs no land type's OUTPUT — that is a measurement
     // now, not an untested gap. The HP channel is separate and unmodelled.
     const targets = def.buffs ? Object.keys(def.buffs) : [];
     const shown = targets.map((c) => {
-      const b = ENGINE.heroBuff(cur.code, lvl, c);
-      return { code: c, b, label: (UNITS[c] || {}).label || c };
+      const b = ENGINE.heroBuff(cur.code, lvl, c, side);
+      return { code: c, b, label: (UNITS[c] || {}).label || c,
+               channel: def.buffs[c].channel };
     });
-    const inexact = shown.find((x) => !x.b.exact);
-    pieces.push(shown.length
-      ? 'and multiplies ' + shown.map((x) => `${x.label} output by ×${x.b.m.toFixed(2)}`)
+    const inexact = shown.concat(
+      Object.keys(def.hpBuffs || {}).map((c) => ({
+        b: ENGINE.heroHpBuff(cur.code, lvl, c) }))
+    ).find((x) => x.b.m !== 1 && !x.b.exact);
+    const live = shown.filter((x) => x.b.m !== 1);
+    const dead = shown.filter((x) => x.b.m === 1);
+    pieces.push(live.length
+      ? 'and multiplies ' + live.map((x) => `${x.label} output by ×${x.b.m.toFixed(2)}`)
         .join(' and ')
-      : 'and buffs no land unit type\u2019s output (all nine were screened together)');
+      : (dead.length
+        ? `whose ${dead.map((x) => x.label).join(' and ')} buff is DEFENCE-ONLY `
+          + '(measured at exactly zero attacking), so it does nothing here'
+        : 'and buffs no land unit type\u2019s output (all nine were screened '
+          + 'together)'));
     pieces.push(`(caps at level ${def.maxLevel} — the server refuses higher)`);
-    const hp = (DATA && DATA.HERO_HP_BUFFS ? DATA.HERO_HP_BUFFS[cur.code] : null);
-    const hpTxt = hp ? ' It also raises the max HP of '
-      + Object.keys(hp).map((c) => `${(UNITS[c] || {}).label || c} (×${hp[c]})`).join(' and ')
-      + ', which this model has no term for — those pools read too low.' : '';
+    // The HP channel is MODELLED now, so this says what the pools already
+    // include rather than warning that they are wrong.
+    const hpB = def.hpBuffs || {};
+    const hpShown = Object.keys(hpB).map((c) => {
+      const b = ENGINE.heroHpBuff(cur.code, lvl, c);
+      return { label: (UNITS[c] || {}).label || c, b };
+    }).filter((x) => x.b.m !== 1);
+    const hpTxt = hpShown.length
+      ? ' It also raises the max HP of '
+        + hpShown.map((x) => `${x.label} (×${x.b.m.toFixed(3)})`).join(' and ')
+        + ' — a separate channel, already included in the pools below.'
+      : '';
     note.textContent = pieces.join(' ') + '.'
       + (inexact ? ' ' + inexact.b.note.charAt(0).toUpperCase()
                      + inexact.b.note.slice(1) + '.' : '') + hpTxt;
-    note.className = inexact || hp ? 'field-note is-warn' : 'field-note';
+    // Warn only when a level was never submitted. An HP buff is no longer a
+    // defect to flag — it is modelled, and the pools already carry it.
+    note.className = inexact ? 'field-note is-warn' : 'field-note';
   } else {
     const r = HEROES_REFUSED[cur.code];
     note.textContent = r ? `${r.why} No effect is applied — nothing about this `
@@ -1327,11 +1355,14 @@ function renderRowSplit(prefix, sideResult, cfg) {
   if (heroRow) {
     const tr = document.createElement('tr');
     tr.className = 'is-hero';
+    // Pool and HP lost are real now: a hero has its own HP and takes a share
+    // of every round at a weight of 0.40. Deaths stay blank — no hero row on
+    // record has ever carried a death count, and 0 would be a claim.
     const cells = [
       `${heroRow.label} (hero, lvl ${heroRow.level})`,
       (typeof heroRow.effective === 'number' ? fmt(heroRow.effective, 1) : '—'),
-      '—',
-      '—',
+      (typeof heroRow.pool === 'number' ? fmt(heroRow.pool) : '—'),
+      (typeof heroRow.hpLost === 'number' ? fmt(heroRow.hpLost) : '—'),
       '—',
       (typeof heroRow.damageDealt === 'number' ? fmt(heroRow.damageDealt) : '—'),
     ];
@@ -1341,9 +1372,9 @@ function renderRowSplit(prefix, sideResult, cfg) {
       td.textContent = text;
       tr.appendChild(td);
     });
-    tr.title = 'A hero fights as one unit and may multiply the rest of the '
-      + 'stack. Its own HP loss is measured but not yet modelled, so those '
-      + 'cells are blank rather than zero.';
+    tr.title = 'A hero fights as one unit with its own HP pool, and takes a '
+      + 'share of every round at a weight of 0.40 — the same for all sixteen. '
+      + 'It never reports a death count, so that cell is blank, not zero.';
     body.appendChild(tr);
   }
 

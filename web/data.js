@@ -422,7 +422,7 @@ export const DAMAGE_ALLOCATION = 'attack_times_count';
 // it is on the HP POOL rather than on output, which is a channel this model
 // does not represent at all.
 //
-// ALL NINE LAND TYPES HAVE NOW BEEN SCREENED, one request per hero, against
+// ALL NINE LAND TYPES HAVE BEEN SCREENED, one request per hero, against
 // an attacker big enough to survive the answer. `buffs` below is therefore
 // per unit type and no longer infantry-only:
 //
@@ -437,67 +437,106 @@ export const DAMAGE_ALLOCATION = 'attack_times_count';
 // which on the weakest row in the screen is a 10% buff; anything smaller
 // would still be hiding.
 //
-// The non-infantry figures were all measured at LEVEL 10 only. joffre_home is
-// the one hero whose curve was measured across levels and it runs 1.10 to
-// 1.40, so treating one level as the mechanic would be an invention -- the
-// engine flags any other level as an assumption instead.
+// EVERY BUFF MOVES WITH LEVEL, in both channels, so every curve below is
+// stored as MEASURED POINTS and interpolated between them -- never fitted. pershing's
+// infantry HP curve is why: it climbs to 1.70 by level 5, DROPS to 1.10 at
+// level 6 and climbs again to 1.25 by level 20. Reproduced at three units as
+// well as two, and confirmed by an independently derived pool.
+//
+// A BUFF ALSO HAS A SIDE. alvin's and hank's apply attacking and defending
+// alike; joffre_home's and kangal's measure exactly 0.00 on an attacking
+// stack, so they are defence-only.
+//
+// A SECOND CHANNEL raises a unit type's MAX HP. Read off the server's own
+// refusal -- "Max hp for 2 Infantry is 47.200000" -- so these are exact
+// rather than derived from a 3-significant-figure percentage.
 //
 // Every value below is a MEASUREMENT, decomposed from two stack sizes so that
 // A and M are separated rather than confounded. `maxLevel` is the server's own
 // refusal ("Max level is 10"), not the 1..20 the dropdown offers for everyone.
-// HP-CHANNEL BUFFS, screened 2026-08-17 by putting all nine land types in one
-// stack and reading each row's pool with and without the hero -- 23 requests
-// instead of the 144 a hero-by-unit sweep would have cost.
-//
-// This channel is NOT modelled. It is recorded so the app can say which
-// matchups it is wrong about instead of implying it is right about all of
-// them. A hero here raises the per-unit MAX HP of one specific unit type,
-// which nothing in `output = A * heroEff + coef * M * unitEff` represents.
-//
-// Ratios come from pools derived off 3-significant-figure percentages, so
-// treat them as ~1% figures, not exact ones. Marco reads 1.121 measured alone
-// and 1.118 in the nine-type screen.
-export const HERO_HP_BUFFS = {
-  alvin: { st: 1.215 },
-  pershing: { inf: 1.148, ht: 1.249 },
-  joffre_home: { ac: 1.168 },
-  marco: { lt: 1.118 },
+export const HEROES = {
+  //  atkDefending / atkAttacking : a hero has TWO attack columns, exactly as a
+  //    unit does. Thirteen of sixteen differ, pershing by a factor of eight.
+  //    Every "A" measured before 2026-08-19 is the DEFENDING one.
+  //  pool : the hero's own HP, read off its result row. Does NOT move with
+  //    level -- joffre_home is identical at 1, 2, 4, 5, 9, 10, 11 and 15.
+  //  buffs : output multiplier, PER UNIT TYPE, with the side it acts on.
+  //    'both' applies attacking and defending; 'defence' measured at exactly
+  //    0.00 attacking. Curves are measured points, never fitted.
+  //  hpBuffs : a separate channel that raises a unit type's MAX HP. Read off
+  //    the server's own refusal ("Max hp for 2 Infantry is 47.200000"), so
+  //    these are exact rather than bracketed.
+  kangal:       { label: 'Orhan “Kangal” Demir', atkDefending: 20.0, atkAttacking: 10.0,
+                  pool: 90, sits: 'first', maxLevel: 10,
+                  buffs: { ac: { channel: 'defence', curve: { 1: 1.08, 5: 1.13, 10: 1.20 } } } },
+  joffre:       { label: 'Joseph Joffre (Non Homeland)', atkDefending: 16.0, atkAttacking: 4.0,
+                  pool: 120, sits: 'first', maxLevel: 15 },
+  joffre_home:  { label: 'Joseph Joffre (Homeland)', atkDefending: 16.0, atkAttacking: 4.0,
+                  pool: 120, sits: 'first', maxLevel: 15,
+                  buffs: { inf: { channel: 'defence', curve: { 1: 1.10, 2: 1.15, 4: 1.16, 5: 1.20, 9: 1.28, 10: 1.30, 11: 1.32, 15: 1.40 } },
+                           ac:  { channel: 'defence', curve: { 1: 1.10, 5: 1.20, 10: 1.30, 15: 1.40 } } },
+                  hpBuffs: { ac: { 1: 1.00, 5: 1.09, 10: 1.17, 15: 1.30 } } },
+  marco:        { label: 'Fiero “Marco” Martello', atkDefending: 15.0, atkAttacking: 24.6,
+                  pool: 60, sits: 'first', maxLevel: 10,
+                  hpBuffs: { lt: { 1: 1.00, 5: 1.07, 10: 1.12 } } },
+  allen:        { label: 'Viscount Allenby', atkDefending: 10.0, atkAttacking: 29.6,
+                  pool: 50, sits: 'first', maxLevel: 15 },
+  larab:        { label: 'Lawrence of Arabia', atkDefending: 10.0, atkAttacking: 45.0,
+                  pool: 75, sits: 'first', maxLevel: 20 },
+  alvin:        { label: 'Alvin C. York', atkDefending: 8.30, atkAttacking: 25.0,
+                  pool: 100, sits: 'first', maxLevel: 20,
+                  buffs: { st: { channel: 'both', curve: { 1: 1.15, 5: 1.25, 10: 1.40, 15: 1.50, 20: 1.60 } } },
+                  hpBuffs: { st: { 1: 1.00, 5: 1.14, 10: 1.22, 15: 1.34, 20: 1.42 } } },
+  lucien:       { label: 'Lucien Laroche', atkDefending: 8.0, atkAttacking: 8.0,
+                  pool: 40, sits: 'first', maxLevel: 15 },
+  lucien_g:     { label: 'Lucien Laroche w/gas', atkDefending: 8.0, atkAttacking: 8.0,
+                  pool: 40, sits: 'first', maxLevel: 15 },
+  pershing:     { label: 'John J. Pershing “Black Jack”', atkDefending: 8.0, atkAttacking: 62.0,
+                  pool: 80, sits: 'first', maxLevel: 20,
+                  // The infantry curve DROPS at level 6, from 1.70 to 1.10, and
+                  // climbs again. Measured exactly, reproduced at three units as
+                  // well as two, and confirmed by an independently derived pool.
+                  // No formula fits both sides of that step.
+                  hpBuffs: { inf: { 1: 1.00, 2: 1.50, 3: 1.50, 4: 1.70, 5: 1.70, 6: 1.10, 7: 1.10, 8: 1.12, 9: 1.12, 10: 1.14, 15: 1.18, 20: 1.25 },
+                             ht:  { 1: 1.00, 5: 1.15, 10: 1.25, 15: 1.40, 20: 1.50 } } },
+  georg:        { label: 'Georg Bruchmüller', atkDefending: 6.0, atkAttacking: 16.8,
+                  pool: 40, sits: 'first', maxLevel: 20 },
+  tatiana:      { label: 'Tatiana Minchakievich (Enemy Land)', atkDefending: 6.0, atkAttacking: 45.6,
+                  pool: 15, sits: 'first', maxLevel: 20 },
+  hank:         { label: 'Henry “Hank” Callahan', atkDefending: 6.0, atkAttacking: 5.0,
+                  pool: 40, sits: 'first', maxLevel: 10,
+                  buffs: { inf: { channel: 'both', curve: { 1: 1.00, 2: 1.03, 5: 1.06, 9: 1.09, 10: 1.09 } } } },
+  johan:        { label: 'Johan “Aardvark” Maes', atkDefending: 5.0, atkAttacking: 4.0,
+                  pool: 40, sits: 'first', maxLevel: 20 },
+  tatiana_home: { label: 'Tatiana Minchakievich (Friendly Land)', atkDefending: 5.0, atkAttacking: 10.0,
+                  pool: 15, sits: 'first', maxLevel: 20 },
+  maeve:        { label: 'Fiona “Maeve” Porter', atkDefending: 4.0, atkAttacking: 4.0,
+                  pool: 20, sits: 'last', maxLevel: 15 },
 };
 
-export const HEROES = {
-  kangal:       { label: 'Orhan “Kangal” Demir',        atk: 20.0, sits: 'first', maxLevel: 10,
-                  buffs: { ac: { 10: 1.20 } } },
-  joffre:       { label: 'Joseph Joffre (Non Homeland)', atk: 16.0, sits: 'first', maxLevel: 15 },
-  joffre_home:  { label: 'Joseph Joffre (Homeland)',     atk: 16.0, sits: 'first', maxLevel: 15,
-                  buffs: { inf: { 1: 1.10, 2: 1.15, 4: 1.16, 5: 1.20, 9: 1.28, 10: 1.30, 11: 1.32, 15: 1.40 },
-                           ac: { 10: 1.30 } } },
-  marco:        { label: 'Fiero “Marco” Martello',      atk: 15.0, sits: 'first', maxLevel: 10 },
-  allen:        { label: 'Viscount Allenby',            atk: 10.0, sits: 'first', maxLevel: 15 },
-  larab:        { label: 'Lawrence of Arabia',          atk: 10.0, sits: 'first', maxLevel: 20 },
-  alvin:        { label: 'Alvin C. York',               atk: 8.30, sits: 'first', maxLevel: 20,
-                  buffs: { st: { 10: 1.40 } } },
-  lucien:       { label: 'Lucien Laroche',              atk: 8.0,  sits: 'first', maxLevel: 15 },
-  lucien_g:     { label: 'Lucien Laroche w/gas',        atk: 8.0,  sits: 'first', maxLevel: 15 },
-  pershing:     { label: 'John J. Pershing “Black Jack”', atk: 8.0, sits: 'first', maxLevel: 20 },
-  georg:        { label: 'Georg Bruchmüller',           atk: 6.0,  sits: 'first', maxLevel: 20 },
-  tatiana:      { label: 'Tatiana Minchakievich (Enemy Land)', atk: 6.0, sits: 'first', maxLevel: 20 },
-  hank:         { label: 'Henry “Hank” Callahan',       atk: 6.0,  sits: 'first', maxLevel: 10,
-                  buffs: { inf: { 1: 1.00, 2: 1.03, 5: 1.06, 9: 1.09, 10: 1.09 } } },
-  johan:        { label: 'Johan “Aardvark” Maes',       atk: 5.0,  sits: 'first', maxLevel: 20 },
-  tatiana_home: { label: 'Tatiana Minchakievich (Friendly Land)', atk: 5.0, sits: 'first', maxLevel: 20 },
-  maeve:        { label: 'Fiona “Maeve” Porter',        atk: 4.0,  sits: 'last',  maxLevel: 15 },
-};
+// A hero counts 0.40 in the damage split, the same constant for all sixteen --
+// independent of its attack, its pool and its level. Bracketed to
+// [0.398, 0.4005] over 27 uncensored readings.
+export const HERO_ALLOC_WEIGHT = 0.40;
+
+// How incoming damage splits across a stack's rows:
+//     weight_i = TARGET_FACTOR[unit_i] * count_i
+// A property of the TARGET, not the attacker: all nine land attackers give the
+// identical three-value pattern. Infantry soak half of what anything else
+// takes; cavalry three quarters.
+export const TARGET_FACTOR = { inf: 0.50, cav: 0.75 };
+export const TARGET_FACTOR_DEFAULT = 1.00;
 
 // Accepted by the form but refused on land by the server, so nothing about
 // them is measured. Named so the app can offer them and say why it cannot
 // compute them, rather than pretending they do not exist.
 export const HEROES_LAND_REFUSED = {
-  otto:   { label: 'Otto Hersing',                 maxLevel: 15, why: "Can't have Otto Hersing on land." },
-  togo:   { label: 'Tōgō Heihachirō',              maxLevel: null, why: "Can't have Tōgō Heihachirō on land." },
-  togo_b: { label: 'Tōgō Heihachirō w/bombardment', maxLevel: null, why: "Can't have Tōgō Heihachirō w/bombardment on land." },
-  ivan:   { label: 'Ivan “Vedmid” Kovalenko',      maxLevel: 10, why: "Can't have Ivan “Vedmid” Kovalenko on land." },
-  rbaron: { label: 'Manfred Von Richthofen',       maxLevel: null, why: 'Accepted on land but changed nothing — an air ace with no air units to help.' },
-  thaden: { label: 'Wilhelm von Thaden',           maxLevel: 15, why: 'Accepted on land but changed nothing — no measurable effect on a land stack.' },
+  otto:   { label: 'Otto Hersing',                 maxLevel: 15, why: "Can't have Otto Hersing on land. On a NAVAL stack it works and adds 40.00 — measured, not yet decomposed." },
+  togo:   { label: 'Tōgō Heihachirō',              maxLevel: null, why: "Can't have Tōgō Heihachirō on land. On a NAVAL stack it works and adds 15.00 — measured, not yet decomposed." },
+  togo_b: { label: 'Tōgō Heihachirō w/bombardment', maxLevel: null, why: "Can't have Tōgō Heihachirō w/bombardment on land. On a NAVAL stack it works and adds 64.34 — measured, not yet decomposed." },
+  ivan:   { label: 'Ivan “Vedmid” Kovalenko',      maxLevel: 10, why: "Can't have Ivan “Vedmid” Kovalenko on land. On a NAVAL stack it works and adds 1.00 — measured, not yet decomposed." },
+  rbaron: { label: 'Manfred Von Richthofen',       maxLevel: null, why: "Can't have Manfred Von Richthofen on land. On an AIR stack it works and adds 16.85 to the attack — measured, but not yet split into own-attack and multiplier." },
+  thaden: { label: 'Wilhelm von Thaden',           maxLevel: 15, why: "Can't have Wilhelm von Thaden on land. On an AIR stack it works and adds 10.14 — measured, not yet decomposed." },
 };
 
 export const FORM_DOMAINS = {
@@ -543,9 +582,9 @@ export const NOT_MEASURED = [
   { key: 'trench_10_pool', what: 'The level-10 pool multiplier beyond 2 decimal places.', why: 'Bracketed to [1.2382, 1.2463], which excludes the tidy 1.25.', closedBy: 'a larger stack, which tightens the bracket' },
   { key: 'fortress_edges', what: 'A fortress on the ATTACKING side; a fortress against air or naval attackers; fortress-trench interaction; DR above level 5.', why: 'Only a level 1-5 fortress defending against infantry was measured. At level 6 the formula returns DR = 1.05, so it must saturate or the cap is real.', closedBy: 'a handful of requests' },
   { key: 'building_caps', what: 'Workshop and factory level caps; workshop HP per level.', why: 'The sweep asked for 3, was not rejected, and never probed higher. Workshop shows 35 total at L3 with 20 in the top level, so HP is not uniform per level.', closedBy: 'two requests' },
-  { key: 'hero_levels', what: 'Every hero output buff except infantry, at any level but 10.', why: 'The nine-type screen that found them ran entirely at level 10. joffre_home is the only hero whose curve was measured across levels, and it runs x1.10 to x1.40 — so reusing a level-10 figure elsewhere could be well off. The engine flags those levels rather than presenting them as measured.', closedBy: 'a level sweep on alvin, kangal and joffre_home over the unit type each buffs' },
-  { key: 'hero_hp_channel', what: 'A hero raising a unit type\u2019s max HP: alvin/stormtrooper x1.215, pershing/infantry x1.148 and heavy tank x1.249, joffre_home/armoured car x1.168, marco/tank x1.118.', why: 'Measured, but this engine has no term for an HP-pool buff. Affected pools and death counts here are too LOW. Screened at level 10 only, like the output buffs.', closedBy: 'adding a pool term to the engine, and a level sweep to see whether the HP channel moves with level' },
-  { key: 'heroes_non_land', what: 'The six heroes the server refuses on land, and any hero on an air or naval stack.', why: 'rbaron, thaden and four naval heroes are refused outright against a land stack (\u201cCan\u2019t have Otto Hersing on land\u201d). What they do on their own terrain has never been submitted.', closedBy: 'the same screen run against an air stack and a naval stack' },
+  { key: 'hero_level_gaps', what: 'Hero buff levels between the ones submitted — typically 2-4, 6-9, 11-14, 16-19.', why: 'Curves were read at 1, 5, 10, 15 and 20 and are INTERPOLATED between those points. Pershing\u2019s infantry HP curve proves interpolation can mislead: it drops from x1.70 to x1.10 between levels 5 and 6, so a gap can hide a step. The engine marks any unmeasured level as interpolated rather than exact.', closedBy: 'filling in the levels, ~15 requests per curve' },
+  { key: 'hero_other_terrain', what: 'What the six land-refused heroes DO on an air or naval stack.', why: 'All six work there and all six change the battle — rbaron +16.85 and thaden +10.14 on air, otto +40.00, togo +15.00, togo_b +64.34, ivan +1.00 on sea. That is one reading each, which confounds the hero\u2019s own attack with any multiplier, so nothing is applied. The help page also describes multi-round and positional skills for T\u014dg\u014d and Lucien, and this project has measured neither dimension.', closedBy: 'the two-configuration decomposition already used on land, run on an air stack and a naval one' },
+  { key: 'hero_hp_level_gaps', what: 'Whether a hero\u2019s own HP pool or its 0.40 damage weight move with anything.', why: 'Both read constant across every level and stack size on record, but neither was swept deliberately — the readings are a by-product of other experiments.', closedBy: 'a handful of requests at the extremes' },
   { key: 'position', what: 'Position / range effects.', why: 'Every run was at position 0.', closedBy: 'a position sweep' },
 ];
 
@@ -763,11 +802,20 @@ export const PROVENANCE = {
   },
   'STACK.allocation': {
     confidence: 'measured',
-    source: 'results.jsonl, experiment=mixed_stacks: the per-row spans of four mixtures.',
-    note: 'Incoming damage splits in proportion to (attack value x count). Exact on all four, '
-      + 'including the asymmetric splits where allocation by pool or by attack value alone is '
-      + 'off by 10.7 and 26.6 HP respectively. Note it uses the RAW count, not the saturated '
-      + 'effective count -- allocation ignores the size factor that output obeys.',
+    source: 'results.jsonl, experiment=allocation: one request per attacking land type '
+      + 'against the same nine-type defender, nine rows of the land matrix; plus the '
+      + 'asymmetric mixed_stacks splits as held-out points.',
+    note: 'weight_i = TARGET_FACTOR[unit_i] x count_i, with infantry 0.50, cavalry 0.75 and '
+      + 'everything else 1.00. It is a property of the TARGET, not the attacker: all nine '
+      + 'land attackers give the identical pattern, bracketed across them to [0.4979,0.5023], '
+      + '[0.7449,0.7559] and [0.9918,1.0083]. A hero counts 0.40. '
+      + 'THIS APP SHIPPED THE WRONG RULE until 2026-08-19 - "the defending row\'s own attack '
+      + 'value x count" - which is out by 40% of the stack total on a nine-row stack. It '
+      + 'fitted because all four mixtures it came from were infantry + artillery, whose own '
+      + 'attack values are 4.0 and 8.0, exactly the 0.5:1.0 ratio this table gives that pair. '
+      + 'The attacker\'s TOTAL is unaffected - still coefficient x E(n) whatever the mix - so '
+      + 'these are allocation weights, not damage values. Allocation uses RAW count, not the '
+      + 'saturated effective count that output obeys.',
   },
   'HEROES.measured': {
     confidence: 'measured',
@@ -800,38 +848,39 @@ export const PROVENANCE = {
   },
   'HEROES.hpChannel': {
     confidence: 'measured',
-    source: 'results.jsonl, experiment=hero_targets: nine land types in one stack, each '
-      + 'hero screened against all of them at once.',
-    note: 'NOT MODELLED, only disclosed. Four heroes raise the per-unit max HP of a specific '
-      + 'unit type: alvin->Stormtrooper x1.215, pershing->Infantry x1.148 and Heavy Tank '
-      + 'x1.249, joffre_home->Armored Car x1.168, marco->Tank x1.118. The engine has no term '
-      + 'for an HP buff, so any battle involving these pairs is WRONG in the pool, not merely '
-      + 'uncertain. Note the screen wiped its attacker every time, so it tested the HP channel '
-      + 'ONLY -- output buffs on the eight non-infantry land types remain unscreened.',
+    source: 'results.jsonl, experiment=hero_hp_cap: 52 rows, each one the server\'s own '
+      + 'refusal naming the exact buffed maximum.',
+    note: 'MODELLED. Five hero/unit pairs raise a unit type\'s MAX HP, on a curve of their '
+      + 'own that is NOT the output curve. Read by asking for more HP than the unit can '
+      + 'have: the server answers "Max hp for 2 Infantry is 47.200000", which is exact '
+      + 'rather than a ratio of two pools each derived from a 3-significant-figure '
+      + 'percentage. That mattered - the pool method produced pershing/infantry as '
+      + '1.00/1.70/1.14/1.25, which reads like a broken instrument. It is not: the refusal '
+      + 'gives the same numbers, and densifying shows a real DISCONTINUITY at level 6, '
+      + 'where the factor drops from 1.70 to 1.10 before climbing again. Same factor at '
+      + 'three units as at two, so it is a level effect and not a count artifact. Stored as '
+      + 'points; any formula through them is wrong on one side of level 6.',
   },
   'HEROES.law': {
     confidence: 'measured',
     source: 'results.jsonl, experiments heroes / hero_scaling / hero_table / hero_levels / '
-      + 'hero_caps / survivable_rig (a nine-type screen, one request per hero, against an '
-      + 'attacker that survives) / hero_buff_confirm: 130+ requests.',
-    note: 'output = A * heroEffective + unit_coef * M(unit type) * unitEffective. All 16 '
-      + 'land-legal heroes decomposed from two stack sizes so A and M are separated, each '
-      + 'validated against a held-out third stack size to 0.002%. A does NOT move with level '
-      + '(checked at 1, 2, 4, 5, 9, 10, 11, 15). '
-      + 'M IS PER UNIT TYPE. All nine land types were screened together at level 10: '
-      + 'joffre_home buffs infantry AND armoured cars (both x1.30), alvin buffs stormtroopers '
-      + '(x1.40), kangal buffs armoured cars (x1.20), hank buffs infantry (x1.09), and the '
-      + 'other twelve raised the stack by exactly their own attack and nothing else. Each of '
-      + 'those five was then re-measured alone with the unit type it buffs and reproduced '
-      + 'exactly. An earlier version of this file said the effect was infantry-only and that '
-      + 'M = 1.00 meant "buffs nobody" -- it did not, and does not. '
-      + 'DETECTION FLOOR 0.2 HP, which on the weakest row in the screen is a 10% buff; a '
-      + 'smaller buff on a weak unit type would still be hiding. '
-      + 'The non-infantry figures are LEVEL 10 ONLY. joffre_home is the only hero whose curve '
-      + 'was measured across levels and it runs 1.10 to 1.40, so the engine flags any other '
-      + 'level as an assumption rather than reusing the figure silently. '
-      + 'SEPARATE HP CHANNEL: see HEROES.hpChannel. A hero can buff output, the HP pool, or '
-      + 'both -- joffre_home does both, on different unit types.',
+      + 'hero_caps / survivable_rig / hero_buff_confirm / hero_full / hero_hp_cap / '
+      + 'hero_sides: 230+ requests.',
+    note: 'output = A(side) * heroEffective + unit_coef * M(unit type, level, side) * '
+      + 'unitEffective, plus a separate MAX-HP channel and the hero\'s own pool. '
+      + 'TWO ATTACK COLUMNS: a hero attacks at one value and defends at another, exactly '
+      + 'as a unit does, and thirteen of sixteen differ - pershing 62.00 attacking against '
+      + '8.00 defending. Every "A" measured before 2026-08-19 is the defending one. '
+      + 'M IS PER UNIT TYPE, PER LEVEL AND PER SIDE. All nine land types screened together: '
+      + 'joffre_home buffs infantry and armoured cars, alvin stormtroopers, kangal armoured '
+      + 'cars, hank infantry; the other twelve raise a nine-type stack by exactly their own '
+      + 'attack and nothing more. alvin and hank apply their multiplier attacking and '
+      + 'defending alike; joffre_home and kangal measure exactly 0.00 attacking, so theirs '
+      + 'is DEFENCE-ONLY. '
+      + 'CURVES ARE MEASURED POINTS, interpolated and never fitted. '
+      + 'DETECTION FLOOR 0.2 HP on the output screen, a 10% buff on its weakest row. '
+      + 'THE HERO ITSELF has its own HP pool (level-independent, one round number each), '
+      + 'counts 0.40 in the damage split, and never reports a death count.',
   },
   'HEROES.levels': {
     confidence: 'estimated',

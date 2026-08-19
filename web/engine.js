@@ -31,12 +31,14 @@ import {
   FORTRESS,
   PATROL,
   ROSTER_ORDER,
+  TARGET_FACTOR,
+  TARGET_FACTOR_DEFAULT,
+  HERO_ALLOC_WEIGHT,
   MAX_UNIT_ROWS,
   STACK_GROUP,
   STACK_GROUP_LABEL,
   HEROES,
   HEROES_LAND_REFUSED,
-  HERO_HP_BUFFS,
 } from './data.js';
 
 const EPS = 1e-9;
@@ -258,13 +260,12 @@ export function normaliseRows(cfg) {
  * levels 1-4 read 1.10 / 1.15 / - / 1.16 and fit nothing. Fitting a formula
  * through that would be inventing nineteen values from eight.
  */
-export function heroBuff(code, level, unitCode) {
+export function heroBuff(code, level, unitCode, side) {
   const h = HEROES[code];
   if (!h) return { m: null, exact: false, note: 'unknown hero' };
-  const table = h.buffs || {};
-  const curve = unitCode ? table[unitCode] : null;
-  if (!curve) {
-    const targets = Object.keys(table);
+  const entry = (h.buffs || {})[unitCode];
+  if (!entry) {
+    const targets = Object.keys(h.buffs || {});
     return { m: 1.0, exact: true,
              note: targets.length
                ? `${h.label} buffs ${targets.join(' and ')}, not this unit type `
@@ -273,22 +274,34 @@ export function heroBuff(code, level, unitCode) {
                : `${h.label} is a pure combat unit — it raised a nine-type `
                  + 'stack by exactly its own attack value and nothing more.' };
   }
+  // A buff has a SIDE. joffre_home and kangal measure exactly 0.00 attacking
+  // against an expected 6.00 and 2.40, so theirs is defence-only; alvin's and
+  // hank's apply to both. Applying a defence-only buff to an attacking stack
+  // was the shape of the previous model and inflates it silently.
+  if (side === 'attacker' && entry.channel === 'defence') {
+    return { m: 1.0, exact: true,
+             note: `${h.label}'s buff is DEFENCE-ONLY — measured at exactly `
+               + 'zero on an attacking stack, so it does not apply here.' };
+  }
+  return curveAt(entry.curve, level, h, 'output');
+}
+
+/**
+ * A measured curve read at one level. Interpolated between measured points and
+ * never fitted: pershing's infantry HP curve climbs to 1.70 by level 5, DROPS
+ * to 1.10 at level 6 and climbs again, so no formula is right on both sides.
+ */
+function curveAt(curve, level, h, what) {
+  if (!curve) return { m: 1.0, exact: true, note: 'no curve' };
   const lv = Math.max(1, Math.min(h.maxLevel || 20, Math.round(num(level, 1))));
   const pts = Object.keys(curve).map(Number).sort((a, b) => a - b);
   if (curve[lv] !== undefined) {
     return { m: curve[lv], exact: true, note: `measured directly at level ${lv}` };
   }
-  // A single measured level is not a curve. The non-infantry buffs were found
-  // by a screen run entirely at level 10, so every other level is an
-  // assumption -- and joffre_home's infantry curve, the only one measured
-  // across levels, is neither a line nor a step, so there is no shape to
-  // borrow with a straight face.
   if (pts.length === 1) {
     return { m: curve[pts[0]], exact: false,
-             note: `only level ${pts[0]} was ever measured for this unit type `
-               + `(x${curve[pts[0]]}); level ${lv} assumes the same figure, and `
-               + `the one hero whose curve WAS measured across levels moves `
-               + `from x1.10 to x1.40, so this could be well off` };
+             note: `only level ${pts[0]} was ever measured (x${curve[pts[0]]}); `
+               + `level ${lv} assumes the same figure` };
   }
   const below = pts.filter((x) => x < lv).pop();
   const above = pts.find((x) => x > lv);
@@ -301,8 +314,17 @@ export function heroBuff(code, level, unitCode) {
   const t = (lv - below) / (above - below);
   return { m: curve[below] + t * (curve[above] - curve[below]), exact: false,
            note: `level ${lv} was never submitted; interpolated between the `
-             + `measured levels ${below} (x${curve[below]}) and ${above} `
-             + `(x${curve[above]})` };
+             + `measured ${what} levels ${below} (x${curve[below]}) and `
+             + `${above} (x${curve[above]})` };
+}
+
+/** A hero's multiplier on one unit type's MAX HP, at this level. */
+export function heroHpBuff(code, level, unitCode) {
+  const h = HEROES[code];
+  if (!h || !h.hpBuffs || !h.hpBuffs[unitCode]) {
+    return { m: 1.0, exact: true, note: 'no HP buff measured for this type' };
+  }
+  return curveAt(h.hpBuffs[unitCode], level, h, 'HP');
 }
 
 export function stackGroupsOf(rows) {
@@ -344,19 +366,31 @@ export function effectiveByRow(rows, column) {
 }
 
 /**
- * How incoming damage is split across a stack's rows: in proportion to
- * (attack value x unit count) -- each row's raw offensive weight, ignoring the
- * saturation that output obeys.
+ * How incoming damage splits across a stack's rows:
  *
- * Exact on all four measured mixtures, including the asymmetric ones where
- * allocation by pool is off by 10.7 HP and by attack-value-alone by 26.6 in
- * the wrong direction. It uses the unit's ATTACK stat even for a defending
- * stack, which is not obvious and is what the readings say.
+ *     weight_i = TARGET_FACTOR[unit_i] x count_i
+ *
+ * It is a property of the TARGET, not of the attacker -- all nine land
+ * attackers produce the identical three-value pattern, bracketed across them
+ * to [0.4979,0.5023], [0.7449,0.7559] and [0.9918,1.0083]. Infantry soak half
+ * of what any other type takes; cavalry three quarters.
+ *
+ * This engine shipped "in proportion to the defending row's own attack value"
+ * until 2026-08-19, which is out by 40% of the stack total on a nine-row
+ * stack. It fitted because all four mixtures it came from were infantry +
+ * artillery, whose own attack values are 4.0 and 8.0 -- exactly the 0.5 : 1.0
+ * ratio this table gives that pair, and nothing else.
+ *
+ * The attacker's TOTAL is unaffected: still coefficient x E(n) whatever the
+ * mix, confirmed for all nine attackers. These are allocation weights, not
+ * damage values.
  */
 export function allocationWeights(rows) {
   return (rows || []).map((r) => {
-    const atk = r && r.unit && typeof r.unit.atk === 'number' ? r.unit.atk : 0;
-    return Math.max(0, atk * Math.max(0, num(r && r.count, 0)));
+    const code = r && r.unit && (r.unit.code || r.unit);
+    const f = TARGET_FACTOR[code] === undefined
+      ? TARGET_FACTOR_DEFAULT : TARGET_FACTOR[code];
+    return Math.max(0, f * Math.max(0, num(r && r.count, 0)));
   });
 }
 
@@ -535,18 +569,23 @@ function makeSide(cfg, role, derivation, caveats) {
       + 'unrecognised unit has no constants.');
   }
 
-  for (const r of rows) {
-    r.perUnitMaxHP = (r.unit && r.unit.maxHP !== null)
-      ? r.unit.maxHP * tf.pool : null;
-    r.poolFull = r.perUnitMaxHP === null ? null : r.count * r.perUnitMaxHP;
-    r.pool = r.poolFull === null ? null : r.poolFull * (r.hpPct / 100);
-    r.hpLost = 0;
-    r.deaths = 0;
-    // null, not 0. A path that cannot decompose the stack's output per row --
-    // the air and patrol laws work on whole-stack survivors -- must say it has
-    // no figure. Zero is a claim, and it was a false one.
-    r.damageDealt = null;
-  }
+  // Pools are computed AFTER the hero block below, because a hero can raise a
+  // unit type's max HP and the pool has to include that.
+  const computePools = () => {
+    for (const r of rows) {
+      r.perUnitMaxHP = (r.unit && r.unit.maxHP !== null)
+        ? r.unit.maxHP * tf.pool * (r.hpBuff || 1) : null;
+      r.poolFull = r.perUnitMaxHP === null ? null : r.count * r.perUnitMaxHP;
+      r.pool = r.poolFull === null ? null : r.poolFull * (r.hpPct / 100);
+      r.hpLost = 0;
+      r.deaths = 0;
+      // null, not 0. A path that cannot decompose the stack's output per row --
+      // the air and patrol laws work on whole-stack survivors -- must say it
+      // has no figure. Zero is a claim, and it was a false one.
+      r.damageDealt = null;
+    }
+  };
+  computePools();
 
   // A stack the game refuses to field. Flagged on the side that carries it,
   // and escalated to `unknown` below rather than quietly computed.
@@ -578,35 +617,33 @@ function makeSide(cfg, role, derivation, caveats) {
           + `the server states so outright and refuses anything higher, even `
           + `though the form offers 1-20 for every hero. Clamped.`);
       }
-      // A hero may also raise the max HP of one specific unit type. The engine
-      // has no term for that, so a battle containing such a pair is WRONG in
-      // the pool rather than merely uncertain, and must say so.
-      const hpBuffs = HERO_HP_BUFFS[heroCfg.code] || {};
-      const hit = rows.filter((r) => hpBuffs[r.unit.code]);
-      if (hit.length) {
-        caveats.push(`${label}: ${known.label} also raises the max HP of `
-          + hit.map((r) => `${r.unit.label} (x${hpBuffs[r.unit.code]})`).join(' and ')
-          + '. That is a measured effect on the HP POOL, and this engine has no '
-          + 'term for it — the pools below are too LOW for those rows, and the '
-          + 'deaths with them.');
+      // THE HP CHANNEL, now modelled rather than disclosed. A hero can raise
+      // one unit type's MAX HP, on a curve of its own, read exactly off the
+      // server's refusal. This used to be a caveat saying "the pools below are
+      // too LOW"; it is now simply applied.
+      const hpHits = [];
+      for (const r of rows) {
+        const b = heroHpBuff(heroCfg.code, lvl, r.unit.code);
+        if (b.m !== 1) {
+          r.hpBuff = b.m;
+          r.hpBuffExact = b.exact;
+          hpHits.push({ row: r, b });
+        }
       }
-      // A hero's output buff is PER UNIT TYPE, not per stack. joffre_home
-      // raises infantry AND armoured cars by 1.30 and leaves the other seven
-      // land types alone; alvin raises only stormtroopers, by 1.40. Applying
-      // one figure to the whole stack over-counts every row it does not cover.
+      // Output buffs are per unit type AND per side.
       const buffs = {};
       let anyInexact = null;
       for (const r of rows) {
-        const b = heroBuff(heroCfg.code, lvl, r.unit.code);
+        const b = heroBuff(heroCfg.code, lvl, r.unit.code, role);
         buffs[r.unit.code] = b;
         if (b.m !== 1 && !b.exact) anyInexact = b;
       }
+      for (const h of hpHits) if (!h.b.exact) anyInexact = h.b;
       const hitOut = rows.filter((r) => buffs[r.unit.code].m !== 1);
-      const infBuff = heroBuff(heroCfg.code, lvl, 'inf');
-      hero = { code: heroCfg.code, def: known, level: lvl, atk: known.atk,
-               buffs, m: infBuff.m, exact: infBuff.exact, note: infBuff.note,
-               buffedRows: hitOut.length };
-      hero.hpBuffHits = hit.length;
+      hero = { code: heroCfg.code, def: known, level: lvl,
+               atk: role === 'attacker' ? known.atkAttacking : known.atkDefending,
+               pool: known.pool, buffs,
+               buffedRows: hitOut.length, hpHits: hpHits.length };
       if (hitOut.length) {
         derivation.push({
           label: `${label} hero output buff`,
@@ -614,6 +651,27 @@ function makeSide(cfg, role, derivation, caveats) {
             + `${round4(buffs[r.unit.code].m)}`).join(', ')
             + ` — ${known.label} at level ${lvl}; every other row is unbuffed`,
           value: buffs[hitOut[0].unit.code].m,
+        });
+      }
+      const suppressed = rows.filter((r) => /DEFENCE-ONLY/.test(
+        buffs[r.unit.code].note || ''));
+      if (suppressed.length) {
+        derivation.push({
+          label: `${label} hero buff does not apply`,
+          formula: `${known.label}'s multiplier is DEFENCE-ONLY — measured at `
+            + 'exactly 0.00 on an attacking stack — so it is not applied to '
+            + `${suppressed.map((r) => r.unit.label).join(', ')}`,
+          value: 1,
+        });
+      }
+      if (hpHits.length) {
+        derivation.push({
+          label: `${label} hero HP buff`,
+          formula: hpHits.map((h) => `${h.row.unit.label} max HP x`
+            + `${round4(h.b.m)}`).join(', ')
+            + ` — a separate channel from the output buff, read off the `
+            + `server's own refusal, so exact`,
+          value: hpHits[0].b.m,
         });
       }
       if (anyInexact) {
@@ -629,14 +687,22 @@ function makeSide(cfg, role, derivation, caveats) {
     }
   }
   side_hero = hero && hero.def ? hero : null;
+  if (side_hero) side_hero.hpLost = 0;
+  // Re-run now that any HP buff is known.
+  computePools();
 
   const primary = rows.length ? rows[0].unit : resolveUnit(cfg && cfg.unit);
   const n = rows.reduce((t, r) => t + r.count, 0);
   const anyPoolUnknown = rows.some((r) => r.pool === null);
+  // The hero's own pool is part of the stack's, because the hero is a target
+  // that takes a share of every round. Leaving it out made the rows and the
+  // stack total disagree by exactly the hero's HP, which the UI's own
+  // row-vs-total check caught the moment the hero became a target.
+  const heroPool = (side_hero && side_hero.pool) ? side_hero.pool : 0;
   const poolFull = (!rows.length || anyPoolUnknown)
-    ? null : rows.reduce((t, r) => t + r.poolFull, 0);
+    ? null : rows.reduce((t, r) => t + r.poolFull, 0) + heroPool;
   const poolNow = (!rows.length || anyPoolUnknown)
-    ? null : rows.reduce((t, r) => t + r.pool, 0);
+    ? null : rows.reduce((t, r) => t + r.pool, 0) + heroPool;
   // The stack-level HP percentage, for the derivation and for m(f) where a
   // stack is single-type. With mixed percentages this is the pool-weighted
   // figure, which is what m(f) would see if it reads the whole stack.
@@ -1128,8 +1194,9 @@ function runSimulation(config, derivation, caveats) {
     if (atk.rows.length > 1) {
       derivation.push({
         label: `${tag}Attacker damage split across rows`,
-        formula: 'in proportion to (attack value x count) — measured exactly on '
-          + `four mixtures: ${atkAlloc.parts.map((pt) => `${pt.row.unit.code} `
+        formula: 'in proportion to (target factor x count) — infantry 0.50, '
+          + 'cavalry 0.75, everything else 1.00, a hero 0.40: '
+          + `${atkAlloc.parts.map((pt) => `${partName(pt.row)} `
             + `${round4(pt.share)}`).join(', ')}`,
         value: atkLostThis,
       });
@@ -1305,8 +1372,9 @@ function runSimulation(config, derivation, caveats) {
     if (def.rows.length > 1 && !def.withheldLoss) {
       derivation.push({
         label: `${tag}Defender damage split across rows`,
-        formula: 'in proportion to (attack value x count) — measured exactly on '
-          + `four mixtures: ${defAlloc.parts.map((pt) => `${pt.row.unit.code} `
+        formula: 'in proportion to (target factor x count) — infantry 0.50, '
+          + 'cavalry 0.75, everything else 1.00, a hero 0.40: '
+          + `${defAlloc.parts.map((pt) => `${partName(pt.row)} `
             + `${round4(pt.share)}`).join(', ')}`,
         value: defLostThis,
       });
@@ -1457,18 +1525,31 @@ function stackOutput(side, coefFor, scale, mulEach) {
 }
 
 /**
- * Split incoming damage across a stack's rows in proportion to
- * (attack value x count), then take deaths per row from that row's own
- * per-unit HP. Measured exactly across four mixtures; allocation by pool or
- * by attack-value-alone both fail, the latter in the wrong direction.
+ * Split incoming damage across a stack's rows -- and its hero -- in proportion
+ * to (target factor x count), then take deaths per row from that row's own
+ * per-unit HP. See allocationWeights for what replaced the old rule and why.
  */
+/** Row or hero, whichever this allocation part points at. */
+function partName(t) {
+  return t && t.unit ? t.unit.code : (t && t.def ? t.def.label : 'hero');
+}
+
 function allocate(side, incoming) {
+  // A HERO IS A TARGET. It has its own HP pool and it takes a share of every
+  // round like any row, at a weight of 0.40 -- the same constant for all
+  // sixteen, independent of its attack, its pool and its level. Leaving it out
+  // of the split over-charged every unit row by its share.
+  const targets = side.rows.slice();
   const w = allocationWeights(side.rows);
+  if (side.hero && side.hero.pool) {
+    targets.push(side.hero);
+    w.push(HERO_ALLOC_WEIGHT);
+  }
   const sum = w.reduce((a, b) => a + b, 0);
   const out = [];
   let spare = 0;
-  side.rows.forEach((r, i) => {
-    const want = sum > 0 ? incoming * (w[i] / sum) : incoming / (side.rows.length || 1);
+  targets.forEach((r, i) => {
+    const want = sum > 0 ? incoming * (w[i] / sum) : incoming / (targets.length || 1);
     const got = Math.min(want, r.pool === null ? want : r.pool);
     spare += want - got;
     out.push({ row: r, share: got });
@@ -1512,9 +1593,9 @@ function sideResult(side, withheld) {
   // unlike a building's). Leaving it out made the rows stop summing to their
   // own stack, which the UI's row-vs-total check caught immediately.
   //
-  // hpLost and deaths are null, not 0: the hero DOES take damage -- every hero
-  // measured lost exactly 2.10 HP of its own pool -- but how that share is
-  // decided has not been decomposed, and 0 would be a claim.
+  // The hero is a target with its own pool, and it now reports what it took.
+  // It never reports DEATHS: no hero row on record has ever carried a death
+  // count, so null rather than 0 -- zero would be a claim.
   const heroRow = side.hero ? [{
     unit: side.hero.code,
     label: side.hero.def.label,
@@ -1523,8 +1604,8 @@ function sideResult(side, withheld) {
     count: 1,
     hpPct: 100,
     effective: side.hero.heroEff === undefined ? null : side.hero.heroEff,
-    pool: null,
-    hpLost: null,
+    pool: side.hero.pool === undefined ? null : side.hero.pool,
+    hpLost: side.hero.hpLost === undefined ? null : side.hero.hpLost,
     deaths: null,
     unitsLeft: null,
     damageDealt: withheld ? null : (side.hero.dealt === undefined ? null : side.hero.dealt),
