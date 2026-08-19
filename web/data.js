@@ -658,7 +658,13 @@ export const PROVENANCE = {
       + 'silence is a server refusal rather than a null. A hero is a UNIT: it renders an '
       + 'ordinary Lost-HP span and the stack summary table counts it, unlike a building. It '
       + 'does not mitigate -- total incoming damage is unchanged, the hero just absorbs a '
-      + 'share of it. Every figure this app produces assumes NO hero.',
+      + 'share of it. Every figure this app produces assumes NO hero. '
+      + 'The LAW is now known exactly: output = A * heroEffective + unit_coef * M * '
+      + 'unitEffective, where A is the hero fighting as one unit and M multiplies the rest '
+      + 'of the stack; all 16 land-legal heroes are decomposed to 0.002% against a held-out '
+      + 'stack size. 14 are pure combat units (M = 1.00) at attack 5 to 20; only joffre_home '
+      + '(x1.30) and hank (x1.09) buff. What is still missing is the LEVEL curve -- every '
+      + 'reading is level 10 of 20 -- and attacking heroes, so the app models none.',
   },
   'STACK.grouping': {
     confidence: 'measured',

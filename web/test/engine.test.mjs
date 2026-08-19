@@ -874,8 +874,12 @@ console.log('\n13. coverage of the record itself');
   // would put a confident number on 19 unmeasured ones. Declared, not dropped.
   // stack_limits is a constraints probe, not a physics sweep: its readings are
   // server refusals, and they are encoded in STACK_GROUP rather than replayed.
-  check('the only unreplayed experiments are heroes and stack_limits',
-    notReplayed.length === 2 && notReplayed.every((e) => ['heroes', 'stack_limits'].includes(e)),
+  // Everything hero-shaped is measured but deliberately unmodelled (level 10
+  // only, defenders only), and stack_limits is a constraints probe whose
+  // readings are server refusals encoded in STACK_GROUP rather than replayed.
+  const declaredNonReplay = ['heroes', 'hero_scaling', 'hero_table', 'stack_limits'];
+  check('every unreplayed experiment is one the engine declares and explains',
+    notReplayed.every((e) => declaredNonReplay.includes(e)),
     notReplayed.join(', ') || 'none');
   check('heroes are recorded as measured but not modelled',
     PROVENANCE['HEROES.measured'].confidence === 'measured'
