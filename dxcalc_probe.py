@@ -4790,6 +4790,214 @@ def exp_trench_gaps(p: Probe) -> None:
               f"{out_x:9.3f} {pool_x:8.3f}")
 
 
+def exp_fortress_edges(p: Probe) -> None:
+    """Fortress above level 5, and a fortress on the ATTACKING side.
+
+    DR = 0.15 x (hp/50 + 1) was fitted on levels 1-5. At level 6 it returns
+    1.05, which is more than total immunity, so either it saturates or the
+    level cap is real. Only the server can say which, and it says caps outright.
+    """
+    print(f"\n  {'side':6} {'level':>5} {'A lost':>9} {'B lost':>9} "
+          f"{'DR printed':>11}")
+    for side in ("B", "A"):
+        for lvl in range(1, 11):
+            ov = settings()
+            ov.update(duel(1, "inf", 30, "inf", 10))
+            ov.update({f"{side}.1.bldg.1.abb": "fortress",
+                       f"{side}.1.bldg.1.lvl": str(lvl),
+                       f"{side}.1.bldg.1.hp": "100%"})
+            fields = (f"{side}.1.bldg.1.abb", f"{side}.1.bldg.1.lvl",
+                      f"{side}.1.bldg.1.hp")
+            try:
+                p.submit(ov, create=fields)
+            except BareFormReturned as e:
+                m = MAX_LEVEL_RE.search(str(e))
+                print(f"  {side:6} {lvl:>5} refused: "
+                      + (f"max level is {m.group(2)}" if m else str(e)[:44]))
+                record("fortress_edges", {"side": side, "level": lvl,
+                                          "error": str(e)}, {})
+                break
+            d = dict(p.last_details)
+            record("fortress_edges", {"side": side, "level": lvl, "detail": d},
+                   {k: (v or {}).get("lost") for k, v in d.items()})
+            a = (d.get("A.1.1") or {}).get("lost")
+            b = (d.get("B.1.1") or {}).get("lost")
+            bl = d.get(f"{side}.1.bldg.1") or {}
+            dr = bl.get("dr_after")
+            print(f"  {side:6} {lvl:>5} "
+                  + (f"{a:9.2f}" if a is not None else f"{'—':>9}")
+                  + (f" {b:9.2f}" if b is not None else f" {'—':>9}")
+                  + (f" {dr:11.1f}" if dr is not None else f" {'—':>11}"))
+
+
+def exp_building_damage(p: Probe) -> None:
+    """Damage to a building from each attacking unit type.
+
+    Infantry deal 0.3 per effective unit to a building against 4.0 to units.
+    Nothing in the model predicts 0.3, so it cannot be inferred for anything
+    else, and the app currently refuses to compute building damage for any
+    attacker but infantry.
+    """
+    print(f"\n  {'attacker':9} {'n':>4} {'bldg lost':>10} {'per effective':>14} "
+          f"{'vs units':>9}")
+    for atk in LAND_NINE:
+        n = 30
+        ov = settings()
+        ov.update(duel(1, atk, n, "inf", 10))
+        ov.update({"B.1.bldg.1.abb": "fortress", "B.1.bldg.1.lvl": "5",
+                   "B.1.bldg.1.hp": "100%"})
+        try:
+            p.submit(ov, create=("B.1.bldg.1.abb", "B.1.bldg.1.lvl",
+                                 "B.1.bldg.1.hp"))
+        except (BareFormReturned, ValueError) as e:
+            print(f"  ! {atk}: {e}", file=sys.stderr)
+            continue
+        d = dict(p.last_details)
+        record("building_damage", {"attacker": atk, "atk_n": n, "detail": d},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        bl = d.get("B.1.bldg.1") or {}
+        if bl.get("lost") is None:
+            print(f"  {atk:9} {n:>4} {'—':>10}")
+            continue
+        per = bl["lost"] / effective_units(n)
+        print(f"  {atk:9} {n:>4} {bl['lost']:10.2f} {per:14.4f} "
+              f"{MEASURED_UNITS[atk][1]:9.1f}")
+
+
+def exp_position(p: Probe) -> None:
+    """Range and position, never exercised once. Every run was at position 0.
+
+    Artillery reaches 50 km and the railgun 150. If position does anything, a
+    short-ranged unit at distance should deal nothing while a long-ranged one
+    still fires -- and the whole unit table was measured at zero distance, so
+    an effect here would mean every figure describes point-blank only.
+    """
+    # The form's own field list, as discovered by load_form().
+    fields = [f for f in (p.baseline or {})
+              if any(k in f.lower() for k in ("pos", "dist", "range"))]
+    print(f"\n  position-ish fields on the form: {fields or 'NONE FOUND'}")
+    if not fields:
+        print("  The form exposes no position field, so range cannot be "
+              "submitted at all.\n  That is a finding: the calculator does not "
+              "model it, and neither can this app.")
+        record("position", {"fields": []}, {})
+        return
+    # BOTH sides must not move together. The first version set A and B to the
+    # same value, so the separation stayed zero at every "distance" and the
+    # sweep read a flat line -- a null result manufactured by the rig, which is
+    # the exact failure this project's section 0 is about.
+    # BOTH sides must not move together. The first version set A and B to the
+    # same value, so the separation stayed zero at every "distance" and the
+    # sweep read a flat line -- a null result manufactured by the rig, which is
+    # the exact failure this project's section 0 is about.
+    print(f"\n  {'unit':6} {'range':>6} {'distance':>9} {'defender lost':>14}  "
+          f"result")
+    for unit, doc_range, probes in (("art", 50, (0, 25, 50, 51, 60, 75, 100)),
+                                    ("rrg", 150, (0, 100, 150, 151, 200)),
+                                    ("inf", 0, (0, 1, 25))):
+        for dist in probes:
+            ov = settings()
+            ov.update(duel(1, unit, 20, "inf", 20))
+            ov["A.1.position"] = "0"
+            ov["B.1.position"] = str(dist)
+            try:
+                p.submit(ov, create=("A.1.position", "B.1.position"))
+            except (BareFormReturned, ValueError) as e:
+                # An empty response IS the answer here: out of range, no
+                # battle. It is not a transport failure and must not be
+                # reported as one.
+                print(f"  {unit:6} {doc_range:>6} {dist:>9} {'—':>14}  "
+                      f"OUT OF RANGE (no result rows)")
+                record("position", {"unit": unit, "distance": dist,
+                                    "out_of_range": True}, {})
+                continue
+            d = dict(p.last_details)
+            record("position", {"unit": unit, "distance": dist,
+                                "detail": d},
+                   {k: (v or {}).get("lost") for k, v in d.items()})
+            b = (d.get("B.1.1") or {}).get("lost")
+            want = MEASURED_UNITS[unit][1] * effective_units(20)
+            print(f"  {unit:6} {doc_range:>6} {dist:>9} "
+                  + (f"{b:14.2f}" if b is not None else f"{'—':>14}")
+                  + ("  full damage" if b is not None and abs(b - want) < 0.05
+                     else "  in range but ATTENUATED" if b is not None
+                     else "  no rows"))
+    print("\n  Range is a BINARY gate, not a falloff: inside it the figure is "
+          "the same as at zero\n  distance, outside it the server returns no "
+          "result rows at all — there is no battle.")
+
+
+# Every (hero, unit) pair with a measured OUTPUT buff, and the level cap to
+# sweep to. Read with a SINGLE-TYPE stack, which needs no baseline subtraction
+# and cannot be contaminated by another curve.
+HERO_OUTPUT_PAIRS: list[tuple[str, str]] = [
+    ("joffre_home", "inf"), ("joffre_home", "ac"), ("alvin", "st"),
+    ("kangal", "ac"), ("hank", "inf"),
+]
+
+
+def exp_hero_output_curves(p: Probe) -> None:
+    """Re-read every output curve cleanly, one unit type at a time.
+
+    WHY NOT THE NINE-TYPE STACK. That screen exists to FIND which types a hero
+    buffs. Measuring a curve through it means subtracting a baseline and every
+    other buff the hero has, and joffre_home has two -- so its armoured-car
+    figure was computed by subtracting an INTERPOLATED infantry value at the
+    levels where infantry had never been read. One of them came out 1.1479,
+    which is not a number the site would produce; it is an artifact of the
+    subtraction.
+
+    A stack of one type has no such problem:
+
+        output = A + coefficient x E(count) x m(f) x M
+
+    with everything but M known, so M falls out of one request. It also dodges
+    the server's float refusal, because the stack is small enough to send at
+    99% and the m(f) term is carried explicitly rather than assumed away.
+    """
+    hp_pct = 99          # 100% of a buffed max trips the server's own check
+    m_f = 0.05 + 0.95 * (hp_pct / 100)
+    print(f"\n  Single-type stacks at {hp_pct}% HP, so m(f) = {m_f:.4f}.\n")
+    for hero, unit in HERO_OUTPUT_PAIRS:
+        cap = HERO_MAX_LEVEL.get(hero, 20)
+        a_def = MEASURED_HEROES[hero][0]
+        curve: dict[int, float] = {}
+        for lvl in range(1, cap + 1):
+            ov = settings()
+            ov.update(duel(1, "inf", SURVIVOR_N, unit, 2,
+                           def_hp=f"{hp_pct}%"))
+            ov.update(composite(1, "B", [(unit, 2)], hp=f"{hp_pct}%"))
+            ov.update({HERO_FIELDS[0]: hero, HERO_FIELDS[1]: str(lvl),
+                       HERO_FIELDS[2]: "100%"})
+            try:
+                p.submit(ov, create=composite_fields("B", 1, 1) + HERO_FIELDS)
+            except (BareFormReturned, ValueError) as e:
+                print(f"  ! {hero} {unit} L{lvl}: {e}", file=sys.stderr)
+                record("hero_output_curves", {"hero": hero, "unit": unit,
+                                              "level": lvl,
+                                              "error": str(e)}, {})
+                continue
+            d = dict(p.last_details)
+            record("hero_output_curves", {"hero": hero, "unit": unit,
+                                          "level": lvl, "hp_pct": hp_pct,
+                                          "detail": d},
+                   {k: (v or {}).get("lost") for k, v in d.items()})
+            a = d.get("A.1.1") or {}
+            if a.get("lost") is None or (a.get("pct") or 0) >= 99.9:
+                continue
+            m = (a["lost"] - a_def) / (DEF_COEF[unit] * effective_units(2) * m_f)
+            curve[lvl] = m
+        if not curve:
+            print(f"  {hero:13} {unit:5} nothing read")
+            continue
+        print(f"  {hero:13} {unit:5} "
+              + ", ".join(f"{l}:{curve[l]:.3f}" for l in sorted(curve)))
+        rounded = {l: round(v, 2) for l, v in curve.items()}
+        drift = max(abs(curve[l] - rounded[l]) for l in curve)
+        print(f"  {'':13} {'':5} rounds to 2dp within {drift:.4f}"
+              + ("" if drift < 0.005 else "  <-- NOT clean 2dp, quote as read"))
+
+
 def exp_variance(p: Probe, samples: int = 60) -> None:
     """Same battle repeatedly with variance ON, to characterise the roll.
 
@@ -5101,6 +5309,10 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "hero_curves": exp_hero_curves,
     "offdiag": exp_offdiag,
     "trench_gaps": exp_trench_gaps,
+    "fortress_edges": exp_fortress_edges,
+    "building_damage": exp_building_damage,
+    "position": exp_position,
+    "hero_output_curves": exp_hero_output_curves,
     "buildings": exp_buildings,
     "trenches": exp_trenches,
     "air_vs_ground": exp_air_vs_ground,
@@ -5117,7 +5329,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
 # it is about to spend on someone else's ad-supported fan site before it starts
 # rather than after. Approximate by design: saturation re-runs add a few.
 REQUEST_ESTIMATE: dict[str, int] = {
-    "unit_stats": 20, "buildings": 14, "patrol": 18, "mixed_stacks": 8, "heroes": 23, "stack_limits": 4, "hero_scaling": 9, "hero_table": 28, "hero_levels": 16, "hero_caps": 30, "stack_ladder": 9, "stack_order": 5, "hero_output": 21, "hero_buff_confirm": 5, "allocation": 9, "hero_full": 24, "hero_hp_cap": 22, "hero_sides": 30, "multi_round": 8, "hero_curves": 110, "offdiag": 8, "trench_gaps": 12, "trenches": 10, "air_vs_ground": 30,
+    "unit_stats": 20, "buildings": 14, "patrol": 18, "mixed_stacks": 8, "heroes": 23, "stack_limits": 4, "hero_scaling": 9, "hero_table": 28, "hero_levels": 16, "hero_caps": 30, "stack_ladder": 9, "stack_order": 5, "hero_output": 21, "hero_buff_confirm": 5, "allocation": 9, "hero_full": 24, "hero_hp_cap": 22, "hero_sides": 30, "multi_round": 8, "hero_curves": 110, "offdiag": 8, "trench_gaps": 12, "fortress_edges": 20, "building_damage": 9, "position": 15, "hero_output_curves": 70, "trenches": 10, "air_vs_ground": 30,
     "land_matrix": 100, "size_factor": 33, "hp_scaling": 10,
     "fortress": 6, "terrain": 7, "variance": 60,
 }
