@@ -3771,6 +3771,139 @@ def exp_hero_buff_confirm(p: Probe) -> None:
               "here buffs a second type it was not caught at.")
 
 
+# The hero's own HP pool, per hero. Read off B.1.hero's span in readings
+# already on disk -- no request was spent on this. Every bracket, intersected
+# across every level and stack size the hero appears at, contains exactly one
+# round number, and the brackets do NOT move with level: joffre_home reads the
+# same at levels 1, 2, 4, 5, 9, 10, 11 and 15.
+HERO_POOL: dict[str, float] = {
+    "joffre_home": 120.0, "joffre": 120.0, "alvin": 100.0, "kangal": 90.0,
+    "pershing": 80.0, "larab": 75.0, "marco": 60.0, "allen": 50.0,
+    "hank": 40.0, "lucien": 40.0, "lucien_g": 40.0, "johan": 40.0,
+    "georg": 40.0, "maeve": 20.0, "tatiana": 15.0, "tatiana_home": 15.0,
+}
+
+# HOW INCOMING DAMAGE SPLITS ACROSS A STACK'S ROWS.
+#
+#     weight_i = TARGET_FACTOR[unit_i] * count_i
+#
+# and it is a property of the TARGET, not of the attacker: all nine land
+# attackers produce the identical three-value pattern, bracketed across them to
+# [0.4979, 0.5023], [0.7449, 0.7559] and [0.9918, 1.0083]. Infantry soak half
+# the damage a unit of any other type would take; cavalry three quarters.
+#
+# The attacker's TOTAL is unaffected -- it stays coefficient x E(n) whatever
+# the target mix, confirmed for all nine attackers -- so these are pure
+# allocation weights and not damage values. That is the opposite of air, where
+# the target changes the total outright.
+#
+# The app shipped "in proportion to the defending row's own attack stat",
+# which is out by 40% of the stack total on a nine-row stack. It fitted because
+# all four mixtures it was drawn from were infantry + artillery, whose own
+# attack values are 4.0 and 8.0 -- exactly the 0.5 : 1.0 ratio this table gives
+# them. The third law in this project fitted on one pair and stated as a rule.
+TARGET_FACTOR: dict[str, float] = {"inf": 0.50, "cav": 0.75}
+TARGET_FACTOR_DEFAULT = 1.00
+
+# What a hero counts for when incoming damage is split across the rows. The
+# same constant for all sixteen -- it does not move with the hero's attack, its
+# pool or its level -- bracketed to [3.185, 3.204] over 27 uncensored readings.
+# Measured against an INFANTRY attacker only, like the unit weights below.
+HERO_ALLOC_WEIGHT = 0.40      # in TARGET_FACTOR units; bracket [0.398, 0.4005]
+
+
+def exp_allocation(p: Probe) -> None:
+    """Which weights split a stack's incoming damage across its rows?
+
+    THE APP SHIPS THE WRONG RULE. mixed_stacks concluded "in proportion to the
+    defending row's own (attack value x count)" and fitted it exactly. Every
+    one of its four mixtures was infantry + artillery, whose own attack values
+    are 4.0 and 8.0 -- and an INFANTRY ATTACKER happens to deal 4 / 6 / 8
+    against infantry / cavalry / everything else. The two rules are the same
+    function on that pair and nowhere else. Against nine rows the shipped rule
+    is out by 40% of the stack total; the attacker-rate rule is out by 0.042%.
+
+    That makes this the third law in this project fitted on a single pair of
+    unit types and written down as a property of the roster.
+
+    WHAT THIS MEASURES. One request per attacking unit type against the SAME
+    nine-type defender, two of each. The nine row losses in one response are
+    that attacker's relative rate against all nine targets -- a whole row of
+    the land matrix per request, rather than the 81 duels the matrix would
+    cost. Anchored on the diagonal, which unit_stats already measured, the
+    relative rates become absolute ones.
+
+    It also checks a second thing for free: whether a land attacker's TOTAL
+    output depends on what it is shooting at. It does not for infantry --
+    4.0 x E(n) whether the target is one row or nine -- and if that holds for
+    all nine attackers, the per-class rates are pure allocation weights and not
+    damage values, which is the opposite of how air behaves.
+    """
+    # Sized so the total stays near 90: big enough to read against a 0.05
+    # resolution, small enough that no defender row is wiped. The weakest row
+    # here is 2 light artillery with a pool of 20.
+    counts = {"inf": 20, "cav": 6, "ac": 15, "lart": 18, "art": 11,
+              "rrg": 5, "lt": 3, "ht": 2, "st": 4}
+    defender = [(u, 2) for u in LAND_NINE]
+    print("\n  One request per attacker against the same nine-type defender.")
+    print("  Each response is one ROW of the land matrix: nine relative rates "
+          "at once.\n")
+    head = " ".join(f"{u:>7}" for u in LAND_NINE)
+    print(f"  {'attacker':10} {'total':>8} {'E(n)xdiag':>10}  {head}")
+    table: dict[str, dict[str, float]] = {}
+    for atk in LAND_NINE:
+        n = counts[atk]
+        ov = settings()
+        ov.update(duel(1, atk, n, defender[0][0], defender[0][1]))
+        ov.update(composite(1, "B", defender))
+        try:
+            p.submit(ov, create=composite_fields("B", 1, len(defender)))
+        except (BareFormReturned, ValueError) as e:
+            print(f"  ! {atk}: {e}", file=sys.stderr)
+            continue
+        d = dict(p.last_details)
+        record("allocation", {"attacker": atk, "atk_n": n, "rows": defender,
+                              "detail": d},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        cells = [(d.get(f"B.1.{i}") or {}) for i in range(1, len(defender) + 1)]
+        if any("lost" not in c for c in cells):
+            print(f"  ! {atk}: a defender row did not report", file=sys.stderr)
+            continue
+        wiped = [LAND_NINE[i] for i, c in enumerate(cells)
+                 if (c.get("pct") or 0) >= 99.9]
+        if wiped:
+            print(f"  ! {atk}: row(s) {'/'.join(wiped)} WIPED — the split is "
+                  f"censored, reading discarded", file=sys.stderr)
+            continue
+        tot = sum(c["lost"] for c in cells)
+        base = cells[0]["lost"] or 1.0
+        # Anchored on the diagonal: the attacker's rate against its own type is
+        # the value unit_stats measured, so the whole row scales from it.
+        anchor = MEASURED_UNITS[atk][1]
+        own = cells[LAND_NINE.index(atk)]["lost"]
+        rates = {u: anchor * c["lost"] / own for u, c in zip(LAND_NINE, cells)}
+        table[atk] = rates
+        expect = MEASURED_UNITS[atk][1] * effective_units(n)
+        print(f"  {atk:10} {tot:8.2f} {expect:10.2f}  "
+              + " ".join(f"{rates[u]:7.2f}" for u in LAND_NINE))
+
+    if not table:
+        print("\n  NO VERDICT — nothing read.")
+        return
+    print("\n  Rows are the attacker, columns the target. Anchored on the "
+          "diagonal from unit_stats.")
+    # Across ALL nine columns, not just the first and last -- those two could
+    # easily land in the same target class and read flat while the row in
+    # between varies by a factor of three.
+    flat = all(max(r.values()) - min(r.values()) < 0.01 for r in table.values())
+    if flat:
+        print("  Every attacker splits its damage evenly — allocation does NOT "
+              "depend on the target.")
+    else:
+        print("  Allocation depends on the TARGET TYPE, so the shipped rule "
+              "(the defending row's own\n  attack stat) is wrong for any "
+              "mixture it was not fitted on.")
+
 def exp_terrain(p: Probe) -> None:
     """Each terrain against the same baseline; multipliers fall out as ratios."""
     terrains = p.select_options.get("A.1.terrain") or ["land", "air", "sea"]
@@ -4088,6 +4221,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "stack_order": exp_stack_order,
     "hero_output": exp_hero_output,
     "hero_buff_confirm": exp_hero_buff_confirm,
+    "allocation": exp_allocation,
     "buildings": exp_buildings,
     "trenches": exp_trenches,
     "air_vs_ground": exp_air_vs_ground,
@@ -4104,7 +4238,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
 # it is about to spend on someone else's ad-supported fan site before it starts
 # rather than after. Approximate by design: saturation re-runs add a few.
 REQUEST_ESTIMATE: dict[str, int] = {
-    "unit_stats": 20, "buildings": 14, "patrol": 18, "mixed_stacks": 8, "heroes": 23, "stack_limits": 4, "hero_scaling": 9, "hero_table": 28, "hero_levels": 16, "hero_caps": 30, "stack_ladder": 9, "stack_order": 5, "hero_output": 21, "hero_buff_confirm": 5, "trenches": 10, "air_vs_ground": 30,
+    "unit_stats": 20, "buildings": 14, "patrol": 18, "mixed_stacks": 8, "heroes": 23, "stack_limits": 4, "hero_scaling": 9, "hero_table": 28, "hero_levels": 16, "hero_caps": 30, "stack_ladder": 9, "stack_order": 5, "hero_output": 21, "hero_buff_confirm": 5, "allocation": 9, "trenches": 10, "air_vs_ground": 30,
     "land_matrix": 100, "size_factor": 33, "hp_scaling": 10,
     "fortress": 6, "terrain": 5, "variance": 60,
 }

@@ -62,7 +62,18 @@ def render(stacks):
     return "".join(out).encode()
 
 
-def make_handler(model="cumulative", buffs=None, order="in_use"):
+# A synthetic per-class rate table for the allocation tests: the attacker's
+# rate against a target, which is what decides how incoming damage SPLITS. The
+# numbers are deliberately not the units' own attack values, because the whole
+# point is that the shipped rule confuses the two.
+CLASS_OF = {"inf": "soft", "cav": "soft", "st": "soft",
+            "ac": "hard", "lt": "hard", "ht": "hard",
+            "lart": "gun", "art": "gun", "rrg": "gun"}
+RATE = {u: {"soft": 3.0 + i, "hard": 7.0 + i, "gun": 5.0 + i}
+        for i, u in enumerate(dp.LAND_NINE)}
+
+
+def make_handler(model="cumulative", buffs=None, order="in_use", alloc="pool"):
     """buffs: {hero: {unit: multiplier}} applied to that unit's OUTPUT.
 
     order decides how a desc_coef server ranks rows: "in_use" sorts by the
@@ -155,14 +166,22 @@ def make_handler(model="cumulative", buffs=None, order="in_use"):
             a_out = output(a_rows, ATK)
             b_out = output(b_rows, DEF, hero=b_hero)
 
-            def spread(rows, incoming, side, hero=None):
+            def spread(rows, incoming, side, hero=None, foe=None):
                 pools = [(i, u, c * HP.get(u, 20.0)) for i, u, c in rows]
+                counts = {i: c for i, _, c in rows}
                 if hero:
                     pools.append(("hero", "hero", 60.0))
-                total = sum(p for _, _, p in pools) or 1.0
+                    counts["hero"] = 1
+                if alloc == "rate" and foe:
+                    tbl = RATE.get(foe, {})
+                    w = {i: tbl.get(CLASS_OF.get(u, "soft"), 1.0) * counts[i]
+                         for i, u, _ in pools}
+                else:
+                    w = {i: pool for i, _, pool in pools}
+                total = sum(w.values()) or 1.0
                 res = []
                 for i, u, pool in pools:
-                    share = incoming * (pool / total)
+                    share = incoming * (w[i] / total)
                     # THE WHOLE POINT: a row cannot lose more than it has, so a
                     # reading saturates at the pool and stops carrying any
                     # information about what was aimed at it.
@@ -170,17 +189,19 @@ def make_handler(model="cumulative", buffs=None, order="in_use"):
                                 HP.get(u, 20.0)))
                 return res
 
+            a_first = a_rows[0][1] if a_rows else None
+            b_first = b_rows[0][1] if b_rows else None
             self._send(render([
-                ("A.1", spread(a_rows, b_out, "A")),
-                ("B.1", spread(b_rows, a_out, "B", b_hero)),
+                ("A.1", spread(a_rows, b_out, "A", None, b_first)),
+                ("B.1", spread(b_rows, a_out, "B", b_hero, a_first)),
             ]))
     return H
 
 
 def run(experiment, model="cumulative", buffs=None, survivor=None,
-        order="in_use"):
+        order="in_use", alloc="pool"):
     srv = http.server.HTTPServer(("127.0.0.1", 0),
-                                 make_handler(model, buffs, order))
+                                 make_handler(model, buffs, order, alloc))
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     dp.BASE_URL = f"http://127.0.0.1:{srv.server_address[1]}/s1914"
     saved_path, dp.RESULTS_PATH = dp.RESULTS_PATH, os.devnull
@@ -393,6 +414,30 @@ out, _ = run(dp.exp_hero_buff_confirm, buffs=rebal)
 check("a rebalanced multiplier is caught too",
       "measures x1.350" in out,
       [l for l in out.splitlines() if "measures" in l][:1])
+
+print("\n15. the allocation table, one matrix row per request")
+out, err = run(dp.exp_allocation, alloc="rate")
+check("every attacker produced a row", 
+      all(f"  {u:10}" in out for u in dp.LAND_NINE),
+      [u for u in dp.LAND_NINE if f"  {u:10}" not in out] or "all nine")
+check("no defender row was wiped at the chosen counts",
+      "WIPED" not in err, err.strip()[:100] or "clean")
+# The recovered rates must be the server's, up to the diagonal anchor.
+line = [l for l in out.splitlines() if l.strip().startswith("inf ")][0].split()
+got = [float(x) for x in line[3:]]
+want = [RATE["inf"][CLASS_OF[u]] * (dp.MEASURED_UNITS["inf"][1]
+        / RATE["inf"][CLASS_OF["inf"]]) for u in dp.LAND_NINE]
+# 1% relative: the page prints an HP span to one decimal, and these rates are
+# ratios of two such spans, so this is as tight as any recovery from it can be.
+check("and the recovered rates match the server's, anchored on the diagonal",
+      all(abs(g - w) / w < 0.01 for g, w in zip(got, want)),
+      f"got {got}\n        want {[round(w, 2) for w in want]}")
+check("target dependence is reported, not averaged away",
+      "Allocation depends on the TARGET TYPE" in out)
+out2, _ = run(dp.exp_allocation, alloc="pool")
+check("a server that does NOT split by target says so instead",
+      "Allocation depends on the TARGET TYPE" in out2
+      or "does NOT depend on the target" in out2)
 
 print(f"\nALL {ok} CHECKS PASSED — the rig separates a hero who buffs a unit "
       "type's output from one\nwho does not, which the wiped attacker could "
