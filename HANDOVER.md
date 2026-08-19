@@ -1571,8 +1571,15 @@ and closed the hero output channel. What remains:
    that only work on air and naval stacks. Both are in `NOT_MEASURED` in
    `web/data.js`.
 
-1. **`--run land_matrix`** — ~100 requests, so weigh it, but it is now the
-   single highest-value experiment left. `air_vs_ground` proved attack is
+1. **`--run land_matrix`** — ~100 requests, and **mostly no longer necessary.**
+   The `allocation` sweep showed a land attacker's TOTAL does not depend on its
+   target: the diagonal coefficient × E(n) reproduces every reading to 0.23%,
+   including two genuinely non-diagonal cases. The target dependence lives
+   entirely in the damage SPLIT, and that is measured for all nine targets. So
+   the 100-cell matrix is a diagonal plus a three-value table, not 100
+   unknowns. What is worth buying is a handful of single-type off-diagonal
+   duels to confirm it directly rather than through mixtures. The original
+   note follows, for the reasoning it still carries: `air_vs_ground` proved attack is
    **per target class**, so the whole `atk` column of `MEASURED_UNITS` is a
    diagonal of a matrix nobody has seen. Two things to check before trusting
    any of it:
