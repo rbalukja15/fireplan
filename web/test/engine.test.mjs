@@ -952,7 +952,11 @@ console.log('\n14. coverage of the record itself');
   // What remains are the two CONSTRAINT probes, whose readings are server
   // refusals encoded in STACK_GROUP and HEROES.maxLevel rather than physics to
   // replay: which types may share a stack, and each hero's real level cap.
-  const declaredNonReplay = ['stack_limits', 'hero_caps'];
+  // Constraint probes (server refusals, encoded rather than replayed) plus
+  // hero_targets, which is the sweep that showed a hero's buff lands on
+  // SPECIFIC unit types and can act on the HP pool -- a channel this engine
+  // has no term for, so it is declared rather than pretended.
+  const declaredNonReplay = ['stack_limits', 'hero_caps', 'hero_targets'];
   check('every unreplayed experiment is one the engine declares and explains',
     notReplayed.every((e) => declaredNonReplay.includes(e)),
     notReplayed.join(', ') || 'none');
@@ -961,6 +965,10 @@ console.log('\n14. coverage of the record itself');
     && /DELIBERATELY NOT MODELLED/.test(PROVENANCE['HEROES.measured'].note));
   check('and the app still declares heroes as a gap the user can see',
     NOT_MEASURED.some((g) => /hero/i.test(g.key) || /hero/i.test(g.what)));
+  check('the hero model states it was measured against infantry only',
+    /INFANTRY defender only/.test(PROVENANCE['HEROES.law'].note)
+    && /never "buffs nobody"/.test(PROVENANCE['HEROES.law'].note),
+    PROVENANCE['HEROES.law'].note.slice(0, 120));
   check('composite saturation and allocation are both recorded as measured',
     PROVENANCE['STACK.saturation'].confidence === 'measured'
     && PROVENANCE['STACK.allocation'].confidence === 'measured');

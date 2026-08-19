@@ -794,8 +794,13 @@ function renderHero(side) {
   } else if (def) {
     const b = ENGINE.heroBuff(cur.code, Number(lvlBox.value));
     const pieces = [`Fights as one unit at attack ${def.atk}`];
-    pieces.push(b.m > 1 ? `and multiplies the rest of the stack by ×${b.m.toFixed(2)}`
-      : 'and buffs nobody');
+    // NOT "buffs nobody". Every hero here was measured against INFANTRY, and
+    // dxcalc's help page says buffs apply to "the appropriate units" — Marco
+    // reads 1.00 against infantry while lifting a Tank stack's pool by 12%.
+    pieces.push(b.m > 1
+      ? `and multiplies infantry output by ×${b.m.toFixed(2)}`
+      : 'and does not buff infantry (what it does for the other eight land '
+        + 'types was never measured)');
     pieces.push(`(caps at level ${def.maxLevel} — the server refuses higher)`);
     note.textContent = pieces.join(' ') + '. ' + b.note + '.';
     note.className = b.exact ? 'field-note' : 'field-note is-warn';

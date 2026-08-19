@@ -666,6 +666,45 @@ Two things NOT to read into this table:
 
 Still level 10 throughout, and still defenders only.
 
+#### The buff is PER UNIT TYPE, and the table above is infantry-only
+
+**Correction, from dxcalc's own help page** (`/share/s1914.info.html`, which
+nobody in this project had read):
+
+> "The hero buffs will be applied to **the appropriate units** in the stack."
+
+Every hero reading here defends with **infantry**. So an `M` of 1.00 in the
+table above means *"does not buff infantry"*, and the earlier claim that
+fourteen heroes are "pure combat units that buff nobody" was measuring the
+wrong unit. Proved in four requests:
+
+| defender | no hero | with `marco` | |
+|---|---|---|---|
+| 10 × Tank | pool 1750.5 | **1961.7** | **×1.121** |
+| 10 × Infantry | pool 200.0 | 200.3 | ×1.00 |
+
+Marco reads 1.00 against infantry and lifts a Tank stack's HP by 12%. The help
+page names him specifically: *"the light tank HP values you input should be the
+values with Marco in the stack"*.
+
+Two consequences, both of which shrink what is known:
+
+1. **What the other fourteen do to the eight untested land types is UNKNOWN,
+   not zero.** The full question is 16 heroes × 9 land types, of which one
+   column is measured.
+2. **A buff can act on the HP POOL, not just on output.** The model's `M` is an
+   output multiplier and has no term for this at all. Marco's entire effect is
+   invisible to it.
+
+The help page also documents mechanics nothing here has touched: Tōgō's
+bombardment runs **6 rounds** and hits anything within **40 km**, Lucien's gas
+runs **9 rounds** with level-dependent radius, and Tatiana/Joffre's paired
+entries are province-dependent. All of these are multi-round or positional, and
+this project has measured neither dimension.
+
+**Read the help page before designing the next hero experiment.** It cost one
+request and it invalidated a headline conclusion.
+
 #### Sixteen of 22 changed a land battle; six are refused outright
 
 Naval heroes are **server-rejected on land**, cleanly:
@@ -1323,8 +1362,10 @@ Publishing requires one manual setting that no API can flip: **Settings → Page
 - Do other units have a separate building-damage stat like infantry's 0.3? One
   `buildings`-style run per unit would give the whole column. Still open, and
   now the cheapest unmeasured column in the model.
-- **PARTLY ANSWERED (2026-08-17).** Heroes measured at level 10 against a land
-  stack: 16 of 22 change the battle, up to x1.40. A hero is a UNIT that the
+- **PARTLY ANSWERED (2026-08-17), and narrower than it first looked.** The
+  buff is per unit type and every reading is infantry, so "M = 1.00" means
+  "does not buff infantry". A buff can also act on the HP pool, which the
+  model has no term for. Heroes measured against a land stack: 16 of 22 change the battle, up to x1.40. A hero is a UNIT that the
   summary table counts, and its help is **two parts** — its own attack fighting
   as one unit, plus a multiplier on the rest of the stack — decomposed exactly
   for two heroes (`kangal` 20.0/x1.00, `joffre_home` 16.0/x1.30). The other 14

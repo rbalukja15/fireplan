@@ -397,8 +397,23 @@ export const DAMAGE_ALLOCATION = 'attack_times_count';
 // because a stack saturates cumulatively in roster order (see STACK.saturation).
 //
 // A DOES NOT MOVE WITH LEVEL -- verified across levels 1, 2, 4, 5, 9, 10, 11
-// and 15, always the same figure. M does, but only two heroes have one; the
-// other fourteen are pure combat units at M = 1.00 everywhere tested.
+// and 15, always the same figure.
+//
+// M IS NOT A WHOLE-STACK MULTIPLIER, and an earlier version of this file said
+// it was. dxcalc's own help page states "the hero buffs will be applied to the
+// APPROPRIATE units in the stack", and every hero reading here defends with
+// INFANTRY. So an M of 1.00 below means "does not buff infantry" -- it does
+// NOT mean the hero buffs nobody, and the app must not say that it does.
+//
+// Measured proof: Fiero "Marco" Martello reads M = 1.00 against infantry, yet
+// a stack of ten Tanks goes from a pool of 1750.5 without him to 1961.7 with
+// him -- x1.121. His buff is real, it lands on a unit type never tested, and
+// it is on the HP POOL rather than on output, which is a channel this model
+// does not represent at all.
+//
+// So `buff` below means "output multiplier, measured against infantry only".
+// Two heroes have one. What the other fourteen do to the eight land types
+// nobody has tested is UNKNOWN, not zero.
 //
 // Every value below is a MEASUREMENT, decomposed from two stack sizes so that
 // A and M are separated rather than confounded. `maxLevel` is the server's own
@@ -730,7 +745,12 @@ export const PROVENANCE = {
     confidence: 'measured',
     source: 'results.jsonl, experiments heroes / hero_scaling / hero_table / hero_levels / '
       + 'hero_caps: 100+ requests.',
-    note: 'output = A * heroEffective + unit_coef * M * unitEffective. All 16 land-legal '
+    note: 'SCOPE: measured against an INFANTRY defender only. dxcalc\'s help page says hero '
+      + 'buffs apply to "the appropriate units in the stack", and Marco proves it -- M = 1.00 '
+      + 'against infantry but a Tank stack pool goes 1750.5 -> 1961.7 (x1.121) with him. His '
+      + 'buff is also on the POOL, a channel this model has no term for. A 1.00 below means '
+      + '"does not buff infantry", never "buffs nobody". '
+      + 'output = A * heroEffective + unit_coef * M * unitEffective. All 16 land-legal '
       + 'heroes decomposed from two stack sizes so A and M are separated, each validated '
       + 'against a held-out third stack size to 0.002%. A does NOT move with level (checked '
       + 'at 1, 2, 4, 5, 9, 10, 11, 15). 14 of 16 are pure combat units with M = 1.00 at every '

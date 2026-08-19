@@ -260,11 +260,13 @@
         next to the enemy.</li>
       <li><strong>Variance.</strong> The game rolls roughly &plusmn;10%. Nothing here is rolled;
         these are the variance-off figures.</li>
-      <li><strong>Heroes.</strong> Modelled: a hero fights as one unit and may multiply the
-        rest of the stack, decomposed for all 16 that work on land. But only the two that
-        buff have a level curve, its shape is irregular below level 5, no hero has been
-        measured while <em>attacking</em>, and a hero's own damage taken is measured but
-        not yet modelled &mdash; those cells stay blank rather than showing zero.</li>
+      <li><strong>Heroes.</strong> A hero fights as one unit &mdash; that part is measured for
+        all 16 that work on land. Its <em>buff</em> is only measured against
+        <strong>infantry</strong>: dxcalc's own help says buffs apply to &ldquo;the
+        appropriate units&rdquo;, and Marco proves it, reading no effect on infantry while
+        lifting a Tank stack's HP by 12%. So &ldquo;does not buff infantry&rdquo; here never
+        means &ldquo;buffs nobody&rdquo;. HP-channel buffs are not modelled at all, nor are
+        attacking heroes, nor a hero's own damage taken.</li>
       <li><strong>The Balloon.</strong> Not one quantity was ever measured &mdash; the calculator
         refuses to accept it in the air.</li>
     </ul>
