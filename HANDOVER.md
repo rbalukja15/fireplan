@@ -48,6 +48,49 @@ What that session established, in one place:
   0.25, 0.5 and 0.75 all deliver one whole strike — while patrol genuinely
   does; whole rounds repeat in both.
 
+### 2026-08-19, second half: everything else
+
+Sixteen sweeps, ~450 requests. What was open at the start of it and is now
+closed:
+
+| was | now |
+|---|---|
+| every reading was ONE round | the multi-round law, 0.042% — and the app was 13.66% out, declaring wipes that do not happen |
+| 90 of 100 land pairings unknown | a land attacker's coefficient is target-independent; eight single-type off-diagonal duels are EXACT |
+| damage split by the row's own attack | `TARGET_FACTOR × count` — infantry 0.50, cavalry 0.75, else 1.00, hero 0.40. The old rule was 40% out |
+| trench levels 6-9, 11-14, 16-19 unsampled | all 21 measured; both curves are staircases that step in pairs |
+| terrain never submitted | sea and debark replace a land unit's stats with a FLAT 1.0 |
+| variance never sampled | ONE uniform ±10% roll per side per round, not per unit |
+| position never exercised | range is a BINARY gate: artillery 50 km, railgun 150, infantry 1 |
+| fortress DR above level 5 unknown | it caps at 5, and works identically on the ATTACKING side |
+| building damage for infantry only | a per-unit column for eight of nine (heavy tanks censored) |
+| hero curves sampled at 1/5/10/15/20 | every level of every curve, both channels |
+| six heroes "nothing measured" | all six decomposed: own attack and the unit type each buffs |
+
+**What the last stretch cost me, and is worth knowing.** Three of those
+findings began as a wrong first answer that the replay caught:
+
+- Multi-round first fitted "fractional survivors, no m(f)" at 0.221%, which
+  would have CONTRADICTED the `hp_scaling` law. Searching the combinations
+  instead of stopping at the first good number gave one that reconciles with
+  it, at 0.042%.
+- Richthofen first came out ×1.07, from dividing his excess by the
+  un-attenuated coefficient on a path that is evaluated post-fire. Against the
+  real baseline he is ×1.30 like every other air and naval hero.
+- Each air/naval hero's own attack was first taken as the SMALLEST reading
+  that isolates it, when those readings differ by up to 0.14. The midpoint
+  fits; the minimum does not.
+
+**And one self-inflicted regression, which is the most important line here.**
+An edit replaced a block by cutting to the next blank line and deleted TWELVE
+checks with it — including the assertion that `engine.js` and `data.js`
+contain no network call of any kind. The suite total went UP at the same time,
+because other checks were being added, so nothing looked wrong. It was found
+by diffing removed `check(` lines against `HEAD`, not by running the suite.
+**Run `git diff HEAD -- web/test/engine.test.mjs | grep "^-.*check("` after any
+bulk edit to a test file.** A test suite that only ever grows is not evidence
+that nothing was lost.
+
 **Read §1 before anything else: the next session needs to start in the right
 environment, and that cannot be fixed once it is running.**
 
@@ -1676,7 +1719,7 @@ That split is the app working as intended: it would have been easy to quote a
 single coefficient to three decimals and be believed.
 
 ```bash
-node web/test/engine.test.mjs      # 904 checks, no network
+node web/test/engine.test.mjs      # 1072 checks, no network
 ```
 
 The app is also where §0 gets enforced rather than merely written down. Every
