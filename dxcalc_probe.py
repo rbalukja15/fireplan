@@ -1583,8 +1583,10 @@ DEF_COEF = {code: v[2] for code, v in MEASURED_UNITS.items()}
 ROSTER_ORDER = sum(UNIT_CLASSES.values(), [])
 
 
-def predict_stack(rows: list[tuple[str, int]], model: str) -> float:
-    """Predicted defensive output of a composite stack under each candidate.
+def predict_stack(rows: list[tuple[str, int]], model: str,
+                  coef: dict[str, float] | None = None,
+                  order_by: dict[str, float] | None = None) -> float:
+    """Predicted output of a composite stack under each candidate law.
 
     per_type    every row saturates on its own count       sum E(c_i)
     shared      one saturation for the stack, split by count share
@@ -1592,21 +1594,44 @@ def predict_stack(rows: list[tuple[str, int]], model: str) -> float:
                 order the ROSTER lists them -- not the order they were
                 submitted. Submitting art before inf returns the inf-first
                 answer, so the server sorts before it computes.
+    desc_coef   the same shared pool, but drawn STRONGEST FIRST: rows are
+                ordered by the damage coefficient in use, descending, so the
+                weakest type in a stack is the one squeezed into the saturated
+                tail.
+
+    cumulative and desc_coef are the same function whenever the roster happens
+    to list a stack's types in descending order of strength, which is exactly
+    what every mixed_stacks layout did -- all of them were inf + art, and
+    infantry both precedes artillery in the roster and out-damages it. The
+    nine-row ladder is the first stack that separates them, and it separates
+    them by 52%.
     """
+    coef = DEF_COEF if coef is None else coef
+    # Which column SORTS the rows is a separate question from which column
+    # scores them. An attacking stack is scored by the attack coefficients
+    # whatever orders it, so conflating the two turns "ordered by defence"
+    # into a prediction no hypothesis actually makes.
+    order_by = coef if order_by is None else order_by
     total = sum(c for _, c in rows) or 1
     if model == "per_type":
-        return sum(DEF_COEF.get(u, 0.0) * effective_units(c) for u, c in rows)
+        return sum(coef.get(u, 0.0) * effective_units(c) for u, c in rows)
     if model == "shared":
-        return sum(DEF_COEF.get(u, 0.0) * effective_units(total) * (c / total)
+        return sum(coef.get(u, 0.0) * effective_units(total) * (c / total)
                    for u, c in rows)
-    ordered = sorted(rows, key=lambda r: (ROSTER_ORDER.index(r[0])
-                                          if r[0] in ROSTER_ORDER else 99))
+    if model == "desc_coef":
+        ordered = sorted(rows, key=lambda r: -order_by.get(r[0], 0.0))
+    else:
+        ordered = sorted(rows, key=lambda r: (ROSTER_ORDER.index(r[0])
+                                              if r[0] in ROSTER_ORDER else 99))
     out, seen = 0.0, 0
     for u, c in ordered:
-        out += DEF_COEF.get(u, 0.0) * (effective_units(seen + c)
-                                       - effective_units(seen))
+        out += coef.get(u, 0.0) * (effective_units(seen + c)
+                                   - effective_units(seen))
         seen += c
     return out
+
+
+STACK_LAWS = ("per_type", "shared", "cumulative", "desc_coef")
 
 
 PATROL_TARGETS = ["inf", "ac", "ht"]
@@ -2549,7 +2574,7 @@ def exp_mixed_stacks(p: Probe) -> None:
                       "own. Mixing costs the later type, and you cannot reorder "
                       "your way out of it.")
         else:
-            print(f"\n  VERDICT: none of the three fits (best is {best} at "
+            print(f"\n  VERDICT: none of the candidates fits (best is {best} at "
                   f"{100 * errs[best]:.2f}%). The table above is the finding — "
                   f"do not compress it.")
 
@@ -3278,6 +3303,406 @@ def exp_hero_caps(p: Probe) -> None:
               "hero here,\n  and the server says so rather than clamping.")
 
 
+# The nine land types that can share one stack. convoy is excluded because the
+# server refuses it alongside anything else, and it is the only land type that
+# cannot appear in a mixed army.
+LAND_NINE = ["inf", "cav", "ac", "lart", "art", "rrg", "lt", "ht", "st"]
+
+# An attacker whose only job is to be shot at, so that its loss reports the
+# DEFENDER'S OUTPUT rather than its own pool. Sixty infantry carry 1200 HP; the
+# largest output any candidate law predicts for the stacks below is 697. The
+# hero screen that preceded this one used twenty (pool 400) and was wiped in
+# every single run -- 400.0 of 400.0, sixteen times -- so its output column was
+# a constant and could not have distinguished anything.
+SURVIVOR_N = 60
+
+# A and M as decomposed by hero_table and hero_levels, mirrored from
+# web/data.js. A is the hero's own attack, flat with level. M is the multiplier
+# it applies to INFANTRY output -- the only unit type the decomposition ever
+# put underneath a hero -- quoted at level 10. M = 1.00 means "no infantry buff
+# was found", which is emphatically not the same as "this hero buffs nothing".
+MEASURED_HEROES: dict[str, tuple[float, float]] = {
+    "kangal": (20.0, 1.00), "joffre": (16.0, 1.00), "joffre_home": (16.0, 1.30),
+    "marco": (15.0, 1.00), "allen": (10.0, 1.00), "larab": (10.0, 1.00),
+    "alvin": (8.30, 1.00), "lucien": (8.0, 1.00), "lucien_g": (8.0, 1.00),
+    "pershing": (8.0, 1.00), "georg": (6.0, 1.00), "tatiana": (6.0, 1.00),
+    "hank": (6.0, 1.09), "johan": (5.0, 1.00), "tatiana_home": (5.0, 1.00),
+    "maeve": (4.0, 1.00),
+}
+
+
+def _defender_output(p: Probe, rows: list[tuple[str, int]],
+                     hero: str | None = None, level: int = 10,
+                     atk_n: int | None = None) -> dict | None:
+    """One request: the attacker's HP loss IS the defender's output.
+
+    Returns None both when the server refuses and when the attacker is WIPED,
+    because a wiped attacker reports its own pool and nothing about the
+    defender. Those two cases look identical downstream once they are written
+    as a number, which is precisely how the previous hero screen collected
+    sixteen readings of 400.0 and read them as data.
+    """
+    # Resolved here rather than bound as a default, so that the offline suite
+    # can shrink the attacker and prove this function refuses a censored
+    # reading instead of returning the pool as if it were data.
+    atk_n = SURVIVOR_N if atk_n is None else atk_n
+    ov = settings()
+    ov.update(duel(1, "inf", atk_n, rows[0][0], rows[0][1]))
+    ov.update(composite(1, "B", rows))
+    create = composite_fields("B", 1, len(rows))
+    if hero:
+        ov.update({HERO_FIELDS[0]: hero, HERO_FIELDS[1]: str(level),
+                   HERO_FIELDS[2]: "100%"})
+        create = create + HERO_FIELDS
+    label = f"{hero or 'no hero'} vs {'+'.join(u for u, _ in rows)}"
+    try:
+        p.submit(ov, create=create)
+    except (BareFormReturned, ValueError) as e:
+        print(f"  ! {label}: {e}", file=sys.stderr)
+        record("survivable_rig", {"hero": hero, "rows": rows,
+                                  "error": str(e)}, {})
+        return None
+    d = dict(p.last_details)
+    a = d.get("A.1.1") or {}
+    record("survivable_rig", {"hero": hero, "level": level if hero else None,
+                              "rows": rows, "atk_n": atk_n, "detail": d},
+           {k: (v or {}).get("lost") for k, v in d.items()})
+    if a.get("lost") is None:
+        print(f"  ! {label}: no attacker row in the response", file=sys.stderr)
+        return None
+    if (a.get("pct") or 0) >= 99.9:
+        print(f"  ! {label}: ATTACKER WIPED ({a['lost']} of {a.get('pool')}) "
+              f"-- reading discarded, that is the pool and not the output",
+              file=sys.stderr)
+        return None
+    return {"out": a["lost"], "detail": d}
+
+
+def exp_stack_ladder(p: Probe) -> None:
+    """Does the cumulative law survive a stack with more than two rows?
+
+    WHY THIS EXISTS. mixed_stacks established "PER STACK, CUMULATIVE IN ROSTER
+    ORDER" on two-row stacks, and the web app applies it to every stack. A
+    nine-row stack already on disk contradicts it: six of each land type made
+    an attacker of twenty infantry lose 400.0 of a 400.0 pool, so the
+    defender's output was at LEAST 400, while cumulative predicts 299.35. That
+    reading is censored -- 400 is a floor and not a value -- so it refutes
+    cumulative without naming a replacement. shared predicts 451.89 and
+    per_type 697.20.
+
+    THE DISCRIMINATOR. Add one type at a time, six units each. Below twenty
+    units all three laws are the same function, so those rows are a free check
+    on the defence coefficients in a mixed stack; past it they diverge to a
+    spread of 398 HP by the ninth row. This time the attacker can absorb the
+    largest of them.
+    """
+    print(f"\n  {SURVIVOR_N} infantry (pool {SURVIVOR_N * 20}) attack a stack "
+          f"grown one type at a time, six each.\n")
+    print(f"  {'rows':>4} {'units':>5} {'measured':>9} " +
+          " ".join(f"{m:>11}" for m in STACK_LAWS))
+    seen: list[tuple[list[tuple[str, int]], float]] = []
+    for k in range(1, len(LAND_NINE) + 1):
+        rows = [(u, 6) for u in LAND_NINE[:k]]
+        got = _defender_output(p, rows)
+        n = sum(c for _, c in rows)
+        if not got:
+            print(f"  {k:>4} {n:>5} {'—':>9}")
+            continue
+        seen.append((rows, got["out"]))
+        print(f"  {k:>4} {n:>5} {got['out']:9.2f} " +
+              " ".join(f"{predict_stack(rows, m):11.2f}" for m in STACK_LAWS))
+
+    wide = [(r, o) for r, o in seen if sum(c for _, c in r) > 20]
+    if not wide:
+        print("\n  NO VERDICT — nothing past the twenty-unit knee was read, "
+              "and below it the three laws are the same function.")
+        return
+    errs = {m: max(abs(o - predict_stack(r, m)) / o for r, o in wide)
+            for m in STACK_LAWS}
+    for m in STACK_LAWS:
+        print(f"    {m:11} worst error {100 * errs[m]:6.2f}%")
+    best = min(errs, key=errs.get)
+    if errs[best] <= 0.01:
+        print(f"\n  VERDICT: {best} fits every row past the knee "
+              f"({100 * errs[best]:.3f}%).")
+        if best != "cumulative":
+            print("  THIS OVERTURNS mixed_stacks, which only ever built "
+                  "two-row stacks — where\n  cumulative and the winner here "
+                  "differ by less than the reading precision. The\n  web app "
+                  "ships cumulative and is therefore wrong for wide stacks. "
+                  "Fix engine.js.")
+    else:
+        print(f"\n  VERDICT: none of the candidates fits (best is {best} at "
+              f"{100 * errs[best]:.2f}%). The measured column is the\n  "
+              f"finding — do not compress it into a law, and do not leave the "
+              f"app claiming one\n  that missed by that much.")
+
+
+ATK_COEF = {code: v[1] for code, v in MEASURED_UNITS.items()}
+
+
+def exp_stack_order(p: Probe) -> None:
+    """Validate desc_coef on stacks it was not fitted to, and find its key.
+
+    exp_stack_ladder fitted "the stack saturates as a whole and rows draw from
+    it strongest first" to 0.002% on nine readings. Fitting a law to the data
+    that suggested it is not the same as testing it, and this project has twice
+    shipped a law that fitted everything it had seen and then failed on the
+    first configuration it had not. So:
+
+      HELD OUT. Three defending stacks of a shape the ladder never built --
+      different types, different counts, chosen so desc_coef sits at least 40%
+      away from every other candidate. Predictions below are written down
+      BEFORE the requests go out; they are in the printout so a later reader
+      can see they were not adjusted afterwards.
+
+      THE KEY. A stack ordered "strongest first" begs the question of which
+      strength. Defending, attack and defence coefficients rank the roster
+      differently -- an armoured car out-defends a stormtrooper 12.0 to 6.3 and
+      is out-attacked by it 6.0 to 25.0 -- so an ATTACKING stack of those two
+      separates "ordered by the coefficient in use" from "ordered by some fixed
+      ranking of units". The app has to know which; it computes both sides.
+    """
+    print("\n  1. held out: three defending stacks the ladder never built\n")
+    print(f"  {'stack':34} {'measured':>9} " +
+          " ".join(f"{m:>10}" for m in STACK_LAWS))
+    held = [
+        [("lart", 30), ("art", 30), ("rrg", 30)],
+        [("lart", 25), ("ht", 25)],
+        [("inf", 30), ("ac", 30), ("lt", 30)],
+    ]
+    scored: list[tuple[str, float, dict[str, float]]] = []
+    for rows in held:
+        pred = {m: predict_stack(rows, m) for m in STACK_LAWS}
+        # Big enough for the largest prediction on the board, whichever wins.
+        atk_n = int(max(pred.values()) / 20.0) + 30
+        label = " + ".join(f"{c} {u}" for u, c in rows)
+        got = _defender_output(p, rows, atk_n=atk_n)
+        cells = " ".join(f"{pred[m]:10.2f}" for m in STACK_LAWS)
+        if not got:
+            print(f"  {label:34} {'—':>9} {cells}")
+            continue
+        scored.append((label, got["out"], pred))
+        print(f"  {label:34} {got['out']:9.2f} {cells}")
+
+    if scored:
+        errs = {m: max(abs(o - pred[m]) / o for _, o, pred in scored)
+                for m in STACK_LAWS}
+        print()
+        for m in STACK_LAWS:
+            print(f"    {m:11} worst error {100 * errs[m]:7.3f}%")
+        best = min(errs, key=errs.get)
+        if errs[best] <= 0.01:
+            print(f"\n  HELD OUT: {best} predicted stacks it was not fitted "
+                  f"to, worst error {100 * errs[best]:.3f}%.")
+        else:
+            print(f"\n  HELD OUT: FAILED. The best candidate is {best} at "
+                  f"{100 * errs[best]:.3f}%, so the ladder's law does not\n  "
+                  f"generalise and must not be shipped as one.")
+
+    print("\n  2. which coefficient does the ordering use?\n")
+    # Attacking, so it is the ATTACK column that is in play. Both pairs are
+    # ranked one way by attack and the other way by defence, and the second
+    # separates all three candidates by more than 60%: a stormtrooper out-
+    # attacks infantry 25 to 4 while defending barely better, 6.3 to 5.0.
+    print(f"  {'attacking stack':22} {'measured':>9} {'by ATK':>10} "
+          f"{'by DEF':>10} {'roster':>10}")
+    obs_rows: list[tuple[str, float, dict[str, float]]] = []
+    for rows in ([("ac", 25), ("st", 25)], [("inf", 30), ("st", 30)]):
+        cand = {
+            "by ATK": predict_stack(rows, "desc_coef", coef=ATK_COEF),
+            "by DEF": predict_stack(rows, "desc_coef", coef=ATK_COEF,
+                                    order_by=DEF_COEF),
+            "roster": predict_stack(rows, "cumulative", coef=ATK_COEF),
+        }
+        ov = settings()
+        ov.update(duel(1, rows[0][0], rows[0][1], "ht", 60))
+        ov.update(composite(1, "A", rows))
+        label = " + ".join(f"{c} {u}" for u, c in rows)
+        try:
+            p.submit(ov, create=composite_fields("A", 1, len(rows)))
+        except (BareFormReturned, ValueError) as e:
+            print(f"  ! {label}: {e}", file=sys.stderr)
+            continue
+        d = dict(p.last_details)
+        record("stack_order", {"rows": rows, "side": "A", "detail": d},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        b = d.get("B.1.1") or {}
+        if b.get("lost") is None:
+            print(f"  ! {label}: no defender row", file=sys.stderr)
+            continue
+        if (b.get("pct") or 0) >= 99.9:
+            print(f"  ! {label}: DEFENDER WIPED, reading discarded",
+                  file=sys.stderr)
+            continue
+        obs_rows.append((label, b["lost"], cand))
+        print(f"  {label:22} {b['lost']:9.2f} " +
+              " ".join(f"{cand[k]:10.2f}" for k in ("by ATK", "by DEF",
+                                                    "roster")))
+
+    # Scored JOINTLY, not pair by pair. Neither pair alone separates all three
+    # -- the first ties defence with roster and the second ties defence with
+    # attack -- but no two hypotheses share BOTH answers, so the pair of
+    # readings picks one and a per-pair vote would deadlock on the ties.
+    if not obs_rows:
+        print("\n  NO VERDICT on the ordering key — no attacking reading "
+              "survived.")
+    else:
+        errs = {k: max(abs(o - c[k]) / o for _, o, c in obs_rows)
+                for k in ("by ATK", "by DEF", "roster")}
+        print()
+        for k in ("by ATK", "by DEF", "roster"):
+            print(f"    {k:8} worst error {100 * errs[k]:7.3f}%")
+        best = min(errs, key=errs.get)
+        if errs[best] > 0.01:
+            print(f"\n  NO VERDICT — the closest key, {best}, still misses by "
+                  f"{100 * errs[best]:.2f}%. The stack ordering\n  is not any "
+                  f"of the three, and the two readings above are the finding.")
+        elif best == "by ATK":
+            print("\n  VERDICT: an attacking stack is ordered by its ATTACK "
+                  "coefficients — the column\n  actually in use, not a fixed "
+                  "ranking of units. Each side sorts by its own,\n  so the app "
+                  "needs two sorts and not one.")
+        elif best == "by DEF":
+            print("\n  VERDICT: the ordering is by the DEFENCE column on both "
+                  "sides, so one fixed\n  ranking of units governs attack and "
+                  "defence alike.")
+        else:
+            print("\n  VERDICT: attacking stacks keep ROSTER order, so the "
+                  "strongest-first rule found\n  on defence does not carry "
+                  "over. The app needs a different sort per side.")
+
+
+def exp_hero_output(p: Probe) -> None:
+    """Does any hero raise the OUTPUT of a land type other than infantry?
+
+    WHAT WENT WRONG LAST TIME. The screen that found the HP channel put all
+    nine land types in one stack and read the attacker's loss for each hero.
+    The attacker was twenty infantry and every run wiped it, so that column
+    read 400.0 sixteen times: the pool, not the output. It measured the HP
+    channel by accident and the output channel not at all, and reported the
+    latter as covered. This is the same experiment with an attacker that lives.
+
+    THE DESIGN. Nine rows of TWO units is eighteen, and the hero makes
+    nineteen — under the twenty-unit knee, so E is linear, every row
+    contributes coefficient x count, and all three stack laws agree. That
+    matters: the screen does not depend on which one exp_stack_ladder settles.
+
+    A hero with no output buff must raise the stack's output by exactly its own
+    attack A, which hero_table already measured. The whole screen is therefore
+    one subtraction, and joffre_home is a POSITIVE CONTROL that has to come out
+    at A + 0.30 x 5.0 x 2 = A + 3.0 rather than at A. If the control fails,
+    nothing else on this page is worth reading.
+
+    LOCALISING. An excess says a type is buffed, not which one. Removing a
+    group of types from the stack drops the output by their coefficients if
+    they are unbuffed and by more if one of them is not, so a bisection names
+    the type in four requests without needing a fresh baseline per subset.
+    """
+    stack = [(u, 2) for u in LAND_NINE]
+    n_units = sum(c for _, c in stack)
+    flat = sum(DEF_COEF[u] * c for u, c in stack)
+    print(f"\n  Defender: two of each land type ({n_units} units; the hero "
+          f"makes {n_units + 1}, under the knee).")
+    print(f"  Attacker: {SURVIVOR_N} infantry, pool {SURVIVOR_N * 20}.")
+    print(f"  All three stack laws predict the same {flat:.2f} here, so the "
+          f"screen does not depend\n  on which one is right.\n")
+
+    base = _defender_output(p, stack)
+    if not base:
+        print("  NO VERDICT — the baseline itself did not read.")
+        return
+    err = 100.0 * abs(base["out"] - flat) / flat
+    print(f"  baseline (no hero): {base['out']:.2f} measured, {flat:.2f} "
+          f"predicted, {err:.2f}% off")
+    if err > 1.0:
+        print("  ! The baseline disagrees with the defence coefficients in a "
+              "mixed stack, so an\n  ! excess cannot be attributed to a hero. "
+              "Settle that before reading the table.")
+
+    print(f"\n  {'hero':14} {'output':>8} {'excess':>8} {'own A':>7} "
+          f"{'unexplained':>12}")
+    flagged: list[tuple[str, float]] = []
+    for h in hero_options():
+        if h not in MEASURED_HEROES:
+            continue
+        a, m_inf = MEASURED_HEROES[h]
+        got = _defender_output(p, stack, hero=h)
+        if not got:
+            print(f"  {h:14} {'—':>8}")
+            continue
+        excess = got["out"] - base["out"]
+        # What this hero is already known to do: its own attack, plus the
+        # infantry buff hero_levels measured, applied to the two infantry here.
+        known = a + (m_inf - 1.0) * DEF_COEF["inf"] * 2
+        resid = excess - known
+        mark = ("  <-- buffs something" if resid > 0.2 else
+                "  <-- CONTRADICTS hero_table" if resid < -0.2 else "")
+        print(f"  {h:14} {got['out']:8.2f} {excess:8.2f} {a:7.2f} "
+              f"{resid:12.2f}{mark}")
+        if abs(resid) > 0.2:
+            flagged.append((h, resid))
+
+    # A NEGATIVE residual is not a buff and bisection cannot localise one: it
+    # says this hero contributes LESS than hero_table recorded, which
+    # contradicts an earlier measurement rather than adding a new one. Say so
+    # instead of hunting for a unit type that will not be there.
+    short = [(h, r) for h, r in flagged if r < 0]
+    for h, r in short:
+        print(f"\n  ! {h} falls {abs(r):.2f} HP SHORT of A + the infantry buff "
+              f"on record.\n  ! That contradicts hero_table/hero_levels; one of "
+              f"the two measurements is wrong.\n  ! Not bisecting — there is no "
+              f"missing buff to find, there is a missing explanation.")
+    flagged = [(h, r) for h, r in flagged if r > 0]
+
+    if not flagged and short:
+        print("\n  NO VERDICT on the output channel — the contradiction(s) "
+              "above have to be settled\n  first. A hero whose own attack does "
+              "not reproduce cannot be used as the zero\n  against which "
+              "another hero's excess is read.")
+        return
+    if not flagged:
+        print("\n  VERDICT: every hero's excess is its own attack plus the "
+              "infantry buff already\n  measured. No hero raises the output of "
+              "any other land type — down to a floor of\n  0.2 HP, which on "
+              "the weakest row here (light artillery, 2.00) is a 10% buff. "
+              "Any\n  smaller one would still be hiding.")
+        return
+
+    print(f"\n  {len(flagged)} hero(es) do something unaccounted for. "
+          f"Bisecting for the type.\n")
+    for h, resid in flagged:
+        a, m_inf = MEASURED_HEROES[h]
+
+        def explained(kept: list[tuple[str, int]]) -> float:
+            """Everything this stack should produce if the buff is NOT here."""
+            n_inf = sum(c for u, c in kept if u == "inf")
+            return (sum(DEF_COEF[u] * c for u, c in kept)
+                    + a + (m_inf - 1.0) * DEF_COEF["inf"] * n_inf)
+
+        cands = list(LAND_NINE)
+        while len(cands) > 1:
+            half = cands[:len(cands) // 2]
+            kept = [(u, 2) for u in LAND_NINE if u not in half]
+            got = _defender_output(p, kept, hero=h)
+            if not got:
+                print(f"  {h}: bisection lost a reading, stopping at "
+                      f"{'/'.join(cands)}")
+                break
+            # If the unexplained excess SURVIVES the removal, the type causing
+            # it is in what was kept; if it vanishes, it was in what was cut.
+            survived = got["out"] - explained(kept)
+            cands = ([c for c in cands if c not in half] if survived > 0.2
+                     else half)
+        if len(cands) == 1:
+            u = cands[0]
+            mult = 1.0 + resid / (DEF_COEF[u] * 2)
+            print(f"  {h:14} buffs {u.upper()} output x{mult:.3f} "
+                  f"(residual {resid:.2f} over a base of {DEF_COEF[u] * 2:.2f})")
+        else:
+            print(f"  {h:14} narrowed to {'/'.join(cands)}, not resolved")
+
+
 def exp_terrain(p: Probe) -> None:
     """Each terrain against the same baseline; multipliers fall out as ratios."""
     terrains = p.select_options.get("A.1.terrain") or ["land", "air", "sea"]
@@ -3591,6 +4016,9 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "hero_table": exp_hero_table,
     "hero_levels": exp_hero_levels,
     "hero_caps": exp_hero_caps,
+    "stack_ladder": exp_stack_ladder,
+    "stack_order": exp_stack_order,
+    "hero_output": exp_hero_output,
     "buildings": exp_buildings,
     "trenches": exp_trenches,
     "air_vs_ground": exp_air_vs_ground,
@@ -3607,7 +4035,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
 # it is about to spend on someone else's ad-supported fan site before it starts
 # rather than after. Approximate by design: saturation re-runs add a few.
 REQUEST_ESTIMATE: dict[str, int] = {
-    "unit_stats": 20, "buildings": 14, "patrol": 18, "mixed_stacks": 8, "heroes": 23, "stack_limits": 4, "hero_scaling": 9, "hero_table": 28, "hero_levels": 16, "hero_caps": 30, "trenches": 10, "air_vs_ground": 30,
+    "unit_stats": 20, "buildings": 14, "patrol": 18, "mixed_stacks": 8, "heroes": 23, "stack_limits": 4, "hero_scaling": 9, "hero_table": 28, "hero_levels": 16, "hero_caps": 30, "stack_ladder": 9, "stack_order": 5, "hero_output": 21, "trenches": 10, "air_vs_ground": 30,
     "land_matrix": 100, "size_factor": 33, "hp_scaling": 10,
     "fortress": 6, "terrain": 5, "variance": 60,
 }
