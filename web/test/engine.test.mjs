@@ -36,8 +36,10 @@ import { dirname, join } from 'node:path';
 import {
   UNITS, TRENCH_POOL, TRENCH_POOL_BRACKET, TRENCH_OUTPUT, PROVENANCE, NOT_MEASURED,
   MAX_UNIT_ROWS,
+  HEROES,
 } from '../data.js';
 import {
+  heroBuff,
   effectiveUnits, hpMultiplier, fortressDR, trenchFactors, coverageOf, simulate,
 } from '../engine.js';
 
@@ -860,12 +862,85 @@ console.log('\n12. composite stacks — replayed against the four measured mixtu
 }
 
 // ===========================================================================
-console.log('\n13. coverage of the record itself');
+console.log('\n13. heroes — replayed against every measured reading');
+// ===========================================================================
+// A hero is a unit plus a buff, and the app now models it. Replayed here
+// against the live figures for all three shapes: a pure combat unit, the one
+// strong buffer, and the hero that sits AFTER the units and therefore adds
+// nothing to a saturated stack.
+{
+  const battle = (hero, n) => simulate({
+    attacker: { rows: [{ unit: 'inf', count: 20 }] },
+    defender: { rows: [{ unit: 'inf', count: n }], hero },
+  }).attacker.hpLost;
+
+  const measured = {
+    kangal: { 10: 70.00, 30: 159.92, 50: 190.00 },
+    joffre_home: { 10: 81.00, 30: 197.89, 50: 237.00 },
+    maeve: { 10: 54.00, 30: 144.27, 50: 175.00 },
+  };
+  for (const [code, byN] of Object.entries(measured)) {
+    for (const [n, want] of Object.entries(byN)) {
+      const got = battle({ code, level: 10 }, Number(n));
+      check(`${code} at n=${n}: ${got.toFixed(2)} vs measured ${want}`,
+        Math.abs(got - want) <= 0.05, `${(got - want).toFixed(3)} off`);
+    }
+  }
+  check('maeve adds NOTHING to a saturated stack — she draws from the tail',
+    Math.abs(battle({ code: 'maeve', level: 10 }, 50) - battle(null, 50)) < 1e-9);
+  check('while she does help a small one',
+    battle({ code: 'maeve', level: 10 }, 10) > battle(null, 10));
+
+  // A does not move with level; M does, for the two heroes that have one.
+  check('a pure unit is level-independent (A is flat, M = 1.00)',
+    Math.abs(battle({ code: 'kangal', level: 1 }, 30)
+      - battle({ code: 'kangal', level: 10 }, 30)) < 1e-9);
+  check('joffre_home at level 1 is measurably weaker than at 15',
+    battle({ code: 'joffre_home', level: 1 }, 30)
+      < battle({ code: 'joffre_home', level: 15 }, 30));
+  check('its level-1 buff is the measured 1.10',
+    Math.abs(heroBuff('joffre_home', 1).m - 1.10) < 1e-9);
+  check('and a measured level is flagged exact',
+    heroBuff('joffre_home', 15).exact === true);
+  check('while an unmeasured one is flagged interpolated, not exact',
+    heroBuff('joffre_home', 13).exact === false
+    && /interpolated/.test(heroBuff('joffre_home', 13).note),
+    heroBuff('joffre_home', 13).note);
+  check('an interpolated buff lands between its two measured neighbours',
+    heroBuff('joffre_home', 13).m > 1.32 && heroBuff('joffre_home', 13).m < 1.40);
+
+  // Caps are the server's own, not the dropdown's 1-20.
+  const capped = simulate({
+    attacker: { rows: [{ unit: 'inf', count: 20 }] },
+    defender: { rows: [{ unit: 'inf', count: 30 }], hero: { code: 'kangal', level: 20 } },
+  });
+  check('a level above the hero cap is clamped and explained',
+    capped.coverage.caveats.some((c) => /caps at level 10/.test(c)),
+    capped.coverage.caveats.join(' | '));
+
+  // Heroes with nothing measured on land must not silently do nothing.
+  const naval = simulate({
+    attacker: { rows: [{ unit: 'inf', count: 20 }] },
+    defender: { rows: [{ unit: 'inf', count: 30 }], hero: { code: 'otto', level: 10 } },
+  });
+  check('a land-refused hero is named, not silently dropped',
+    naval.coverage.caveats.some((c) => /Otto Hersing/.test(c)),
+    naval.coverage.caveats.join(' | '));
+  check('and the battle still computes without its effect',
+    Math.abs(naval.attacker.hpLost - 141.67) < 0.01, String(naval.attacker.hpLost));
+}
+
+// ===========================================================================
+console.log('\n14. coverage of the record itself');
 // ===========================================================================
 {
   const counts = {};
   for (const r of rows) counts[r.experiment] = (counts[r.experiment] || 0) + 1;
-  const replayed = ['semantics', 'unit_stats', 'hp_scaling', 'air_vs_ground', 'trenches', 'fortress', 'buildings', 'patrol', 'mixed_stacks'];
+  const replayed = ['semantics', 'unit_stats', 'hp_scaling', 'air_vs_ground', 'trenches',
+    'fortress', 'buildings', 'patrol', 'mixed_stacks',
+    // Heroes are now modelled and replayed above: the sweeps that measured
+    // them are physics the engine reproduces, not declared omissions.
+    'heroes', 'hero_scaling', 'hero_table', 'hero_levels'];
   const notReplayed = Object.keys(counts).filter((e) => !replayed.includes(e));
   console.log(`  note  replayed: ${replayed.map((e) => `${e} ${counts[e] || 0}`).join(', ')}`);
   console.log(`  note  NOT replayed: ${notReplayed.map((e) => `${e} ${counts[e]}`).join(', ') || 'none'}`);
@@ -874,10 +949,10 @@ console.log('\n13. coverage of the record itself');
   // would put a confident number on 19 unmeasured ones. Declared, not dropped.
   // stack_limits is a constraints probe, not a physics sweep: its readings are
   // server refusals, and they are encoded in STACK_GROUP rather than replayed.
-  // Everything hero-shaped is measured but deliberately unmodelled (level 10
-  // only, defenders only), and stack_limits is a constraints probe whose
-  // readings are server refusals encoded in STACK_GROUP rather than replayed.
-  const declaredNonReplay = ['heroes', 'hero_scaling', 'hero_table', 'stack_limits'];
+  // What remains are the two CONSTRAINT probes, whose readings are server
+  // refusals encoded in STACK_GROUP and HEROES.maxLevel rather than physics to
+  // replay: which types may share a stack, and each hero's real level cap.
+  const declaredNonReplay = ['stack_limits', 'hero_caps'];
   check('every unreplayed experiment is one the engine declares and explains',
     notReplayed.every((e) => declaredNonReplay.includes(e)),
     notReplayed.join(', ') || 'none');

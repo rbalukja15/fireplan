@@ -215,6 +215,8 @@ function el(tag, className, text) {
 const UNITS = DATA ? (DATA.UNITS || {}) : {};
 const BUILDINGS = DATA ? (DATA.BUILDINGS || {}) : {};
 const PATROL = DATA ? (DATA.PATROL || { observedAdvantage: {} }) : { observedAdvantage: {} };
+const HEROES = DATA ? (DATA.HEROES || {}) : {};
+const HEROES_REFUSED = DATA ? (DATA.HEROES_LAND_REFUSED || {}) : {};
 
 const UNIT_CODES = Object.keys(UNITS);
 const BUILDING_CODES = Object.keys(BUILDINGS);
@@ -260,8 +262,8 @@ function newRow(unit, count) {
 }
 
 const DEFAULT_STATE = () => ({
-  attacker: { rows: [newRow()], trench: 0, buildings: [] },
-  defender: { rows: [newRow()], trench: 0, buildings: [] },
+  attacker: { rows: [newRow()], trench: 0, buildings: [], hero: null },
+  defender: { rows: [newRow()], trench: 0, buildings: [], hero: null },
   rounds: 1,
   mode: 'strike',
 });
@@ -381,6 +383,7 @@ function boot() {
   $('rounds').addEventListener('change', onCommit);
   $('mode').addEventListener('change', onInput);
 
+
   $('builders').addEventListener('click', (ev) => {
     const addRow = ev.target.closest('[data-add-row]');
     if (addRow) { addUnitRow(addRow.dataset.addRow); return; }
@@ -463,6 +466,7 @@ function buildStack(side) {
 
   fillTrenchSelect($(side + '-trench'));
   renderRows(side);
+  renderHero(side);
 }
 
 function clampHp(v) {
@@ -712,6 +716,97 @@ function maxLevelOf(code) {
   return Number.isFinite(m) && m > 0 ? m : 5;
 }
 
+/**
+ * The hero picker. One per stack — the game refuses a second — so this is a
+ * select and a level box, not a list.
+ *
+ * Heroes with nothing measured against a land stack are still OFFERED, in a
+ * separate group, because omitting them would imply they do not exist. They
+ * are labelled with the server's own refusal and the engine withholds their
+ * effect rather than treating the absence as a zero.
+ */
+function renderHero(side) {
+  const sel = $(side + '-hero');
+  const lvlBox = $(side + '-hero-lvl');
+  const note = $(side + '-hero-note');
+  if (!sel || !lvlBox) return;
+  const cur = state[side].hero;
+
+  if (!sel.dataset.built) {
+    const none = document.createElement('option');
+    none.value = '';
+    none.textContent = 'No hero';
+    sel.appendChild(none);
+    const known = document.createElement('optgroup');
+    known.label = 'Measured on land';
+    for (const [code, h] of Object.entries(HEROES)) {
+      const o = document.createElement('option');
+      o.value = code;
+      o.textContent = `${h.label} — atk ${h.atk}${h.buff ? ', buffs the stack' : ''}`;
+      known.appendChild(o);
+    }
+    sel.appendChild(known);
+    const bad = document.createElement('optgroup');
+    bad.label = 'Nothing measured on land';
+    for (const [code, h] of Object.entries(HEROES_REFUSED)) {
+      const o = document.createElement('option');
+      o.value = code;
+      o.textContent = h.label;
+      bad.appendChild(o);
+    }
+    sel.appendChild(bad);
+    sel.dataset.built = '1';
+
+    // Bound HERE, not at boot: buildStack() rewrites the panel's innerHTML,
+    // so a listener attached before that is attached to a discarded node and
+    // the level box silently never enables.
+    sel.addEventListener('change', () => {
+      const code = sel.value;
+      const def = HEROES[code];
+      state[side].hero = code
+        ? { code, level: def ? Math.min(10, def.maxLevel) : 10 }
+        : null;
+      renderHero(side);
+      recompute();
+    });
+    lvlBox.addEventListener('input', () => {
+      const cur2 = state[side].hero;
+      if (!cur2) return;
+      const def = HEROES[cur2.code];
+      cur2.level = Math.max(1, Math.min(def ? def.maxLevel : 20,
+        Number(lvlBox.value) || 1));
+      renderHero(side);
+      recompute();
+    });
+  }
+
+  sel.value = cur ? cur.code : '';
+  const def = cur && HEROES[cur.code];
+  lvlBox.disabled = !def;
+  if (def) {
+    lvlBox.max = String(def.maxLevel);
+    lvlBox.value = String(Math.min(cur.level || 1, def.maxLevel));
+  }
+
+  if (!cur) {
+    note.textContent = 'Every figure on this page assumes no hero unless one is chosen here.';
+    note.className = 'field-note';
+  } else if (def) {
+    const b = ENGINE.heroBuff(cur.code, Number(lvlBox.value));
+    const pieces = [`Fights as one unit at attack ${def.atk}`];
+    pieces.push(b.m > 1 ? `and multiplies the rest of the stack by ×${b.m.toFixed(2)}`
+      : 'and buffs nobody');
+    pieces.push(`(caps at level ${def.maxLevel} — the server refuses higher)`);
+    note.textContent = pieces.join(' ') + '. ' + b.note + '.';
+    note.className = b.exact ? 'field-note' : 'field-note is-warn';
+  } else {
+    const r = HEROES_REFUSED[cur.code];
+    note.textContent = r ? `${r.why} No effect is applied — nothing about this `
+      + 'hero was measurable against a land stack.' : 'Unrecognised hero.';
+    note.className = 'field-note is-warn';
+  }
+}
+
 function renderBuildings(side) {
   const list = $(side + '-bldgs');
   if (!list) return;
@@ -735,6 +830,7 @@ function renderBuildings(side) {
       b.code = typeSel.value;
       b.level = Math.min(b.level, maxLevelOf(b.code));
       renderBuildings(side);
+      renderHero(side);
       recompute();
     });
 
@@ -924,6 +1020,7 @@ function cloneSide(s) {
     rows,
     trench: s.trench,
     buildings: s.buildings.map((b) => ({ code: b.code, level: b.level, hpPct: b.hpPct })),
+    hero: s.hero ? { code: s.hero.code, level: s.hero.level } : null,
   };
   if (rows.length === 1) {
     out.unit = rows[0].unit;
@@ -1199,6 +1296,34 @@ function renderRowSplit(prefix, sideResult, cfg) {
   // way (effectiveByRow, or E(n) applied cumulatively).
   const fallbackEff = effectiveOf(cfgRows);
   let unmatched = 0;
+
+  // The hero is a row of the stack, not an annotation on it: it takes a slot
+  // in the saturating order and its output is part of the stack's total. It
+  // comes from the ENGINE's rows[], never from the config's unit list, so it
+  // is drawn here before them.
+  const heroRow = engineRows ? engineRows.find((r) => r && r.isHero) : null;
+  if (heroRow) {
+    const tr = document.createElement('tr');
+    tr.className = 'is-hero';
+    const cells = [
+      `${heroRow.label} (hero, lvl ${heroRow.level})`,
+      (typeof heroRow.effective === 'number' ? fmt(heroRow.effective, 1) : '—'),
+      '—',
+      '—',
+      '—',
+      (typeof heroRow.damageDealt === 'number' ? fmt(heroRow.damageDealt) : '—'),
+    ];
+    cells.forEach((text, i) => {
+      const td = document.createElement('td');
+      if (i > 0) td.className = 'c-val';
+      td.textContent = text;
+      tr.appendChild(td);
+    });
+    tr.title = 'A hero fights as one unit and may multiply the rest of the '
+      + 'stack. Its own HP loss is measured but not yet modelled, so those '
+      + 'cells are blank rather than zero.';
+    body.appendChild(tr);
+  }
 
   cfgRows.forEach((r, i) => {
     const u = UNITS[r.unit] || {};

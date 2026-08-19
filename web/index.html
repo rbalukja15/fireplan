@@ -255,10 +255,16 @@
         exactly &mdash; but on <em>two-type land mixtures only</em> (infantry with artillery, four
         layouts). Three types, or a mixture spanning classes, was never submitted.</li>
       <li><strong>Multi-round battles.</strong> Every measurement used exactly one round.</li>
+      <li><strong>Positioning and range.</strong> Never exercised. Every measurement sits at
+        position 0, so artillery (50&nbsp;km) and railguns (150&nbsp;km) were read standing
+        next to the enemy.</li>
       <li><strong>Variance.</strong> The game rolls roughly &plusmn;10%. Nothing here is rolled;
         these are the variance-off figures.</li>
-      <li><strong>Heroes, positioning and range.</strong> Never exercised. All measurements sit at
-        position 0 with no hero.</li>
+      <li><strong>Heroes.</strong> Modelled: a hero fights as one unit and may multiply the
+        rest of the stack, decomposed for all 16 that work on land. But only the two that
+        buff have a level curve, its shape is irregular below level 5, no hero has been
+        measured while <em>attacking</em>, and a hero's own damage taken is measured but
+        not yet modelled &mdash; those cells stay blank rather than showing zero.</li>
       <li><strong>The Balloon.</strong> Not one quantity was ever measured &mdash; the calculator
         refuses to accept it in the air.</li>
     </ul>
@@ -354,6 +360,23 @@
         <select id="{s}-trench" name="{s}-trench" aria-describedby="{s}-trench-note"></select>
         <p class="field-note" id="{s}-trench-note"></p>
       </div>
+    </div>
+
+    <div class="hero-block">
+      <div class="bldg-head">
+        <h3>Hero</h3>
+      </div>
+      <div class="hero-row">
+        <label class="hero-field">
+          <span>Hero</span>
+          <select id="{s}-hero"></select>
+        </label>
+        <label class="hero-field hero-lvl">
+          <span>Level</span>
+          <input type="number" id="{s}-hero-lvl" min="1" max="20" step="1" value="10" inputmode="numeric">
+        </label>
+      </div>
+      <p class="field-note" id="{s}-hero-note"></p>
     </div>
 
     <div class="bldg-block">

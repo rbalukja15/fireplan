@@ -385,6 +385,57 @@ export const STACK_GROUP_LABEL = {
 //       by attack x count 53.3 / 26.7     exact
 export const DAMAGE_ALLOCATION = 'attack_times_count';
 
+// ---------------------------------------------------------------------------
+// HEROES
+// ---------------------------------------------------------------------------
+// A hero is a UNIT PLUS A BUFF, at most one per stack:
+//
+//     output = A * heroEffective  +  unit_coef * M * unitEffective
+//
+// A is the hero's own attack, fighting as one unit; M multiplies everything
+// the rest of the stack deals. WHERE it sits decides both effective counts,
+// because a stack saturates cumulatively in roster order (see STACK.saturation).
+//
+// A DOES NOT MOVE WITH LEVEL -- verified across levels 1, 2, 4, 5, 9, 10, 11
+// and 15, always the same figure. M does, but only two heroes have one; the
+// other fourteen are pure combat units at M = 1.00 everywhere tested.
+//
+// Every value below is a MEASUREMENT, decomposed from two stack sizes so that
+// A and M are separated rather than confounded. `maxLevel` is the server's own
+// refusal ("Max level is 10"), not the 1..20 the dropdown offers for everyone.
+export const HEROES = {
+  kangal:       { label: 'Orhan “Kangal” Demir',        atk: 20.0, sits: 'first', maxLevel: 10 },
+  joffre:       { label: 'Joseph Joffre (Non Homeland)', atk: 16.0, sits: 'first', maxLevel: 15 },
+  joffre_home:  { label: 'Joseph Joffre (Homeland)',     atk: 16.0, sits: 'first', maxLevel: 15,
+                  buff: { 1: 1.10, 2: 1.15, 4: 1.16, 5: 1.20, 9: 1.28, 10: 1.30, 11: 1.32, 15: 1.40 } },
+  marco:        { label: 'Fiero “Marco” Martello',      atk: 15.0, sits: 'first', maxLevel: 10 },
+  allen:        { label: 'Viscount Allenby',            atk: 10.0, sits: 'first', maxLevel: 15 },
+  larab:        { label: 'Lawrence of Arabia',          atk: 10.0, sits: 'first', maxLevel: 20 },
+  alvin:        { label: 'Alvin C. York',               atk: 8.30, sits: 'first', maxLevel: 20 },
+  lucien:       { label: 'Lucien Laroche',              atk: 8.0,  sits: 'first', maxLevel: 15 },
+  lucien_g:     { label: 'Lucien Laroche w/gas',        atk: 8.0,  sits: 'first', maxLevel: 15 },
+  pershing:     { label: 'John J. Pershing “Black Jack”', atk: 8.0, sits: 'first', maxLevel: 20 },
+  georg:        { label: 'Georg Bruchmüller',           atk: 6.0,  sits: 'first', maxLevel: 20 },
+  tatiana:      { label: 'Tatiana Minchakievich (Enemy Land)', atk: 6.0, sits: 'first', maxLevel: 20 },
+  hank:         { label: 'Henry “Hank” Callahan',       atk: 6.0,  sits: 'first', maxLevel: 10,
+                  buff: { 1: 1.00, 2: 1.03, 5: 1.06, 9: 1.09, 10: 1.09 } },
+  johan:        { label: 'Johan “Aardvark” Maes',       atk: 5.0,  sits: 'first', maxLevel: 20 },
+  tatiana_home: { label: 'Tatiana Minchakievich (Friendly Land)', atk: 5.0, sits: 'first', maxLevel: 20 },
+  maeve:        { label: 'Fiona “Maeve” Porter',        atk: 4.0,  sits: 'last',  maxLevel: 15 },
+};
+
+// Accepted by the form but refused on land by the server, so nothing about
+// them is measured. Named so the app can offer them and say why it cannot
+// compute them, rather than pretending they do not exist.
+export const HEROES_LAND_REFUSED = {
+  otto:   { label: 'Otto Hersing',                 maxLevel: 15, why: "Can't have Otto Hersing on land." },
+  togo:   { label: 'Tōgō Heihachirō',              maxLevel: null, why: "Can't have Tōgō Heihachirō on land." },
+  togo_b: { label: 'Tōgō Heihachirō w/bombardment', maxLevel: null, why: "Can't have Tōgō Heihachirō w/bombardment on land." },
+  ivan:   { label: 'Ivan “Vedmid” Kovalenko',      maxLevel: 10, why: "Can't have Ivan “Vedmid” Kovalenko on land." },
+  rbaron: { label: 'Manfred Von Richthofen',       maxLevel: null, why: 'Accepted on land but changed nothing — an air ace with no air units to help.' },
+  thaden: { label: 'Wilhelm von Thaden',           maxLevel: 15, why: 'Accepted on land but changed nothing — no measurable effect on a land stack.' },
+};
+
 export const FORM_DOMAINS = {
   terrain: ['land', 'sea', 'air', 'patrol', 'debark'],
   positionKm: [0, 1, 2, 3, 10, 20, 30, 40, 50, 75, 150],
@@ -674,6 +725,25 @@ export const PROVENANCE = {
       + 'is the group size (land 9, air 4, sea 3, convoy 1), not the page maxUnits of 15 and '
       + 'certainly not the 8 this app first shipped. Every refusal was stated by the server, '
       + 'not inferred from a null reading.',
+  },
+  'HEROES.law': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiments heroes / hero_scaling / hero_table / hero_levels / '
+      + 'hero_caps: 100+ requests.',
+    note: 'output = A * heroEffective + unit_coef * M * unitEffective. All 16 land-legal '
+      + 'heroes decomposed from two stack sizes so A and M are separated, each validated '
+      + 'against a held-out third stack size to 0.002%. A does NOT move with level (checked '
+      + 'at 1, 2, 4, 5, 9, 10, 11, 15). 14 of 16 are pure combat units with M = 1.00 at every '
+      + 'level tested; only joffre_home and hank buff, and their curves are stored as measured '
+      + 'points rather than fitted, because neither is a clean line or a clean step.',
+  },
+  'HEROES.levels': {
+    confidence: 'estimated',
+    source: 'joffre_home at levels 1,2,4,5,9,10,11,15; hank at 1,2,5,9,10; kangal at 1,5,10.',
+    note: 'ONLY the buff varies with level, and only for two heroes. Its measured points are '
+      + 'stored verbatim; a level between them is INTERPOLATED and the app says so. From level '
+      + '5 up joffre_home is exactly 1.10 + 0.02*level, but levels 1-4 (1.10, 1.15, -, 1.16) '
+      + 'do not fit that or any step, so no formula is used.',
   },
   'integrity': {
     confidence: 'measured',

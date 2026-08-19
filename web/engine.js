@@ -34,6 +34,8 @@ import {
   MAX_UNIT_ROWS,
   STACK_GROUP,
   STACK_GROUP_LABEL,
+  HEROES,
+  HEROES_LAND_REFUSED,
 } from './data.js';
 
 const EPS = 1e-9;
@@ -246,6 +248,43 @@ export function normaliseRows(cfg) {
  * is not a battle at all -- so the engine reports the conflict rather than
  * computing a number for an army that cannot be fielded.
  */
+/**
+ * A hero's stack multiplier at a given level.
+ *
+ * The measured points are stored verbatim and a level between them is
+ * INTERPOLATED, because neither buffing hero's curve is a clean line or a
+ * clean step: joffre_home is exactly 1.10 + 0.02*level from level 5 up, but
+ * levels 1-4 read 1.10 / 1.15 / - / 1.16 and fit nothing. Fitting a formula
+ * through that would be inventing nineteen values from eight.
+ */
+export function heroBuff(code, level) {
+  const h = HEROES[code];
+  if (!h) return { m: null, exact: false, note: 'unknown hero' };
+  if (!h.buff) {
+    return { m: 1.0, exact: true,
+             note: `${h.label} is a pure combat unit — measured at M = 1.00 at every level tried.` };
+  }
+  const lv = Math.max(1, Math.min(h.maxLevel || 20, Math.round(num(level, 1))));
+  const pts = Object.keys(h.buff).map(Number).sort((a, b) => a - b);
+  if (h.buff[lv] !== undefined) {
+    return { m: h.buff[lv], exact: true,
+             note: `measured directly at level ${lv}` };
+  }
+  const below = pts.filter((x) => x < lv).pop();
+  const above = pts.find((x) => x > lv);
+  if (below === undefined || above === undefined) {
+    const near = below === undefined ? above : below;
+    return { m: h.buff[near], exact: false,
+             note: `level ${lv} is outside the measured range (${pts[0]}-`
+               + `${pts[pts.length - 1]}); using level ${near}` };
+  }
+  const t = (lv - below) / (above - below);
+  return { m: h.buff[below] + t * (h.buff[above] - h.buff[below]), exact: false,
+           note: `level ${lv} was never submitted; interpolated between the `
+             + `measured levels ${below} (x${h.buff[below]}) and ${above} `
+             + `(x${h.buff[above]})` };
+}
+
 export function stackGroupsOf(rows) {
   const groups = new Set();
   for (const r of rows || []) {
@@ -446,6 +485,7 @@ function num(v, fallback) {
 
 function makeSide(cfg, role, derivation, caveats) {
   let side_groupConflict = null;
+  let side_hero = null;
   const label = role === 'attacker' ? 'Attacker' : 'Defender';
   const tf = trenchFactors(cfg && cfg.trench);
 
@@ -489,6 +529,40 @@ function makeSide(cfg, role, derivation, caveats) {
     caveats.push(side_groupConflict);
   }
 
+  // THE HERO. One per stack (addHero refuses a second). It fights as a single
+  // unit at its own attack value, and multiplies what the rest of the stack
+  // deals. Where it sits is measured per hero and changes both effective
+  // counts, because the stack saturates cumulatively in roster order.
+  const heroCfg = cfg && cfg.hero;
+  let hero = null;
+  if (heroCfg && heroCfg.code) {
+    const known = HEROES[heroCfg.code];
+    const refused = HEROES_LAND_REFUSED[heroCfg.code];
+    if (known) {
+      const lvl = Math.max(1, Math.min(known.maxLevel,
+        Math.round(num(heroCfg.level, 1))));
+      if (num(heroCfg.level, 1) > known.maxLevel) {
+        caveats.push(`${label}: ${known.label} caps at level ${known.maxLevel} — `
+          + `the server states so outright and refuses anything higher, even `
+          + `though the form offers 1-20 for every hero. Clamped.`);
+      }
+      const buff = heroBuff(heroCfg.code, lvl);
+      hero = { code: heroCfg.code, def: known, level: lvl,
+               atk: known.atk, m: buff.m, exact: buff.exact, note: buff.note };
+      if (!buff.exact) {
+        hero.interpolated = true;
+        caveats.push(`${label}: ${known.label} — ${buff.note}.`);
+      }
+    } else if (refused) {
+      hero = { code: heroCfg.code, refused };
+      caveats.push(`${label}: ${refused.label} has nothing measured against a `
+        + `land stack — ${refused.why} No hero effect is applied.`);
+    } else {
+      caveats.push(`${label}: unrecognised hero "${heroCfg.code}" ignored.`);
+    }
+  }
+  side_hero = hero && hero.def ? hero : null;
+
   const primary = rows.length ? rows[0].unit : resolveUnit(cfg && cfg.unit);
   const n = rows.reduce((t, r) => t + r.count, 0);
   const anyPoolUnknown = rows.some((r) => r.pool === null);
@@ -505,6 +579,7 @@ function makeSide(cfg, role, derivation, caveats) {
   const side = {
     role, label, unit, rows, n0: n, n, hpPct, tf,
     groupConflict: side_groupConflict,
+    hero: side_hero,
     perUnitMaxHP: null, poolFull: 0, pool: 0,
     hpLost: 0, deaths: 0, damageDealt: 0, outputRaw: 0, wiped: false,
     buildings: [],
@@ -663,6 +738,18 @@ function runSimulation(config, derivation, caveats) {
   const conflicts = [atk.groupConflict, def.groupConflict].filter(Boolean);
   let level = matchup.level;
   const reasons = [matchup.reason];
+
+  // An interpolated hero level is an ESTIMATE, and the banner is the one place
+  // a reader actually looks. A caveat bullet under a green "Measured matchup"
+  // headline is not enough — the app shipped exactly that for a moment.
+  for (const sd of [atk, def]) {
+    if (sd.hero && sd.hero.interpolated) {
+      level = worst(level, 'estimated');
+      reasons.push(`The ${sd.role}'s hero sits at a level that was never `
+        + 'submitted, so its stack multiplier is interpolated between measured '
+        + 'levels rather than read off one.');
+    }
+  }
 
   // ---- mode: direct strike or patrol ---------------------------------------
   const patrol = patrolMode(config.mode || (config.attacker && config.attacker.mode),
@@ -900,20 +987,35 @@ function runSimulation(config, derivation, caveats) {
     const defParts = stackOutput(def, (u) => defenceCoefficient(u, atk.unit).value,
                                  def.tf.output * patrolScale);
     const defOutput = defParts.total === null ? 0 : defParts.total;
-    if (def.rows.length > 1) {
+    if (def.rows.length > 1 || def.hero) {
       for (const pt of defParts.parts) {
+        if (pt.hero) {
+          derivation.push({
+            label: `${tag}Defender hero: ${def.hero.def.label}`,
+            formula: `${pt.coef} attack x ${round4(pt.mul)} effective = `
+              + `${round4(pt.out)} — fights as one unit, sitting `
+              + `${def.hero.def.sits} in the stack`
+              + (def.hero.m > 1
+                ? `; it also multiplies the units below by x${round4(def.hero.m)}`
+                : '; it buffs nobody (M = 1.00, measured)'),
+            value: pt.out,
+          });
+          continue;
+        }
         derivation.push({
           label: `${tag}Defender output: ${pt.row.unit.label}`,
           formula: `${pt.coef} x ${round4(pt.row.effective)} effective x `
-            + `m(${round4(pt.row.hpPct / 100)})=${round4(pt.mul)} = ${round4(pt.out)}`,
+            + `m(${round4(pt.row.hpPct / 100)})=${round4(pt.mul)}`
+            + (def.hero && def.hero.m !== 1 ? ` x hero ${round4(def.hero.m)}` : '')
+            + ` = ${round4(pt.out)}`,
           value: pt.out,
         });
       }
     }
     derivation.push({
       label: `${tag}Defender output`,
-      formula: def.rows.length > 1
-        ? `sum of ${def.rows.length} rows`
+      formula: (def.rows.length > 1 || def.hero)
+        ? `sum of ${def.rows.length + (def.hero ? 1 : 0)} rows`
           + `${def.tf.output !== 1 ? ` x trench ${def.tf.output}` : ''}`
           + `${patrolScale !== 1 ? ` x ${round4(patrolScale)} rounds` : ''} = ${round4(defOutput)}`
         : `${defCoef.value} x E(${def.n})=${round4(defE)} x m(${round4(defF)})=`
@@ -1199,21 +1301,46 @@ function runSimulation(config, derivation, caveats) {
  */
 function stackOutput(side, coefFor, scale, mulEach) {
   const k = (typeof scale === 'number' && Number.isFinite(scale)) ? scale : 1;
+  const hero = side.hero;
+  // A hero takes a slot in the saturating stack, so the units' effective
+  // counts must be recomputed with it present -- and the hero's own share is
+  // whatever the saturation leaves at its position. `maeve` sits after the
+  // units and gets E(n+1)-E(n), which is exactly zero on a full stack.
+  const n = side.n;
+  let heroEff = 0;
+  let unitScale = 1;
+  if (hero) {
+    if (hero.def.sits === 'first') {
+      heroEff = 1;
+      unitScale = n > 0 ? (effectiveUnits(n + 1) - 1) / effectiveUnits(n) : 1;
+    } else {
+      heroEff = effectiveUnits(n + 1) - effectiveUnits(n);
+      unitScale = 1;
+    }
+  }
+  const m = hero ? hero.m : 1;
   let total = 0;
   const parts = [];
+  if (hero) {
+    const heroOut = hero.atk * heroEff * k;
+    hero.heroEff = heroEff;
+    hero.dealt = heroOut;
+    total += heroOut;
+    parts.push({ hero: true, coef: hero.atk, mul: heroEff, out: heroOut });
+  }
   for (const r of side.rows) {
     const c = coefFor(r.unit);
     if (c === null || c === undefined) return { total: null, parts: [] };
-    const m = mulEach ? mulEach(r) : hpMultiplier(r.hpPct / 100);
+    const mm = mulEach ? mulEach(r) : hpMultiplier(r.hpPct / 100);
     // The stack-level multipliers (trench output, patrol duration) must be
     // carried onto the ROWS as well, or the rows no longer sum to the stack.
     // They did not, and the UI's row-vs-total sanity check caught it: a
     // defender on trench 10 reported rows totalling 141.67 against a stack
     // figure of 218.17, the same number times the 1.54 trench bonus.
-    const out = c * r.effective * m * k;
+    const out = c * r.effective * unitScale * mm * m * k;
     r.damageDealt = out;
     total += out;
-    parts.push({ row: r, coef: c, mul: m, out });
+    parts.push({ row: r, coef: c, mul: mm, out });
   }
   return { total, parts };
 }
@@ -1269,7 +1396,31 @@ function sideResult(side, withheld) {
   // A side whose loss could not be computed reports null, never 0. Zero would
   // be the engine asserting it took no damage, which is an invention.
   const lossUnknown = !!side.withheldLoss;
-  const rowsOut = (side.rows || []).map((r) => ({
+  // The hero belongs in rows[]. It contributes to the stack's output, and the
+  // game counts it as part of the stack (its loss appears in the summary table,
+  // unlike a building's). Leaving it out made the rows stop summing to their
+  // own stack, which the UI's row-vs-total check caught immediately.
+  //
+  // hpLost and deaths are null, not 0: the hero DOES take damage -- every hero
+  // measured lost exactly 2.10 HP of its own pool -- but how that share is
+  // decided has not been decomposed, and 0 would be a claim.
+  const heroRow = side.hero ? [{
+    unit: side.hero.code,
+    label: side.hero.def.label,
+    isHero: true,
+    level: side.hero.level,
+    count: 1,
+    hpPct: 100,
+    effective: side.hero.heroEff === undefined ? null : side.hero.heroEff,
+    pool: null,
+    hpLost: null,
+    deaths: null,
+    unitsLeft: null,
+    damageDealt: withheld ? null : (side.hero.dealt === undefined ? null : side.hero.dealt),
+    saturated: !!(side.hero.heroEff !== undefined && side.hero.heroEff < 0.999),
+  }] : [];
+
+  const rowsOut = heroRow.concat((side.rows || []).map((r) => ({
     unit: r.unit ? r.unit.code : null,
     label: r.unit ? r.unit.label : null,
     count: r.count,
@@ -1281,7 +1432,7 @@ function sideResult(side, withheld) {
     unitsLeft: lossUnknown ? null : Math.max(0, r.count - r.deaths),
     damageDealt: side.withheldDealt ? null : r.damageDealt,
     saturated: Math.abs(r.effective - r.count) > 0.01,
-  }));
+  })));
   return {
     rows: rowsOut,
     pool: poolStart,

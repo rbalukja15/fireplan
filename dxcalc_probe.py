@@ -3085,6 +3085,199 @@ def exp_hero_table(p: Probe) -> None:
           "number.")
 
 
+HERO_LEVELS = ["1", "5", "15", "20"]
+
+
+def exp_hero_levels(p: Probe) -> None:
+    """How do a hero's two parameters scale with its level?
+
+    This is the ONE thing blocking the app from modelling heroes at all. The
+    law is known exactly and all sixteen land-legal heroes are decomposed --
+    but every reading is level 10 of 20, and a player choosing a hero chooses
+    a level. Shipping level 10 as though it were the mechanic would put a
+    confident number on nineteen unmeasured levels.
+
+    Two heroes, four levels, two stack sizes each, so A and M are separated at
+    every level rather than confounded the way a single stack size confounds
+    them:
+
+      kangal        A = 20.0, M = 1.00 at lvl 10 -- a pure combat unit
+      joffre_home   A = 16.0, M = 1.30 at lvl 10 -- the only strong buffer
+
+    If A and M both scale simply, heroes become modellable across the whole
+    range. If only A scales, the buff is a flat property of the hero. If
+    neither is simple, the app keeps refusing them and this says why.
+    """
+    abb, lvl, hp = HERO_FIELDS
+    picks = [h for h in ("kangal", "joffre_home") if h in hero_options()]
+    if not picks:
+        print("  ! neither probe hero is on the roster.", file=sys.stderr)
+        return
+    ctl, _ = _recorded_hero_readings()
+    if not all(n in ctl for n in (10, 30, 50)):
+        print("  ! controls missing; run hero_scaling first.", file=sys.stderr)
+        return
+
+    print(f"\n  {len(picks)} heroes x {len(HERO_LEVELS)} levels x 2 stack sizes")
+    print(f"  level 10 is already on disk and is used as a held-out check.\n")
+    print(f"  {'hero':13} {'lvl':>4} {'A (own atk)':>12} {'M (stack)':>10} {'fit':>9}")
+
+    for h in picks:
+        curve: list[tuple[int, float, float]] = []
+        for level in HERO_LEVELS:
+            got: dict[int, float] = {}
+            for n in (10, 50):
+                ov = dict(settings(), **{abb: h, lvl: level, hp: "100%"})
+                ov.update(duel(1, "inf", 20, "inf", n))
+                try:
+                    r = p.submit(ov, create=HERO_FIELDS)
+                    got[n] = r.get("A.1.1")
+                    record("hero_levels", {"hero": h, "level": int(level),
+                                           "def_n": n,
+                                           "detail": dict(p.last_details)}, r)
+                except (BareFormReturned, ValueError) as e:
+                    print(f"  ! {h} lvl {level} n={n}: {e}", file=sys.stderr)
+            if got.get(10) is None or got.get(50) is None:
+                print(f"  {h:13} {level:>4} {'—':>12} {'—':>10} {'partial':>9}")
+                continue
+            # Two stack sizes give two equations; solve in whichever position
+            # fits, exactly as the full-roster decomposition does.
+            u10 = DEF_COEF["inf"] * (effective_units(11) - 1)
+            u50 = DEF_COEF["inf"] * (effective_units(51) - 1)
+            m = (got[50] - got[10]) / (u50 - u10)
+            a = got[10] - u10 * m
+            curve.append((int(level), a, m))
+            print(f"  {h:13} {level:>4} {a:12.2f} {m:10.4f} {'ok':>9}")
+
+        if len(curve) < 3:
+            print(f"  {h}: too few levels to fit a curve.")
+            continue
+        # Is A proportional to level? Linear in level? Neither?
+        lv = [c[0] for c in curve]
+        aa = [c[1] for c in curve]
+        mm = [c[2] for c in curve]
+        per = [a / l for a, l in zip(aa, lv)]
+        spread = lambda v: (max(v) / min(v)) if min(v) > 1e-9 else float("inf")
+        print(f"    A per level: {[round(x, 3) for x in per]}")
+        if spread(per) <= 1.02:
+            print(f"    -> A IS PROPORTIONAL TO LEVEL, {sum(per)/len(per):.3f} "
+                  f"per level. One number describes all twenty.")
+        else:
+            slope = (aa[-1] - aa[0]) / (lv[-1] - lv[0])
+            base = aa[0] - slope * lv[0]
+            pred = [base + slope * l for l in lv]
+            err = max(abs(pr - a) / a for pr, a in zip(pred, aa) if a)
+            if err <= 0.02:
+                print(f"    -> A IS LINEAR IN LEVEL: {base:.2f} + "
+                      f"{slope:.3f} x level (worst {100*err:.2f}%).")
+            else:
+                print(f"    -> A is neither proportional nor linear "
+                      f"(worst {100*err:.1f}%). The rows above are the finding.")
+        if spread(mm) <= 1.005:
+            print(f"    M holds flat at {sum(mm)/len(mm):.3f} across levels — "
+                  f"the buff is a property of the hero, not of its level.")
+        else:
+            print(f"    M moves with level too: {[round(x, 4) for x in mm]}")
+
+
+MAXLVL_RE = re.compile(r"Max level is (\d+)", re.I)
+
+
+def exp_hero_caps(p: Probe) -> None:
+    """Pin the level mechanic, and get every hero's real level cap.
+
+    hero_levels established two things and left one open:
+
+      A does NOT move with level      kangal 20.00 at lvl 1, 5, 10
+      M DOES                          joffre_home 1.10 / 1.20 / 1.30 / 1.40
+                                      at levels 1 / 5 / 10 / 15
+      max level is per-hero           "Max level is 10" / "Max level is 15"
+
+    Those four M readings are five levels apart, so they fit a slope and a
+    STEP equally well. Levels 2, 4, 9 and 11 separate them: a step every five
+    levels predicts 1.10, 1.10, 1.20, 1.30, while any slope predicts four
+    different values.
+
+    The caps come free -- ask for level 20 and the server names the real
+    maximum in its refusal, one request per hero.
+    """
+    abb, lvl, hp = HERO_FIELDS
+    # TWO stack sizes per level. One is not enough: at a single stack size A
+    # and M are confounded, and assuming A held flat is the very substitution
+    # this project keeps having to undo. The first attempt did exactly that
+    # and produced an M curve with an impossible shape (+0.05 from level 1 to
+    # 2, then +0.01 across the next two levels).
+    print("\n  1. how does M move with level? joffre_home, two stack sizes each\n")
+    print(f"  {'lvl':>4} {'A':>8} {'M':>8} {'position':>9}")
+    curve: list[tuple[int, float, float]] = []
+    for level in (2, 4, 9, 11):
+        got: dict[int, float] = {}
+        for n in (10, 50):
+            ov = dict(settings(), **{abb: "joffre_home", lvl: str(level), hp: "100%"})
+            ov.update(duel(1, "inf", 20, "inf", n))
+            try:
+                r = p.submit(ov, create=HERO_FIELDS)
+                got[n] = r.get("A.1.1")
+                record("hero_caps", {"hero": "joffre_home", "level": level,
+                                     "def_n": n, "detail": dict(p.last_details)}, r)
+            except (BareFormReturned, ValueError) as e:
+                print(f"  ! lvl {level} n={n}: {e}", file=sys.stderr)
+        if got.get(10) is None or got.get(50) is None:
+            continue
+        u10 = DEF_COEF["inf"] * (effective_units(11) - 1)
+        u50 = DEF_COEF["inf"] * (effective_units(51) - 1)
+        m = (got[50] - got[10]) / (u50 - u10)
+        a = got[10] - u10 * m
+        curve.append((level, a, m))
+        print(f"  {level:>4} {a:8.2f} {m:8.4f} {'first':>9}")
+
+    known = [(1, 1.10), (5, 1.20), (10, 1.30), (15, 1.40)]
+    allpts = sorted(known + [(l, m) for l, _, m in curve])
+    print("\n  every decomposed level: "
+          + ", ".join(f"L{l}={m:.2f}" for l, m in allpts))
+    if len(allpts) >= 6:
+        step = all(abs(m - (1.0 + 0.10 * (l // 5 + 1))) <= 0.005 for l, m in allpts)
+        lin = all(abs(m - (1.10 + 0.02 * l)) <= 0.005 for l, m in allpts)
+        if step:
+            print("  VERDICT: M steps every five levels — 1.0 + 0.10 x "
+                  "(floor(level/5) + 1).")
+        elif lin:
+            print("  VERDICT: M is linear in level — 1.10 + 0.02 x level.")
+        else:
+            print("  VERDICT: neither a clean step nor a clean line. The "
+                  "levels above are the finding;\n  quote them, do not fit "
+                  "them.")
+
+    print("\n  2. every hero's real level cap, from the server's own refusal\n")
+    caps: dict[str, int] = {}
+    for h in hero_options():
+        ov = dict(settings(), **{abb: h, lvl: "20", hp: "100%"})
+        ov.update(duel(1, "inf", 20, "inf", 10))
+        try:
+            p.submit(ov, create=HERO_FIELDS)
+            caps[h] = 20
+            record("hero_caps", {"hero": h, "cap": 20}, {})
+        except BareFormReturned as e:
+            m = MAXLVL_RE.search(str(e))
+            if m:
+                caps[h] = int(m.group(1))
+                record("hero_caps", {"hero": h, "cap": caps[h]}, {})
+            else:
+                record("hero_caps", {"hero": h, "error": str(e)}, {})
+        except ValueError as e:
+            record("hero_caps", {"hero": h, "error": str(e)}, {})
+    for h in hero_options():
+        print(f"  {h:14} {caps.get(h, '—')}")
+    if caps:
+        by = {}
+        for h, c in caps.items():
+            by.setdefault(c, []).append(h)
+        print("\n  caps: " + "; ".join(f"{c} -> {len(v)} heroes"
+                                       for c, v in sorted(by.items())))
+        print("  The dropdown offers 1..20 for everyone. It is wrong for every "
+              "hero here,\n  and the server says so rather than clamping.")
+
+
 def exp_terrain(p: Probe) -> None:
     """Each terrain against the same baseline; multipliers fall out as ratios."""
     terrains = p.select_options.get("A.1.terrain") or ["land", "air", "sea"]
@@ -3396,6 +3589,8 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "stack_limits": exp_stack_limits,
     "hero_scaling": exp_hero_scaling,
     "hero_table": exp_hero_table,
+    "hero_levels": exp_hero_levels,
+    "hero_caps": exp_hero_caps,
     "buildings": exp_buildings,
     "trenches": exp_trenches,
     "air_vs_ground": exp_air_vs_ground,
@@ -3412,7 +3607,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
 # it is about to spend on someone else's ad-supported fan site before it starts
 # rather than after. Approximate by design: saturation re-runs add a few.
 REQUEST_ESTIMATE: dict[str, int] = {
-    "unit_stats": 20, "buildings": 14, "patrol": 18, "mixed_stacks": 8, "heroes": 23, "stack_limits": 4, "hero_scaling": 9, "hero_table": 28, "trenches": 10, "air_vs_ground": 30,
+    "unit_stats": 20, "buildings": 14, "patrol": 18, "mixed_stacks": 8, "heroes": 23, "stack_limits": 4, "hero_scaling": 9, "hero_table": 28, "hero_levels": 16, "hero_caps": 30, "trenches": 10, "air_vs_ground": 30,
     "land_matrix": 100, "size_factor": 33, "hp_scaling": 10,
     "fortress": 6, "terrain": 5, "variance": 60,
 }
