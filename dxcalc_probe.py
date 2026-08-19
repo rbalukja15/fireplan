@@ -3333,6 +3333,14 @@ SURVIVOR_N = 60
 # The hero's attack value when ATTACKING. Different from the defending figure
 # for thirteen of sixteen -- a hero has two columns exactly as a unit does, and
 # every "A" this project measured before 2026-08-19 is the defending one.
+# Each hero's real level cap, from the server's own refusal (exp_hero_caps).
+HERO_MAX_LEVEL: dict[str, int] = {
+    "kangal": 10, "joffre": 15, "joffre_home": 15, "marco": 10, "allen": 15,
+    "larab": 20, "alvin": 20, "lucien": 15, "lucien_g": 15, "pershing": 20,
+    "georg": 20, "tatiana": 20, "hank": 10, "johan": 20, "tatiana_home": 20,
+    "maeve": 15,
+}
+
 HERO_ATK_ATTACKING: dict[str, float] = {
     "alvin": 25.00, "lucien": 8.00, "lucien_g": 8.00, "johan": 4.00,
     "pershing": 62.00, "tatiana": 45.60, "tatiana_home": 10.00,
@@ -4569,17 +4577,217 @@ def exp_multi_round(p: Probe) -> None:
 
 
 def exp_terrain(p: Probe) -> None:
-    """Each terrain against the same baseline; multipliers fall out as ratios."""
+    """Each terrain against the same baseline, and what sea does to a land unit.
+
+    THE DISCRIMINATOR. Infantry in sea terrain deal 20 and 10 where they deal
+    100 and 40 on land -- ratios of 0.20 and 0.25, which are not the same
+    number. That kills "sea is a multiplier" unless it is a different
+    multiplier per side, and it is exactly what a FLAT coefficient of 1.0 looks
+    like: 1.0 x E(20) = 20 and 1.0 x E(10) = 10, with infantry's own 5.0 and
+    4.0 discarded.
+
+    A second unit type separates the two outright. Cavalry attack at 15.0 and
+    defend at 7.5, so a flat 1.0 predicts the same 20 and 10 as infantry, while
+    any multiplier predicts figures three to four times larger.
+    """
     terrains = p.select_options.get("A.1.terrain") or ["land", "air", "sea"]
+    base: dict[str, tuple[float, float]] = {}
     for t in terrains:
         if not t:
             continue
         ov = settings()
         ov.update(duel(1, "inf", 10, "inf", 20, atk_terrain=t, def_terrain=t))
         try:
-            record("terrain", {"terrain": t}, p.submit(ov))
+            r = record("terrain", {"terrain": t, "unit": "inf"}, p.submit(ov))
         except BareFormReturned as e:
             print(f"  ! terrain={t}: {e}", file=sys.stderr)
+            record("terrain", {"terrain": t, "unit": "inf",
+                               "error": str(e)}, {})
+            continue
+        d = dict(p.last_details)
+        a = (d.get("A.1.1") or {}).get("lost")
+        b = (d.get("B.1.1") or {}).get("lost")
+        if a is not None and b is not None:
+            base[t] = (a, b)
+
+    print(f"\n  {'terrain':9} {'A lost':>8} {'B lost':>8}   "
+          f"(A lost is the DEFENDER's output, B lost the ATTACKER's)")
+    for t, (a, b) in base.items():
+        print(f"  {t:9} {a:8.2f} {b:8.2f}")
+
+    wet = [t for t in base if t in ("sea", "debark")]
+    if not wet:
+        print("\n  No sea reading; nothing to separate.")
+        return
+    print(f"\n  Now cavalry, which attacks at 15.0 and defends at 7.5 against "
+          f"infantry's 4.0 and 5.0.\n")
+    print(f"  {'terrain':9} {'A lost':>8} {'B lost':>8} {'flat 1.0':>9} "
+          f"{'x land ratio':>13}")
+    for t in wet:
+        ov = settings()
+        ov.update(duel(1, "cav", 10, "cav", 20, atk_terrain=t, def_terrain=t))
+        try:
+            p.submit(ov)
+        except BareFormReturned as e:
+            print(f"  ! terrain={t} cav: {e}", file=sys.stderr)
+            record("terrain", {"terrain": t, "unit": "cav",
+                               "error": str(e)}, {})
+            continue
+        d = dict(p.last_details)
+        record("terrain", {"terrain": t, "unit": "cav", "detail": d},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        a = (d.get("A.1.1") or {}).get("lost")
+        b = (d.get("B.1.1") or {}).get("lost")
+        if a is None or b is None:
+            continue
+        flat = effective_units(20) * 1.0
+        ratio = base[t][0] / base["land"][0] if "land" in base else 0
+        scaled = MEASURED_UNITS["cav"][2] * effective_units(20) * ratio
+        print(f"  {t:9} {a:8.2f} {b:8.2f} {flat:9.2f} {scaled:13.2f}")
+        if abs(a - flat) <= 0.05:
+            print(f"\n  VERDICT: {t} replaces a land unit's coefficients with "
+                  f"a FLAT 1.0 on both sides.\n  It is not a multiplier — "
+                  f"cavalry and infantry deal the identical figure, which no\n"
+                  f"  scaling of two different stats can produce. An embarked "
+                  f"land unit fights exactly\n  as well as a convoy, which is "
+                  f"1.0/1.0 in the unit table.")
+        elif abs(a - scaled) <= 0.05:
+            print(f"\n  VERDICT: {t} SCALES the unit's own coefficients by "
+                  f"{ratio:.3f}.")
+        else:
+            print(f"\n  VERDICT: neither flat nor a scaling of the land "
+                  f"figure. The table above is the finding.")
+
+
+def exp_hero_curves(p: Probe) -> None:
+    """Fill in every hero level the curves skipped.
+
+    Curves were read at 1, 5, 10, 15 and 20 and the app interpolates between
+    them. pershing's infantry HP curve is the standing proof that a gap can
+    hide a step: it drops from 1.70 to 1.10 between levels 5 and 6, which no
+    interpolation would ever suggest. Every other curve has the same shape of
+    hole in it.
+
+    HP goes through the refusal, which is exact. Output goes through the
+    nine-type stack, which is a subtraction against a baseline.
+    """
+    print("\n  1. HP curves, from the server's refusal (exact)\n")
+    for hero, unit in HERO_HP_PAIRS:
+        known = HERO_HP_CURVES.get(hero, {}).get(unit, {})
+        cap = HERO_MAX_LEVEL.get(hero, 20)
+        missing = [l for l in range(1, cap + 1) if l not in known]
+        if not missing:
+            print(f"  {hero:13} {unit:5} complete")
+            continue
+        got = dict(known)
+        for lvl in missing:
+            f = _read_hp_cap(p, hero, unit, lvl, 2)
+            if f is not None:
+                got[lvl] = f
+        pts = ", ".join(f"{l}:{got[l]:.2f}" for l in sorted(got))
+        print(f"  {hero:13} {unit:5} {pts}")
+        steps = [(a, b) for a, b in zip(sorted(got), sorted(got)[1:])
+                 if abs(got[b] - got[a]) > 0.05 and b - a == 1]
+        if steps:
+            print(f"  {'':13} {'':5} STEPS at "
+                  + ", ".join(f"L{a}->L{b}" for a, b in steps))
+
+    print("\n  2. output curves, against the nine-type stack\n")
+    stack = [(u, 2) for u in LAND_NINE]
+    base = _defender_output(p, stack)
+    if not base:
+        print("  NO VERDICT — baseline did not read.")
+        return
+    for hero, curves in HERO_OUTPUT_CURVES.items():
+        cap = HERO_MAX_LEVEL.get(hero, 20)
+        target = next((u for u in curves if u != "inf"), None) or "inf"
+        known = curves[target]
+        missing = [l for l in range(1, cap + 1) if l not in known]
+        got = dict(known)
+        for lvl in missing:
+            r = _defender_output(p, stack, hero=hero, level=lvl)
+            if not r:
+                continue
+            a, _ = MEASURED_HEROES[hero]
+            resid = r["out"] - base["out"] - a
+            if target != "inf":
+                resid -= (_curve_at(curves.get("inf"), lvl) - 1.0) * DEF_COEF["inf"] * 2
+            got[lvl] = 1.0 + resid / (DEF_COEF[target] * 2)
+        record("hero_curves", {"hero": hero, "unit": target, "curve": got}, {})
+        print(f"  {hero:13} {target:5} "
+              + ", ".join(f"{l}:{got[l]:.2f}" for l in sorted(got)))
+
+
+def exp_offdiag(p: Probe) -> None:
+    """Single-type land duels off the diagonal, to confirm what mixtures imply.
+
+    The allocation sweep showed a land attacker's TOTAL does not depend on its
+    target, but every reading behind that was a MIXED defender or a mixed
+    attacker. One unit type against one different unit type confirms it
+    directly, and it is the cheapest remaining doubt in the land model.
+    """
+    pairs = [("inf", "ht"), ("ht", "inf"), ("lart", "st"), ("st", "lart"),
+             ("cav", "rrg"), ("rrg", "cav"), ("ac", "lt"), ("lt", "ac")]
+    print(f"\n  {'attacker':9} {'target':7} {'measured':>9} {'diagonal x E(n)':>16} "
+          f"{'err':>7}")
+    worst = 0.0
+    seen_any = False
+    for atk, dfn in pairs:
+        n = max(2, int(90 / MEASURED_UNITS[atk][1]) + 1)
+        dn = 60
+        ov = settings()
+        ov.update(duel(1, atk, n, dfn, dn))
+        try:
+            p.submit(ov)
+        except (BareFormReturned, ValueError) as e:
+            print(f"  ! {atk} vs {dfn}: {e}", file=sys.stderr)
+            continue
+        d = dict(p.last_details)
+        record("offdiag", {"attacker": atk, "atk_n": n, "target": dfn,
+                           "def_n": dn, "detail": d},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        b = d.get("B.1.1") or {}
+        if b.get("lost") is None or (b.get("pct") or 0) >= 99.9:
+            print(f"  {atk:9} {dfn:7} {'—':>9}  (wiped or unread)")
+            continue
+        want = MEASURED_UNITS[atk][1] * effective_units(n)
+        e = abs(b["lost"] - want) / want
+        worst = max(worst, e)
+        seen_any = True
+        print(f"  {atk:9} {dfn:7} {b['lost']:9.2f} {want:16.2f} {100 * e:6.2f}%")
+    # `if worst:` was falsy at exactly 0.00% -- a perfect result printed no
+    # verdict at all, which is the one outcome you most want stated.
+    if seen_any:
+        print(f"\n  {'CONFIRMED' if worst <= 0.01 else 'REFUTED'}: a land "
+              f"attacker's coefficient is target-independent "
+              f"(worst {100 * worst:.2f}%).")
+
+
+def exp_trench_gaps(p: Probe) -> None:
+    """The twelve trench levels never submitted."""
+    have = {0, 1, 2, 3, 4, 5, 10, 15, 20}
+    print(f"\n  {'level':>5} {'A lost':>9} {'B pool':>10} {'output x':>9} "
+          f"{'pool x':>8}")
+    for lvl in [l for l in range(0, 21) if l not in have]:
+        ov = settings()
+        ov.update(duel(1, "inf", 10, "inf", 10))
+        ov["B.1.trench"] = str(lvl)
+        try:
+            p.submit(ov, create=("B.1.trench",))
+        except (BareFormReturned, ValueError) as e:
+            print(f"  ! trench {lvl}: {e}", file=sys.stderr)
+            continue
+        d = dict(p.last_details)
+        record("trench_gaps", {"level": lvl, "detail": d},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        a = d.get("A.1.1") or {}
+        b = d.get("B.1.1") or {}
+        if a.get("lost") is None:
+            continue
+        out_x = a["lost"] / (5.0 * effective_units(10))
+        pool_x = (b.get("pool") or 0) / (10 * MEASURED_UNITS["inf"][0])
+        print(f"  {lvl:>5} {a['lost']:9.2f} {b.get('pool', 0):10.1f} "
+              f"{out_x:9.3f} {pool_x:8.3f}")
 
 
 def exp_variance(p: Probe, samples: int = 60) -> None:
@@ -4890,6 +5098,9 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "hero_hp_cap": exp_hero_hp_cap,
     "hero_sides": exp_hero_sides,
     "multi_round": exp_multi_round,
+    "hero_curves": exp_hero_curves,
+    "offdiag": exp_offdiag,
+    "trench_gaps": exp_trench_gaps,
     "buildings": exp_buildings,
     "trenches": exp_trenches,
     "air_vs_ground": exp_air_vs_ground,
@@ -4906,9 +5117,9 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
 # it is about to spend on someone else's ad-supported fan site before it starts
 # rather than after. Approximate by design: saturation re-runs add a few.
 REQUEST_ESTIMATE: dict[str, int] = {
-    "unit_stats": 20, "buildings": 14, "patrol": 18, "mixed_stacks": 8, "heroes": 23, "stack_limits": 4, "hero_scaling": 9, "hero_table": 28, "hero_levels": 16, "hero_caps": 30, "stack_ladder": 9, "stack_order": 5, "hero_output": 21, "hero_buff_confirm": 5, "allocation": 9, "hero_full": 24, "hero_hp_cap": 22, "hero_sides": 30, "multi_round": 8, "trenches": 10, "air_vs_ground": 30,
+    "unit_stats": 20, "buildings": 14, "patrol": 18, "mixed_stacks": 8, "heroes": 23, "stack_limits": 4, "hero_scaling": 9, "hero_table": 28, "hero_levels": 16, "hero_caps": 30, "stack_ladder": 9, "stack_order": 5, "hero_output": 21, "hero_buff_confirm": 5, "allocation": 9, "hero_full": 24, "hero_hp_cap": 22, "hero_sides": 30, "multi_round": 8, "hero_curves": 110, "offdiag": 8, "trench_gaps": 12, "trenches": 10, "air_vs_ground": 30,
     "land_matrix": 100, "size_factor": 33, "hp_scaling": 10,
-    "fortress": 6, "terrain": 5, "variance": 60,
+    "fortress": 6, "terrain": 7, "variance": 60,
 }
 
 # Removed rather than left runnable. All three predate unit_stats, and none of
