@@ -98,7 +98,7 @@
     <div class="field field-distance">
       <label for="distance">Distance (km)</label>
       <input type="number" id="distance" name="distance" value="0" min="0" max="500" step="1" inputmode="numeric" aria-describedby="distance-note">
-      <p class="field-note" id="distance-note">Range is a yes/no gate: artillery 50, railgun 150, infantry 1. Others are ungated &mdash; unmeasured.</p>
+      <p class="field-note" id="distance-note">Range is a yes/no gate, not a falloff, and every unit's is measured by bisection: melee 5&nbsp;km, light artillery 30, artillery 50, cruiser 40, battleship 75, railgun 150. A row that cannot reach is inert. Past 5&nbsp;km the <em>defender does not fire back at all</em>.</p>
     </div>
     <div class="global-actions">
       <button type="button" id="swap" class="btn">Swap sides</button>
@@ -256,40 +256,20 @@
       True of every result on this page, whatever the banner above says. These are gaps in
       the measurement record, not in the arithmetic.
     </p>
-    <ul class="limits-list">
-      <li><strong>Land unit vs. a different land unit.</strong> Attack is known to depend on the
-        target's class, and only same-class pairings were ever measured. 90 of the 100 land
-        pairings are extrapolation.</li>
-      <li><strong>Terrain.</strong> Air stacks can be flown as a direct strike or on patrol, and
-        both are modelled &mdash; but patrol's attrition coefficient is a <em>band</em>
-        (0.360&ndash;0.427 over nine cells), not a number, so every patrol result is an estimate.
-        Debark has never been submitted, and no other terrain modifier was measured.</li>
-      <li><strong>Mixed stacks beyond two types.</strong> That a stack saturates as a whole in roster
-        order, and that incoming damage splits by attack&nbsp;&times;&nbsp;count, are both measured
-        exactly &mdash; but on <em>two-type land mixtures only</em> (infantry with artillery, four
-        layouts). Three types, or a mixture spanning classes, was never submitted.</li>
-      <li><strong>Multi-round battles.</strong> Every measurement used exactly one round.</li>
-      <li><strong>Positioning and range.</strong> Never exercised. Every measurement sits at
-        position 0, so artillery (50&nbsp;km) and railguns (150&nbsp;km) were read standing
-        next to the enemy.</li>
-      <li><strong>Variance.</strong> The game rolls roughly &plusmn;10%. Nothing here is rolled;
-        these are the variance-off figures.</li>
-      <li><strong>Heroes.</strong> Fully modelled on land, in both channels: a hero
-        fights as one unit with its own HP pool, takes a share of every round, raises
-        the <em>output</em> of specific unit types, and separately raises their
-        <em>max HP</em>. A hero has two attack columns like a unit does &mdash; Pershing
-        attacks at 62 and defends at 8 &mdash; and some buffs are
-        <strong>defence-only</strong> (Joffre&rsquo;s and Kangal&rsquo;s measure exactly
-        zero on an attacking stack). Every curve is stored as measured points and
-        interpolated, never fitted: Pershing&rsquo;s infantry HP buff climbs to
-        &times;1.70 by level 5, <em>drops</em> to &times;1.10 at level 6, and climbs
-        again. What is still missing: the six heroes the server refuses on land
-        (Otto, Tōgō, Ivan, Richthofen, von Thaden) <em>do</em> work on air and naval
-        stacks and all six change the battle &mdash; measured, but not yet split into
-        own-attack and multiplier, so no hero effect is applied there.</li>
-      <li><strong>The Balloon.</strong> Not one quantity was ever measured &mdash; the calculator
-        refuses to accept it in the air.</li>
-    </ul>
+    <!-- RENDERED FROM data.js NOT_MEASURED, never hand-written.
+
+         This list used to be prose in the HTML, and it went stale in the worst
+         possible way: it still told the reader that a stack saturates in ROSTER
+         order and that incoming damage splits by attack x count. Both of those
+         were measured and OVERTURNED, and the engine three sections up computes
+         neither of them. It also said multi-round battles and range had never
+         been exercised, months after both were measured and modelled.
+
+         A limitations list that contradicts the model is worse than none: it is
+         the confident wrong answer this project keeps hitting, aimed at exactly
+         the reader who came here to check. There is one list of gaps, it lives
+         in data.js beside the constants, and this is a view of it. -->
+    <ul class="limits-list" id="limits-list"></ul>
   </section>
 
   <details class="roster" id="roster">

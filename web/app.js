@@ -2038,6 +2038,48 @@ function provSummary(provenance) {
     .join(' · ');
 }
 
+/* THE STANDING LIMITS, rendered from data.js rather than written in the HTML.
+
+   The list in index.html used to be prose, and prose does not get re-derived
+   when a measurement overturns something. It ended up asserting roster-order
+   saturation and attack-x-count allocation -- two laws that were measured,
+   found wrong, and replaced in the engine directly above it -- and telling the
+   reader that multi-round battles and range had never been exercised, long
+   after both were measured and modelled.
+
+   NOT_MEASURED is the one list. Each entry carries what is missing, why it is
+   missing, and what would close it, so all three go on the page: "closedBy" is
+   the part that makes a gap a piece of work rather than a shrug. */
+function buildLimits() {
+  const ul = $('limits-list');
+  if (!ul) return;
+  ul.textContent = '';
+  const gaps = (DATA && Array.isArray(DATA.NOT_MEASURED)) ? DATA.NOT_MEASURED : [];
+  if (!gaps.length) {
+    // Not a celebration. An empty list here almost certainly means the import
+    // failed, and "this model knows everything" is the single worst thing this
+    // page could claim.
+    const li = el('li', 'tag-none');
+    li.textContent = 'The gap list could not be read from data.js. That is a '
+      + 'fault in this page, not an absence of gaps — treat every figure above '
+      + 'as unverified.';
+    ul.appendChild(li);
+    return;
+  }
+  for (const g of gaps) {
+    const li = el('li');
+    li.appendChild(el('strong', null, String(g.what || g.key || 'unnamed gap')));
+    li.appendChild(document.createTextNode(' '));
+    li.appendChild(document.createTextNode(String(g.why || '')));
+    if (g.closedBy) {
+      const span = el('span', 'limits-closedby');
+      span.textContent = ` What would close it: ${g.closedBy}.`;
+      li.appendChild(span);
+    }
+    ul.appendChild(li);
+  }
+}
+
 function buildRoster() {
   const body = $('roster-body');
   body.textContent = '';
@@ -2072,6 +2114,7 @@ function buildRoster() {
   }
 
   buildLedger();
+  buildLimits();
 }
 
 /** The provenance ledger: one entry per constant, with its confidence. */

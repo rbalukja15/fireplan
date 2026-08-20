@@ -4927,6 +4927,329 @@ def exp_position(p: Probe) -> None:
           "result rows at all — there is no battle.")
 
 
+
+# Units whose range is already on record from exp_position. Everything else in
+# the roster has only ever been fired at zero distance, which means every
+# coefficient in the table describes point-blank and nothing else.
+RANGE_KNOWN = {"art": 50, "rrg": 150, "inf": 1}
+
+
+def _range_probe(p: Probe, unit: str, dist: int,
+                 terrain: tuple[str, str]) -> bool | None:
+    """Does `unit` still fight at `dist`? True in range, False out, None refused.
+
+    The three-way return is the whole point. exp_position collapsed "no result
+    rows" onto out-of-range, which is right there because the pair was known to
+    run at zero distance -- but as a general rule it is the same conflation
+    that produced three separate "the server will not run it" findings, all of
+    which were terrain. A server that ANSWERS with an oops line is refusing the
+    configuration, not reporting a miss, and must never be scored as a range
+    boundary.
+    """
+    ov = settings()
+    ov.update(duel(1, unit, 20, unit, 20,
+                   atk_terrain=terrain[0], def_terrain=terrain[1]))
+    ov["A.1.position"] = "0"
+    ov["B.1.position"] = str(dist)
+    try:
+        p.submit(ov, create=("A.1.position", "B.1.position"))
+    except BareFormReturned as e:
+        if e.oops:
+            print(f"    ! {unit} @ {dist}: server refused -> "
+                  f"{' | '.join(e.oops[:2])}", file=sys.stderr)
+            return None
+        record("range_roster", {"unit": unit, "distance": dist,
+                                "terrain": list(terrain), "no_rows": True}, {})
+        return False
+    except ValueError as e:
+        print(f"    ! {unit} @ {dist}: {e}", file=sys.stderr)
+        return None
+    d = dict(p.last_details)
+    lost = (d.get("B.1.1") or {}).get("lost")
+    record("range_roster", {"unit": unit, "distance": dist,
+                            "terrain": list(terrain), "detail": d},
+           {k: (v or {}).get("lost") for k, v in d.items()})
+    return lost is not None and lost > 0
+
+
+def exp_range_roster(p: Probe) -> None:
+    """The reach of every unit that has never been fired from a distance.
+
+    Range is already known to be a BINARY gate rather than a falloff, so the
+    only unknown per unit is one integer -- and an integer is found by
+    bisection, not by a ladder of guessed values. The help page's figures
+    (cruiser 40, battleship 75) are deliberately NOT used as starting points:
+    they are the thing being checked.
+
+    Each unit fights ITSELF, in the terrain pair its own class requires. A
+    self-duel is the one matchup guaranteed to run -- it is how the diagonal of
+    MEASURED_UNITS was read -- so a silent empty response during the search is
+    attributable to distance and nothing else. That attribution is only safe
+    because the d=0 control below proves the pair runs at all.
+    """
+    cls_of = {u: c for c, us in UNIT_CLASSES.items() for u in us}
+    print(f"\n  {'unit':8} {'class':6} {'range':>7} {'requests':>9}  note")
+    found: dict[str, int] = {}
+    for unit in ROSTER_ORDER:
+        if unit in RANGE_KNOWN:
+            print(f"  {unit:8} {cls_of.get(unit,''):6} "
+                  f"{RANGE_KNOWN[unit]:>7} {'0':>9}  already on record")
+            found[unit] = RANGE_KNOWN[unit]
+            continue
+        acls = cls_of.get(unit)
+        if not acls:
+            continue
+        terrain = RANGE_TERRAIN_OVERRIDE.get(unit) or TERRAIN_PAIR[(acls, acls)]
+        n = 0
+
+        # Control. Without it, a pair the server refuses outright reads as
+        # "out of range at every distance" and gets written down as range 0.
+        n += 1
+        base = _range_probe(p, unit, 0, terrain)
+        if base is not True:
+            print(f"  {unit:8} {acls:6} {'—':>7} {n:>9}  "
+                  f"NO BATTLE AT ZERO DISTANCE — not a range reading")
+            continue
+
+        # Exponential search for a distance that misses, then bisect. lo is
+        # always a distance that hits, hi always one that does not.
+        lo, hi = 0, None
+        probe = 1
+        while probe <= 512:
+            n += 1
+            r = _range_probe(p, unit, probe, terrain)
+            if r is None:
+                break
+            if r:
+                lo = probe
+                probe *= 2
+            else:
+                hi = probe
+                break
+        if hi is None:
+            print(f"  {unit:8} {acls:6} {'>512':>7} {n:>9}  "
+                  f"no miss found — unbounded or position ignored")
+            record("range_roster", {"unit": unit, "range": None,
+                                    "unbounded": True}, {})
+            continue
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            n += 1
+            r = _range_probe(p, unit, mid, terrain)
+            if r is None:
+                break
+            if r:
+                lo = mid
+            else:
+                hi = mid
+        found[unit] = lo
+        note = "melee" if lo <= 1 else "ranged"
+        print(f"  {unit:8} {acls:6} {lo:>7} {n:>9}  {note}")
+        record("range_roster", {"unit": unit, "range": lo,
+                               "terrain": list(terrain)}, {"range": float(lo)})
+
+    print("\n  RANGE_KM = " + json.dumps(found, sort_keys=True))
+    doc = {"cl": 40, "bb": 75}
+    for u, claimed in doc.items():
+        if u in found:
+            verdict = "matches" if found[u] == claimed else "DISAGREES with"
+            print(f"  {u}: measured {found[u]}, help page says {claimed} "
+                  f"-- {verdict} the help page")
+
+
+# A Balloon aborts the batch in 'air' terrain (the balloon bug, section 194),
+# so its self-duel runs on land like every other balloon reading.
+RANGE_TERRAIN_OVERRIDE = {"bal": ("land", "land")}
+
+
+def exp_return_fire(p: Probe) -> None:
+    """Does a bombarded defender shoot back? And where is infantry's boundary?
+
+    The roster sweep turned up something it was not looking for. A light
+    artillery attacking from 8 km deals its full 100.00 and takes ZERO in
+    return, while at 4 km both sides lose. Three units with three different
+    ranges -- lart 30, cl 40, bb 75 -- all take nothing back at 8 km, so the
+    silence is not the defender running out of reach of its own. It is a
+    separate rule, and the app currently models none of it: range is a gate on
+    the attacker only, which makes every bombardment in the app cost the
+    attacker losses it would never take.
+
+    The boundary itself was never sampled -- the exponential search jumps 4, 8
+    -- so 5, 6 and 7 are unmeasured and the threshold could be anywhere in
+    [4, 7]. Melee ATTACK range bisected to exactly 5 for ten separate units,
+    which makes 5 the obvious candidate and therefore the one worth checking
+    rather than assuming.
+
+    Infantry is here for a different reason. UNIT_RANGE says 1, which came from
+    a three-value ladder (0, 1, 25) that never bisected: 1 is the largest
+    distance that was TRIED and hit, not the largest that hits. Every other
+    melee unit in the roster reads exactly 5. A number that only looks measured
+    is worse than a gap, because nothing downstream flags it.
+    """
+    print("\n  1. infantry and the balloon, bisected rather than laddered\n")
+    for unit in ("inf", "bal"):
+        terrain = RANGE_TERRAIN_OVERRIDE.get(unit) or ("land", "land")
+        if _range_probe(p, unit, 0, terrain) is not True:
+            print(f"  {unit}: no battle at zero distance — cannot read")
+            continue
+        lo, hi, probe = 0, None, 1
+        while probe <= 512:
+            r = _range_probe(p, unit, probe, terrain)
+            if r is None:
+                break
+            if r:
+                lo, probe = probe, probe * 2
+            else:
+                hi = probe
+                break
+        while hi is not None and hi - lo > 1:
+            mid = (lo + hi) // 2
+            r = _range_probe(p, unit, mid, terrain)
+            if r is None:
+                break
+            if r:
+                lo = mid
+            else:
+                hi = mid
+        was = RANGE_KNOWN.get(unit)
+        note = ("" if was is None else
+                f"  (UNIT_RANGE said {was} — "
+                + ("confirmed" if was == lo else "WRONG, never bisected") + ")")
+        print(f"  {unit:6} range {lo}{note}")
+        record("return_fire", {"probe": "bisect", "unit": unit, "range": lo},
+               {"range": float(lo)})
+
+    print("\n  2. the return-fire boundary, one kilometre at a time\n")
+    print(f"  {'distance':>9} {'defender lost':>14} {'attacker lost':>14}  "
+          f"return fire")
+    for dist in (4, 5, 6, 7, 8):
+        ov = settings()
+        ov.update(duel(1, "lart", 20, "lart", 20))
+        ov["A.1.position"] = "0"
+        ov["B.1.position"] = str(dist)
+        try:
+            p.submit(ov, create=("A.1.position", "B.1.position"))
+        except (BareFormReturned, ValueError) as e:
+            print(f"  {dist:>9} {'—':>14} {'—':>14}  no battle ({e})")
+            continue
+        d = dict(p.last_details)
+        a = (d.get("A.1.1") or {}).get("lost")
+        b = (d.get("B.1.1") or {}).get("lost")
+        record("return_fire", {"probe": "boundary", "distance": dist,
+                               "detail": d},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        print(f"  {dist:>9} {b if b is None else f'{b:.2f}':>14} "
+              f"{a if a is None else f'{a:.2f}':>14}  "
+              + ("YES" if (a or 0) > 0 else "NONE — free bombardment"))
+
+    print("\n  3. does a ranged DEFENDER ever initiate?\n")
+    # Infantry (5) attacking light artillery (30) from 20 km. If the defender's
+    # own reach mattered, the artillery would fire and the infantry would die
+    # for nothing. If the attacker's reach alone decides, there is no battle.
+    ov = settings()
+    ov.update(duel(1, "inf", 20, "lart", 20))
+    ov["A.1.position"] = "0"
+    ov["B.1.position"] = "20"
+    try:
+        p.submit(ov, create=("A.1.position", "B.1.position"))
+        d = dict(p.last_details)
+        a = (d.get("A.1.1") or {}).get("lost")
+        b = (d.get("B.1.1") or {}).get("lost")
+        record("return_fire", {"probe": "defender_initiates", "detail": d},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        print(f"  inf(5) attacks lart(30) at 20 km -> attacker lost "
+              f"{a}, defender lost {b}")
+        print("  The defender's reach DOES enter into it — this needs a "
+              "model, not a gate.")
+    except (BareFormReturned, ValueError):
+        record("return_fire", {"probe": "defender_initiates",
+                               "no_battle": True}, {})
+        print("  inf(5) attacks lart(30) at 20 km -> NO BATTLE.")
+        print("  The attacker's reach alone decides whether anything happens; "
+              "a defender never\n  initiates, however far it could shoot.")
+
+
+def exp_mixed_range(p: Probe) -> None:
+    """A stack of mixed reach, fired from beyond part of it.
+
+    Every range reading so far used a stack of ONE type, which is the clean way
+    to find a boundary and the wrong way to learn what the app has to compute.
+    Real stacks are mixtures, and a mixture at 20 km has infantry that cannot
+    reach and light artillery that can. Three outcomes are possible and they
+    are not close together:
+
+      no battle          the shortest reach in the stack gates the whole thing
+      100.00             only the artillery fires, and E() counts only it
+      more than 100.00   only the artillery fires, but E() counts the infantry
+
+    The third is the one that would quietly wreck the app, because a stack
+    would gain output by adding units that cannot shoot. This is the same
+    question the mixed-stack sweep asked about saturation, asked again where
+    part of the stack is switched off.
+    """
+    dist = 20
+    print(f"\n  Light artillery reaches 30 km, infantry 5. Firing from "
+          f"{dist} km.\n")
+    print(f"  {'attacker stack':28} {'defender lost':>14}  reading")
+    base = None
+    for label, rows in (("lart 20 (alone)", [("lart", 20)]),
+                        ("inf 20 + lart 20", [("inf", 20), ("lart", 20)]),
+                        ("inf 20 (alone)", [("inf", 20)])):
+        ov = settings()
+        ov.update(duel(1, "lart", 20, "inf", 20))
+        ov.update(composite(1, "A", rows))
+        ov["A.1.position"] = "0"
+        ov["B.1.position"] = str(dist)
+        try:
+            p.submit(ov, create=composite_fields("A", 1, len(rows))
+                     + ("A.1.position", "B.1.position"))
+        except (BareFormReturned, ValueError) as e:
+            print(f"  {label:28} {'—':>14}  NO BATTLE ({type(e).__name__})")
+            record("mixed_range", {"rows": rows, "distance": dist,
+                                   "no_battle": True}, {})
+            continue
+        d = dict(p.last_details)
+        b = (d.get("B.1.1") or {}).get("lost")
+        record("mixed_range", {"rows": rows, "distance": dist, "detail": d},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        if label.startswith("lart 20 ("):
+            base = b
+        note = ""
+        if base and b is not None:
+            if abs(b - base) < 0.05:
+                note = "identical to lart alone — the short-reach units are inert"
+            else:
+                note = (f"DIFFERS from lart alone by {b - base:+.2f} — "
+                        f"unreachable units still count")
+        print(f"  {label:28} {b if b is None else f'{b:.2f}':>14}  {note}")
+
+    # And the defender's side of the same question: does a stack that CONTAINS
+    # a long-reach unit shoot back from beyond 5 km? The single-type reading
+    # says a lart defender at 6 km deals nothing despite reaching 30, but a
+    # mixture is worth one request rather than an assumption.
+    print("\n  Defender stack inf 20 + lart 20 at 6 km, bombarded by lart:\n")
+    ov = settings()
+    ov.update(duel(1, "lart", 20, "inf", 20))
+    ov.update(composite(1, "B", [("inf", 20), ("lart", 20)]))
+    ov["A.1.position"] = "0"
+    ov["B.1.position"] = "6"
+    try:
+        p.submit(ov, create=composite_fields("B", 1, 2)
+                 + ("A.1.position", "B.1.position"))
+        d = dict(p.last_details)
+        a = (d.get("A.1.1") or {}).get("lost")
+        record("mixed_range", {"probe": "defender_mix", "distance": 6,
+                               "detail": d},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        print(f"  attacker lost {a} -> "
+              + ("still no return fire; the 5 km cut-off is a property of the "
+                 "DISTANCE,\n  not of what the defender is holding."
+                 if not a else
+                 "RETURN FIRE from a mixed defender — the cut-off depends on "
+                 "the stack."))
+    except (BareFormReturned, ValueError) as e:
+        print(f"  no battle: {e}")
+
 # Every (hero, unit) pair with a measured OUTPUT buff, and the level cap to
 # sweep to. Read with a SINGLE-TYPE stack, which needs no baseline subtraction
 # and cannot be contaminated by another curve.
@@ -5997,6 +6320,9 @@ def exp_unit_stats(p: "Probe") -> None:
 
 EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "unit_stats": exp_unit_stats,
+    "range_roster": exp_range_roster,
+    "return_fire": exp_return_fire,
+    "mixed_range": exp_mixed_range,
     "mixed_stacks": exp_mixed_stacks,
     "heroes": exp_heroes,
     "stack_limits": exp_stack_limits,

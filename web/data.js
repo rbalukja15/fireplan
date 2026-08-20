@@ -548,11 +548,37 @@ export const EMBARKED_COEF = 1.0;
 export const EMBARKED_TERRAIN = ['sea', 'debark'];
 
 // RANGE IS A BINARY GATE, measured by moving one side's position while the
-// other stays at 0. Inside range the figure is identical to zero distance;
-// outside it the server returns no result rows at all -- there is no battle.
-// Artillery fires at 50 and not at 51; the railgun at 150 and not at 151;
-// infantry at 1 and not at 25.
-export const UNIT_RANGE = { art: 50, rrg: 150, inf: 1 };
+// other stays at 0. Inside range the figure is identical to zero distance --
+// there is no falloff -- and outside it the server returns no result rows at
+// all. Every entry below was found by BISECTION: the largest distance that
+// fights and the smallest that does not, one apart.
+//
+// This table used to read { art: 50, rrg: 150, inf: 1 } and the infantry
+// figure was wrong. It came from a three-value ladder (0, 1, 25) which never
+// bisected, so 1 was the largest distance anyone had TRIED, not the largest
+// that works. Infantry reach 5, like every other melee unit in the roster.
+// A number that only looks measured is worse than a gap: a gap is flagged
+// downstream and a wrong number is not.
+//
+// cl 40 and bb 75 match the in-game help page exactly, which is a check on
+// the method rather than a source for it. lart 30 is on no help page.
+export const UNIT_RANGE = {
+  inf: 5, cav: 5, ac: 5, lart: 30, art: 50, rrg: 150, lt: 5, ht: 5,
+  convoy: 5, st: 5, bal: 5, int: 5, tac: 5, zep: 5, sub: 5, cl: 40, bb: 75,
+};
+
+// A BOMBARDED DEFENDER DOES NOT SHOOT BACK. Beyond 5 km the attacker takes
+// exactly zero while still dealing its full figure: light artillery at 6, 7
+// and 8 km deals 100.00 and loses nothing, where at 4 and 5 km it deals the
+// same 100.00 and loses 20.00.
+//
+// The cut-off is a property of the DISTANCE, not of the defender. Three
+// defenders that could easily shoot back -- lart reaching 30, cl 40, bb 75 --
+// are all silent at 8 km, and a mixed inf+lart defender at 6 km is silent too.
+// Nor does a long-reaching defender ever start a fight: infantry attacking
+// light artillery from 20 km produces no battle at all, though the artillery
+// could reach twenty kilometres past its attacker.
+export const MELEE_RANGE = 5;
 
 // simulateVariance: ONE uniform +/-10% roll per side per round, NOT per unit.
 // 60 samples give sd 5.285 where a single roll predicts 5.774 and a per-unit
@@ -711,7 +737,7 @@ export const FORM_DOMAINS = {
 
 export const NOT_MEASURED = [
   { key: 'naval_vs_air_terrain', what: 'What a naval-vs-air reading MEANS, given it depends on the target\u2019s terrain.', why: 'It runs after all \u2014 the earlier "the server will not run it" was a terrain-pair artifact, the third time this project made that mistake. A battleship against fighters reads 30.0 per effective unit with the fighters in SEA terrain and 6.0 with them on LAND, so the target\u2019s terrain changes the coefficient and not just its class. Neither figure is in CLASS_ATTACK because it is not yet clear which one the class column should hold.', closedBy: 'a few cells that vary target terrain independently of target class' },
-    { key: 'range_roster', what: 'The range of the other fourteen units.', why: 'Range is measured as a BINARY gate and applied, but only three units were read: artillery 50 km, railgun 150, infantry 1. An unlisted unit is not gated at all rather than guessed at, and the app says so when a distance is set.', closedBy: 'one boundary search per unit, about three requests each' },
+    { key: 'return_fire_generality', what: 'Whether the 5 km return-fire cut-off is a constant or every unit\u2019s own melee reach.', why: 'Past 5 km a bombarded defender deals exactly zero while still taking the attacker\u2019s full figure. That is measured hard \u2014 lart at 4 and 5 km loses 20.00, at 6, 7 and 8 km loses nothing, and three defenders that could easily shoot back (lart reaching 30, cruiser 40, battleship 75) are all silent at 8 km, as is a mixed inf+lart defender at 6. But every unit in the roster ALSO bisected to a melee attack range of exactly 5, so "the cut-off is the constant 5" and "the cut-off is the defender\u2019s own melee reach" predict the identical number everywhere. The two are indistinguishable in this game and the engine uses the constant.', closedBy: 'nothing available \u2014 it would need a unit whose melee reach is not 5, and there is none' },
     { key: 'class_matrix_precision', what: 'The air and naval columns of CLASS_ATTACK rest on ONE cell each.', why: 'The land column is corroborated three ways — the diagonal from unit_stats, eight off-diagonal duels, and the allocation sweep. The air and naval columns are a single reading per unit, and the fliers\u2019 land column had to be corrected for post-fire attenuation before it could be compared at all.', closedBy: 'a second cell per column, against a different target of the same class' },
     { key: 'multi_round_heavy_units', what: 'Multi-round drift on units with large per-unit HP, and two anomalous death counts.', why: 'The round law was fitted on 50-vs-50 INFANTRY at 0.042%. Cavalry reproduces exactly too, but heavy tanks drift to 0.5% by round four \u2014 260 HP per unit makes the whole-unit survivor count coarse and the model more sensitive to it. Separately, the printed death count is the sum of per-round floor(round damage / per-unit HP), which reproduces 10 of 12 measured cells; infantry rounds 3 and 4 come out one short and nothing explains it.', closedBy: 'a maxRounds ladder on two or three more unit types, chosen for their per-unit HP' },
   { key: 'air_E_above_20_rival', what: 'Whether an attenuated air stack above 20 units uses E(survivors) or a per-unit sum of m(f).', why: 'The post-fire law now reproduces attenuated stacks at 10, 25, 40 and 50 units \u2014 three exactly and 40 units to 0.11% \u2014 so it does hold above the knee, which is what the app needs. But the RIVAL hypothesis was not properly separated: the two formulations I wrote reduce to the same expression for these stack sizes, so this is a confirmation of one law rather than a discrimination between two.', closedBy: 'a rival stated so it actually differs, then one cell where they disagree' },
@@ -920,6 +946,48 @@ export const PROVENANCE = {
     note: 'Patrol damage is proportional to maxRounds (rate flat at 30.13-30.33 per unit per '
       + 'round). A direct strike IGNORES maxRounds: 30.03 per unit at every rung. This is why the '
       + 'app offers fractional rounds for patrol and not for a strike.',
+  },
+  'RANGE.roster': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=range_roster (109 requests, one bisection per unit) '
+      + 'plus return_fire (20) and mixed_range (4). Each unit fights ITSELF, 20 a side, in '
+      + 'the terrain pair its own class needs -- the one matchup guaranteed to run, so a '
+      + 'silent response during the search is attributable to distance and nothing else.',
+    note: 'MEASURED FOR ALL SEVENTEEN UNITS, by bisection: the largest distance that fights '
+      + 'and the smallest that does not, one apart. Ten melee types reach exactly 5; lart 30, '
+      + 'art 50, rrg 150, cl 40, bb 75. cl and bb match the in-game help page exactly, which '
+      + 'is a check on the method rather than a source for it; lart 30 is on no help page. '
+      + 'THE TABLE USED TO SAY INFANTRY REACH 1, AND THAT WAS NEVER A MEASUREMENT -- it came '
+      + 'from a three-value ladder (0, 1, 25), so 1 was the largest distance anyone had TRIED '
+      + 'rather than the largest that works. Infantry reach 5 like everything else. A number '
+      + 'that only looks measured is worse than a gap, because nothing downstream flags it. '
+      + 'Inside range the figure is identical to zero distance -- a gate, not a falloff.',
+  },
+  'RANGE.returnFire': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=return_fire: the boundary walked one kilometre at a '
+      + 'time from 4 to 8 km, lart against lart; plus every ranged reading in range_roster '
+      + 'and one mixed defender in mixed_range.',
+    note: 'A BOMBARDED DEFENDER DOES NOT SHOOT BACK. At 4 and 5 km light artillery deals '
+      + '100.00 and loses 20.00; at 6, 7 and 8 km it deals the same 100.00 and loses exactly '
+      + 'nothing. The cut-off is a property of the DISTANCE, not of the defender: lart '
+      + 'reaching 30 km, a cruiser reaching 40 and a battleship reaching 75 are all silent at '
+      + '8 km, and a mixed inf+lart defender at 6 km is silent too. Nor does a long-reaching '
+      + 'defender ever START a fight -- infantry attacking light artillery from 20 km '
+      + 'produces no battle at all, though the artillery reaches twenty kilometres past its '
+      + 'attacker. The attacker\'s reach alone decides whether anything happens. See the '
+      + 'return_fire_generality gap for the one thing this cannot separate.',
+  },
+  'RANGE.mixedStack': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=mixed_range: three attacking stacks at 20 km.',
+    note: 'A ROW THAT CANNOT REACH IS INERT -- it neither fires nor counts toward the '
+      + 'stack-size factor for the rows that do. 20 infantry + 20 light artillery firing from '
+      + '20 km deals 100.00, the identical figure the artillery deals alone; 20 infantry '
+      + 'alone at 20 km produces no battle. So the battle happens if ANY attacking row '
+      + 'reaches, and E() counts only the rows that do. The alternative -- counting the '
+      + 'unreachable units toward E() -- would let a stack gain output by adding units that '
+      + 'cannot shoot, which is why it was worth four requests rather than an assumption.',
   },
   'STACK.composition': {
     confidence: 'measured',

@@ -35,6 +35,7 @@ import { dirname, join } from 'node:path';
 
 import {
   UNITS, CLASS_ATTACK, TRENCH_POOL, TRENCH_POOL_BRACKET, TRENCH_OUTPUT, PROVENANCE, NOT_MEASURED,
+  UNIT_RANGE, MELEE_RANGE,
   MAX_UNIT_ROWS,
   HEROES,
 } from '../data.js';
@@ -1445,6 +1446,39 @@ console.log('\n12l. terrain, range and the variance band, now computed');
     && Math.abs(seaInf.defender.hpLost - seaCav.defender.hpLost) < 1e-9,
     'no scaling of two different stats can do that');
 
+  // THE CLASS TOKEN. The embarked filter is written against UNITS[].cls, whose
+  // naval value is 'sea'. Written as 'naval' it matched every unit including
+  // the ships, and a battleship in sea terrain fought at a flat 1.0 instead of
+  // its measured 40 -- a 40x error on the one terrain ships belong in. It
+  // survived 1145 checks because every embarked test used land and air units,
+  // which that filter did classify correctly. These assert the ships directly.
+  for (const [u, want] of [['sub', 800], ['cl', 200], ['bb', 800]]) {
+    const atSea = simulate({
+      attacker: { rows: [{ unit: u, count: 20 }] },
+      defender: { rows: [{ unit: u, count: 20 }] },
+      terrain: 'sea', defenderTerrain: 'sea',
+    });
+    check(`a ${u} in SEA terrain fights at its own value, not embarked`,
+      Math.abs(atSea.defender.hpLost - want) < 0.05,
+      `${atSea.defender.hpLost.toFixed(2)} vs ${want}`);
+  }
+  check('no naval unit is ever marked embarked in sea terrain',
+    !simulate({
+      attacker: { rows: [{ unit: 'bb', count: 20 }] },
+      defender: { rows: [{ unit: 'bb', count: 20 }] },
+      terrain: 'sea', defenderTerrain: 'sea',
+    }).coverage.caveats.some((c) => /EMBARKED/.test(c)));
+  check('while a land unit in sea terrain still is',
+    simulate({
+      attacker: { rows: [{ unit: 'inf', count: 10 }] },
+      defender: { rows: [{ unit: 'inf', count: 10 }] },
+      terrain: 'sea', defenderTerrain: 'sea',
+    }).coverage.caveats.some((c) => /EMBARKED/.test(c)));
+  check('and the filter is keyed on a token UNITS actually uses',
+    Object.values(UNITS).some((u) => u.cls === 'sea')
+    && !Object.values(UNITS).some((u) => u.cls === 'naval'),
+    [...new Set(Object.values(UNITS).map((u) => u.cls))].join(', '));
+
   // Range: a binary gate, replayed against the measured boundaries.
   for (const r of rows) {
     const m = r.meta || {};
@@ -1550,6 +1584,148 @@ console.log('\n13. heroes — replayed against every measured reading');
 }
 
 // ===========================================================================
+console.log('\n12j. range — every bisected boundary, and the free bombardment');
+// ===========================================================================
+// Range used to be three numbers and a whole-side gate. It is now seventeen
+// numbers, a per-ROW gate, and a second rule the roster sweep was not looking
+// for: past 5 km the defender does not fire back at all. Each of those is a
+// battle the server actually ran, so each is replayed rather than declared.
+{
+  const rr = rows.filter((r) => r.experiment === 'range_roster'
+    && r.meta && r.meta.distance !== undefined);
+  let cells = 0;
+  let boundaries = 0;
+  for (const r of rr) {
+    const u = r.meta.unit;
+    const dist = r.meta.distance;
+    const reach = UNIT_RANGE[u];
+    if (reach === undefined) continue;
+    // Every reading is a SELF-duel: the same unit on both sides, 20 a side,
+    // in the terrain pair its own class needs.
+    const terr = (r.meta.terrain || ['land', 'land'])[0];
+    const got = simulate({
+      attacker: { rows: [{ unit: u, count: 20 }] },
+      defender: { rows: [{ unit: u, count: 20 }] },
+      distance: dist,
+      terrain: terr,
+      defenderTerrain: (r.meta.terrain || [])[1],
+    });
+    if (r.meta.no_rows) {
+      // The server returned nothing: no battle. The engine must agree, and it
+      // must agree for the RIGHT reason -- the attacker cannot reach.
+      check(`${u} at ${dist} km: no battle, both ways`,
+        dist > reach && got.defender.hpLost === 0 && got.attacker.hpLost === 0,
+        `reach ${reach}, def lost ${got.defender.hpLost}, atk lost ${got.attacker.hpLost}`);
+      boundaries += 1;
+      continue;
+    }
+    const wantDef = (r.meta.detail['B.1.1'] || {}).lost;
+    const wantAtk = (r.meta.detail['A.1.1'] || {}).lost;
+    if (wantDef === null || wantDef === undefined) continue;
+    // The attacker's figure must not vary with distance at all: inside range
+    // it is identical to zero distance, which is what "binary gate" means.
+    const relDef = Math.abs(got.defender.hpLost - wantDef) / Math.max(1, wantDef);
+    check(`${u} @ ${dist} km deals ${wantDef}`, relDef < 0.005,
+      `got ${got.defender.hpLost.toFixed(2)} want ${wantDef}`);
+    // And the return fire, which is the new rule.
+    const wantSilent = dist > MELEE_RANGE;
+    check(`${u} @ ${dist} km: attacker loses ${wantAtk}`,
+      Math.abs(got.attacker.hpLost - wantAtk) / Math.max(1, wantAtk) < 0.005,
+      `got ${got.attacker.hpLost.toFixed(2)} want ${wantAtk}`
+      + (wantSilent ? ' (suppressed)' : ''));
+    if (wantSilent) {
+      check(`${u} @ ${dist} km is free bombardment in the record too`,
+        wantAtk === 0, String(wantAtk));
+    }
+    cells += 1;
+  }
+  check('the roster sweep was replayed in bulk', cells >= 60, String(cells));
+  check('and its out-of-range readings too', boundaries >= 4, String(boundaries));
+
+  // The boundary sweep, one kilometre at a time. This is the reading that
+  // found the rule, so it is asserted on its own rather than only in bulk.
+  const rf = rows.filter((r) => r.experiment === 'return_fire'
+    && r.meta && r.meta.probe === 'boundary');
+  let rungs = 0;
+  for (const r of rf) {
+    const dist = r.meta.distance;
+    const wantAtk = (r.meta.detail['A.1.1'] || {}).lost;
+    const wantDef = (r.meta.detail['B.1.1'] || {}).lost;
+    const got = simulate({
+      attacker: { rows: [{ unit: 'lart', count: 20 }] },
+      defender: { rows: [{ unit: 'lart', count: 20 }] },
+      distance: dist,
+    });
+    check(`lart vs lart at ${dist} km: ${wantDef} out, ${wantAtk} back`,
+      Math.abs(got.defender.hpLost - wantDef) < 0.05
+      && Math.abs(got.attacker.hpLost - wantAtk) < 0.05,
+      `got ${got.defender.hpLost.toFixed(2)} / ${got.attacker.hpLost.toFixed(2)}`);
+    rungs += 1;
+  }
+  check('the whole return-fire boundary was replayed', rungs === 5, String(rungs));
+  check('and it straddles the cut-off', MELEE_RANGE === 5);
+
+  // The mixed stack. This is the one that decides whether an unreachable row
+  // counts toward E(), and getting it wrong would let a stack gain output by
+  // adding units that cannot shoot.
+  const mx = rows.filter((r) => r.experiment === 'mixed_range'
+    && r.meta && r.meta.rows && r.meta.detail);
+  let mixes = 0;
+  for (const r of mx) {
+    const want = (r.meta.detail['B.1.1'] || {}).lost;
+    if (want === null || want === undefined) continue;
+    const got = simulate({
+      attacker: { rows: r.meta.rows.map(([u, c]) => ({ unit: u, count: c })) },
+      defender: { rows: [{ unit: 'inf', count: 20 }] },
+      distance: r.meta.distance,
+    });
+    check(`${r.meta.rows.map(([u, c]) => `${c} ${u}`).join(' + `')} at `
+      + `${r.meta.distance} km deals ${want}`,
+      Math.abs(got.defender.hpLost - want) < 0.05,
+      `got ${got.defender.hpLost.toFixed(2)}`);
+    mixes += 1;
+  }
+  check('both mixed-reach stacks were replayed', mixes === 2, String(mixes));
+
+  // The two readings that pin WHY, stated as engine behaviour rather than as
+  // a replayed number.
+  const mixed = simulate({
+    attacker: { rows: [{ unit: 'inf', count: 20 }, { unit: 'lart', count: 20 }] },
+    defender: { rows: [{ unit: 'inf', count: 20 }] },
+    distance: 20,
+  });
+  const lartAlone = simulate({
+    attacker: { rows: [{ unit: 'lart', count: 20 }] },
+    defender: { rows: [{ unit: 'inf', count: 20 }] },
+    distance: 20,
+  });
+  check('an unreachable row adds nothing to the stack it travels with',
+    Math.abs(mixed.defender.hpLost - lartAlone.defender.hpLost) < 1e-9,
+    `${mixed.defender.hpLost} vs ${lartAlone.defender.hpLost}`);
+  check('and the engine says so in the open rather than silently',
+    mixed.coverage.caveats.some((c) => /cannot reach/.test(c)),
+    mixed.coverage.caveats.join(' | ').slice(0, 120));
+  const noBattle = simulate({
+    attacker: { rows: [{ unit: 'inf', count: 20 }] },
+    defender: { rows: [{ unit: 'lart', count: 20 }] },
+    distance: 20,
+  });
+  check('a defender never initiates, however far it reaches',
+    noBattle.attacker.hpLost === 0 && noBattle.defender.hpLost === 0,
+    `atk ${noBattle.attacker.hpLost} def ${noBattle.defender.hpLost}`);
+
+  // The correction itself. Infantry at 1 km was never a measurement, and the
+  // table must not quietly drift back to it.
+  check('infantry reach 5 km, not the unbisected 1',
+    UNIT_RANGE.inf === 5, String(UNIT_RANGE.inf));
+  check('every unit in the roster now has a range',
+    Object.keys(UNITS).every((u) => UNIT_RANGE[u] !== undefined),
+    Object.keys(UNITS).filter((u) => UNIT_RANGE[u] === undefined).join(', ') || 'all present');
+  check('and the two the help page also lists agree with it',
+    UNIT_RANGE.cl === 40 && UNIT_RANGE.bb === 75);
+}
+
+// ===========================================================================
 console.log('\n14. coverage of the record itself');
 // ===========================================================================
 {
@@ -1562,6 +1738,7 @@ console.log('\n14. coverage of the record itself');
     'building_damage', 'class_matrix', 'balloon', 'trench_generality',
     'edges', 'bldg_caps', 'last_edges', 'terrain', 'position', 'close_out', 'naval_matrix', 'air_matrix',
     'land_attacks_air', 'air_defends_land', 'sea_vs_land', 'land_vs_sea',
+    'range_roster', 'return_fire', 'mixed_range',
     // Heroes are now modelled and replayed above: the sweeps that measured
     // them are physics the engine reproduces, not declared omissions.
     'heroes', 'hero_scaling', 'hero_table', 'hero_levels', 'air_rounds'];
@@ -1669,6 +1846,49 @@ console.log('\n14. coverage of the record itself');
     PROVENANCE['PATROL.attrition'].confidence === 'estimated');
   check('while the patrol maxRounds behaviour is recorded as measured',
     PROVENANCE['PATROL.rounds'].confidence === 'measured');
+}
+
+// ===========================================================================
+console.log('\n15. the page cannot contradict the model');
+// ===========================================================================
+// The standing-limits list was prose in index.html, and prose does not get
+// re-derived when a measurement overturns something. It ended up telling the
+// reader that a stack saturates in ROSTER order and that damage splits by
+// attack x count -- both measured, both found wrong, both replaced in the
+// engine -- and that multi-round battles and range had never been exercised,
+// long after both were measured and modelled. A limitations list that
+// contradicts the model is aimed squarely at the reader who came to check.
+{
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  check('the standing-limits list is a rendered container, not prose',
+    /<ul class="limits-list" id="limits-list"><\/ul>/.test(html),
+    (html.match(/<ul class="limits-list"[^>]*>/) || ['absent'])[0]);
+  check('and app.js fills it from NOT_MEASURED',
+    /DATA\.NOT_MEASURED/.test(readFileSync(new URL('../app.js', import.meta.url), 'utf8')));
+
+  // The specific claims that went stale. Each of these is a law the engine
+  // computes the OPPOSITE of, so finding one in the page is a live defect.
+  const contradictions = [
+    [/saturates as a whole in roster\s+order/i, 'roster-order saturation (overturned: strongest-first)'],
+    [/splits by attack&nbsp;&times;&nbsp;count/i, 'attack x count allocation (overturned: target factor x count)'],
+    [/Multi-round battles\.<\/strong> Every measurement used exactly one round/i,
+      'multi-round never measured (it is measured and modelled)'],
+    [/Positioning and range\.<\/strong> Never exercised/i,
+      'range never exercised (all seventeen units are bisected)'],
+    [/refuses to accept it in the air[^<]*<\/li>\s*<\/ul>/i,
+      'the Balloon as wholly unmeasured (it is measured in land terrain)'],
+  ];
+  for (const [re, what] of contradictions) {
+    check(`the page no longer asserts ${what}`, !re.test(html));
+  }
+
+  // And the positive statement: whatever the page says about range has to
+  // match the table the engine uses.
+  check('the distance note quotes the measured melee reach',
+    new RegExp(`melee ${MELEE_RANGE}&nbsp;km`).test(html),
+    (html.match(/id="distance-note"[^>]*>([^<]{0,80})/) || [])[1] || 'absent');
+  check('and does not still quote the unbisected infantry figure',
+    !/artillery 50, railgun 150, infantry 1/.test(html));
 }
 
 // ===========================================================================

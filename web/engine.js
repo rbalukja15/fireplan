@@ -34,6 +34,7 @@ import {
   EMBARKED_COEF,
   EMBARKED_TERRAIN,
   UNIT_RANGE,
+  MELEE_RANGE,
   VARIANCE_BAND,
   FORTRESS,
   PATROL,
@@ -367,6 +368,12 @@ export function effectiveByRow(rows, column) {
   const eff = new Array((rows || []).length).fill(0);
   let seen = 0;
   for (const { r, i } of list) {
+    // A row that cannot reach the target is not in the firing stack at all --
+    // it neither fires nor saturates the rows that do. Measured: infantry 20 +
+    // light artillery 20 firing from 20 km deals 100.00, the identical figure
+    // the artillery deals alone. Counting the infantry toward E() would have
+    // the stack gain output by adding units that cannot shoot.
+    if (r && r.inert) { eff[i] = 0; continue; }
     const c = Math.max(0, num(r && r.count, 0));
     eff[i] = effectiveUnits(seen + c) - effectiveUnits(seen);
     seen += c;
@@ -578,10 +585,41 @@ function makeSide(cfg, role, derivation, caveats, battle) {
   // per-row arithmetic reduces exactly to what it was before.
   const rawRows = (cfg && Array.isArray(cfg.rows) && cfg.rows.length)
     ? cfg.rows : null;
-  const rows = effectiveByRow(normaliseRows(cfg),
-                              role === 'attacker' ? 'atk' : 'def');
+  // RANGE, ROW BY ROW. Only the ATTACKER's reach decides anything: a defender
+  // never initiates, however far it could shoot (infantry attacking light
+  // artillery from 20 km produces no battle, though the artillery reaches 30).
+  // So the defender's rows are never gated -- they are targets at any distance
+  // the attacker can cross.
+  const preRows = normaliseRows(cfg);
+  const dist = Math.max(0, num(battle && battle.distance, 0));
+  const unreachable = [];
+  if (role === 'attacker' && dist > 0) {
+    for (const r of preRows) {
+      const reach = UNIT_RANGE[r.unit && r.unit.code];
+      if (reach !== undefined && dist > reach) {
+        r.inert = true;
+        unreachable.push(`${r.unit.label} (${reach} km)`);
+      }
+    }
+  }
+  const rows = effectiveByRow(preRows, role === 'attacker' ? 'atk' : 'def');
+  if (unreachable.length) {
+    const all = unreachable.length === rows.length;
+    caveats.push(`${label}: ${unreachable.join(', ')} cannot reach a target at `
+      + `${dist} km.` + (all
+        ? ' Nothing in this stack reaches it, so there is no battle at all.'
+        : ' Those rows are inert — they neither fire nor count toward the '
+          + 'stack-size factor for the rows that do.'));
+    derivation.push({
+      label: `${label} out of reach`,
+      formula: `${unreachable.join(', ')} at ${dist} km. Measured: a mixed `
+        + 'stack of 20 infantry and 20 light artillery firing from 20 km deals '
+        + '100.00 — exactly what the artillery deals alone.',
+      value: null,
+    });
+  }
   const dropped = rawRows
-    ? rawRows.length - normaliseRows(cfg).length : 0;
+    ? rawRows.length - preRows.length : 0;
   if (dropped > 0) {
     caveats.push(`${label}: ${dropped} unit row(s) dropped. A stack cannot hold `
       + 'the same unit type twice — the server refuses it outright — and an '
@@ -762,7 +800,13 @@ function makeSide(cfg, role, derivation, caveats, battle) {
     // AIR units are embarked too, not just land ones: 10 fighters in sea
     // terrain deal exactly 1.0 x E(20) = 20.00, the same flat figure infantry
     // and cavalry give. Only a naval unit is at home there.
-    const embarked = rows.filter((r) => r.unit && r.unit.cls !== 'naval');
+    // The class token in UNITS is 'sea', not 'naval'. Written as 'naval' this
+    // filter matched EVERY unit including the ships, so a battleship in sea
+    // terrain fought at a flat 1.0 instead of its measured 40 — a 40x error on
+    // the one terrain ships are supposed to be in. Nothing caught it because
+    // no test had ever put a naval unit in sea terrain: the embarked tests all
+    // used land and air units, which the filter did classify correctly.
+    const embarked = rows.filter((r) => r.unit && r.unit.cls !== 'sea');
     for (const r of embarked) r.embarked = true;
     if (embarked.length) {
       caveats.push(`${label}: ${embarked.length} land unit row(s) are EMBARKED in `
@@ -1200,25 +1244,40 @@ function runSimulation(config, derivation, caveats) {
   // distance; outside it the server returns no result rows at all — there is
   // no battle. Only three ranges are on record, so an unlisted unit is not
   // gated rather than guessed at.
-  let outOfRange = false;
-  const atkRange = UNIT_RANGE[atk.unit && atk.unit.code];
-  if (atkRange !== undefined && battle.distance > atkRange) {
-    caveats.push(`${atk.unit.label} reaches ${atkRange} km and the target is at `
-      + `${battle.distance}. Out of range is not a weaker battle — the server `
-      + 'returns no result at all, so there is nothing to compute.');
+  // A battle happens if ANY attacking row reaches. The rows that cannot are
+  // already marked inert in makeSide and contribute nothing; only when every
+  // one of them is out of reach does the server return no result at all.
+  const reaching = atk.rows.filter((r) => !r.inert);
+  const outOfRange = atk.rows.length > 0 && reaching.length === 0;
+  if (outOfRange) {
     derivation.push({
       label: 'Out of range',
-      formula: `${battle.distance} km exceeds ${atk.unit.label}'s ${atkRange} km. `
-        + 'No battle takes place (measured: artillery fires at 50 and not at 51, '
-        + 'the railgun at 150 and not at 151).',
+      formula: `Nothing in the attacking stack reaches ${battle.distance} km. `
+        + 'No battle takes place — out of range is not a weaker battle, the '
+        + 'server returns no result rows at all (measured: artillery fires at '
+        + '50 and not at 51, the railgun at 150 and not at 151, and every '
+        + 'melee unit at 5 and not at 6).',
       value: null,
     });
-    outOfRange = true;
   }
-  if (atkRange === undefined && battle.distance > 0) {
-    caveats.push(`No range is on record for ${atk.unit.label} — only artillery `
-      + '(50 km), the railgun (150) and infantry (1) were read — so the distance '
-      + 'is ignored rather than guessed at.');
+
+  // FREE BOMBARDMENT. Past 5 km the defender takes its full share and returns
+  // nothing. This is a property of the distance, not of what the defender is
+  // holding: lart reaching 30 km, a cruiser reaching 40 and a battleship
+  // reaching 75 are all silent at 8 km, as is a mixed inf+lart defender at 6.
+  const defSuppressed = !outOfRange && battle.distance > MELEE_RANGE;
+  if (defSuppressed) {
+    caveats.push(`At ${battle.distance} km the defender never fires back. Past `
+      + `${MELEE_RANGE} km the attacker takes exactly zero while still dealing `
+      + 'its full figure — measured at 6, 7 and 8 km against a defender that '
+      + 'reaches thirty.');
+    derivation.push({
+      label: 'Defender suppressed',
+      formula: `${battle.distance} km > ${MELEE_RANGE} km, so the defender `
+        + 'deals 0. Light artillery bombarding from 6 km deals 100.00 and '
+        + 'loses nothing; from 5 km it deals the same 100.00 and loses 20.00.',
+      value: 0,
+    });
   }
 
   // Zero rounds when out of range: both sides take nothing, through the same
@@ -1262,8 +1321,9 @@ function runSimulation(config, derivation, caveats) {
     // The trench output bonus is applied PER ROW now (infantry only), so it
     // must not also be applied to the whole stack -- that would square it for
     // infantry and invent one for everything else.
-    const defParts = stackOutput(def, (u) => defenceCoefficient(u, atk.unit).value,
-                                 patrolScale);
+    const defParts = defSuppressed
+      ? { total: 0, parts: [] }
+      : stackOutput(def, (u) => defenceCoefficient(u, atk.unit).value, patrolScale);
     const defOutput = defParts.total === null ? 0 : defParts.total;
     if (def.rows.length > 1 || def.hero) {
       for (const pt of defParts.parts) {
@@ -1293,7 +1353,10 @@ function runSimulation(config, derivation, caveats) {
     }
     derivation.push({
       label: `${tag}Defender output`,
-      formula: (def.rows.length > 1 || def.hero)
+      formula: defSuppressed
+        ? `0 — bombarded from ${battle.distance} km, past the ${MELEE_RANGE} km `
+          + 'at which a defender can answer at all'
+        : (def.rows.length > 1 || def.hero)
         ? `sum of ${def.rows.length + (def.hero ? 1 : 0)} rows`
           + `${def.tf.output !== 1 ? ` x trench ${def.tf.output}` : ''}`
           + `${patrolScale !== 1 ? ` x ${round4(patrolScale)} rounds` : ''} = ${round4(defOutput)}`
@@ -1699,6 +1762,7 @@ function refreshRound(side) {
   }
   const live = side.rows.map((r) => ({
     unit: r.unit,
+    inert: r.inert,
     count: r.liveCount === undefined ? r.count : r.liveCount,
   }));
   const eff = effectiveByRow(live, side.role === 'attacker' ? 'atk' : 'def');
