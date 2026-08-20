@@ -1240,6 +1240,49 @@ function runSimulation(config, derivation, caveats) {
   for (const r of atk.rows) r.embarkedTargetClass = defClass;
   for (const r of def.rows) r.embarkedTargetClass = atkClass;
 
+  // A HERO HAS TARGET-CLASS COLUMNS, all twenty-two of them, on both sides.
+  // Every land-hero reading in this project fired at INFANTRY, so one number
+  // per side looked like the whole story; it is the LAND column and nothing
+  // else. Lawrence contributes 45.0 against land, 4.5 against air and 11.25
+  // against naval -- a factor of ten from the same hero at the same level --
+  // and all sixteen land heroes differ across the three. Richthofen was the
+  // first case found and it looked like a quirk of one air hero.
+  //
+  // The scalar stays the fallback, and for every hero measured it equals the
+  // land column, so a battle on land computes exactly as it did.
+  // Applied as a RATIO to the column the scalar was read in, not as a
+  // replacement. Two heroes have an own attack that moves with level -- 25 to
+  // 125 for Richthofen -- and overwriting hero.atk with a level-10 column
+  // threw that curve away. The base column is 'land' for every hero measured
+  // against infantry, which is all sixteen land ones, and the hero's own class
+  // for the air and naval ones, whose curves were read air-against-air.
+  const heroCol = (side, cls) => {
+    if (!side.hero || !side.hero.def || cls === null) return;
+    const t = side.role === 'attacker'
+      ? side.hero.def.atkByTargetClass : side.hero.def.defByAttackerClass;
+    if (!t || t[cls] === undefined) return;
+    const base = side.hero.def.atkColumnBase || 'land';
+    if (t[base] === undefined || t[base] === 0) return;
+    side.hero.atk *= t[cls] / t[base];
+    side.hero.atkColumn = cls;
+  };
+  heroCol(atk, defClass);
+  heroCol(def, atkClass);
+  for (const s of [atk, def]) {
+    if (s.hero && s.hero.atkColumn && s.hero.atkColumn !== 'land') {
+      derivation.push({
+        label: `${s.role === 'attacker' ? 'Attacker' : 'Defender'} hero column`,
+        formula: `${s.hero.def.label} is fighting ${s.hero.atkColumn} units, and `
+          + `a hero has a column per target class exactly as a unit does: `
+          + `${round4(s.hero.atk)} here, against `
+          + `${round4((s.role === 'attacker' ? s.hero.def.atkByTargetClass
+            : s.hero.def.defByAttackerClass)[s.hero.def.atkColumnBase || 'land'])} `
+          + `against ${s.hero.def.atkColumnBase || 'land'} units.`,
+        value: s.hero.atk,
+      });
+    }
+  }
+
   const matchup = coverageOfStacks(atk.rows, def.rows,
                                    battle.defenderTerrain, battle.terrain);
   const conflicts = [atk.groupConflict, def.groupConflict].filter(Boolean);
@@ -1738,12 +1781,9 @@ function runSimulation(config, derivation, caveats) {
         // shooting at infantry -- the same hero at the same level, a factor of
         // four. Reading one column and using it for all three is what made the
         // older 16.80 look like an attenuation artifact of 70.0.
-        const heroCol = atk.hero && atk.hero.def && atk.hero.def.atkByTargetClass;
-        const heroTargetCls = targetClassFor(atk.unit, def.unit, battle.defenderTerrain);
-        const airHeroAtk = atk.hero
-          ? ((heroCol && heroCol[heroTargetCls] !== undefined)
-            ? heroCol[heroTargetCls] : (atk.hero.atk || 0))
-          : 0;
+        // hero.atk already carries the target-class column and the hero's own
+        // HP scaling, applied once in runSimulation for both paths.
+        const airHeroAtk = atk.hero ? (atk.hero.atk || 0) : 0;
         atkOutput = atkCoef.value * aliveE * hpMultiplier(fAfter) * airHeroM
           + airHeroAtk;
         if (atk.hero) {

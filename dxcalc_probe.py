@@ -7131,6 +7131,120 @@ def exp_hank_sides(p: Probe) -> None:
               f"{m_d if m_d is None else f'{m_d:.4f}':>7}   "
               + ("yes" if same else "DIFFER"))
 
+
+def exp_land_hero_target_class(p: Probe) -> None:
+    """Do the LAND heroes have target-class columns, as Richthofen does?
+
+    Every land-hero reading in this project fired at INFANTRY. Richthofen turned
+    out to add 70.00 against aircraft and 16.66 against infantry -- a factor of
+    four from the same hero at the same level -- so "a hero has one own-attack
+    value per side" is an assumption that has already failed once.
+
+    Light artillery is the control stack because no hero buffs it, so the
+    excess is the hero's own contribution and nothing else. Three targets, one
+    per class: infantry on land, fighters in the air, a battleship at sea. Land
+    attacking either of the other two is not attenuated, so all three cells are
+    read raw.
+    """
+    targets = [("inf", 400, "land", "land"), ("int", 400, "air", "land"),
+               ("bb", 100, "naval", "sea")]
+    print(f"\n  {'hero':12} " + " ".join(f"{c:>10}" for _, _, c, _ in targets)
+          + "   reading")
+    out: dict[str, dict[str, float]] = {}
+    for hero in sorted(HERO_ATK_ATTACKING):
+        cells = []
+        row: dict[str, float] = {}
+        for tgt, tn, tcls, tterr in targets:
+            coef = {"land": 5.0, "air": 1.0, "naval": 1.0}[tcls]
+            ov = settings()
+            ov.update(duel(1, "lart", 10, tgt, tn,
+                           atk_terrain="land", def_terrain=tterr))
+            ov.update({HERO_ATK_FIELDS[0]: hero, HERO_ATK_FIELDS[1]: "10",
+                       HERO_ATK_FIELDS[2]: "100%"})
+            try:
+                p.submit(ov, create=HERO_ATK_FIELDS)
+            except (BareFormReturned, ValueError) as e:
+                print(f"    ! {hero} vs {tgt}: {e}"[:100], file=sys.stderr)
+                cells.append(f"{'—':>10}")
+                continue
+            d = dict(p.last_details)
+            b = d.get("B.1.1") or {}
+            record("land_hero_target_class",
+                   {"hero": hero, "target": tgt, "target_class": tcls,
+                    "level": 10, "atk_n": 10, "detail": d},
+                   {k: (v or {}).get("lost") for k, v in d.items()})
+            if b.get("lost") is None or (b.get("pct") or 0) >= 99.9:
+                cells.append(f"{'wiped':>10}")
+                continue
+            excess = b["lost"] - coef * (effective_units(11) - 1)
+            row[tcls] = excess
+            cells.append(f"{excess:10.2f}")
+        out[hero] = row
+        vals = list(row.values())
+        flat = (max(vals) - min(vals) < 0.05) if len(vals) == 3 else False
+        print(f"  {hero:12} " + " ".join(cells)
+              + ("   flat" if flat else "   COLUMNS DIFFER"))
+    print("\n  own attack by target class = " + json.dumps(
+        {h: {c: round(v, 2) for c, v in r.items()} for h, r in out.items()},
+        sort_keys=True))
+
+
+def exp_land_hero_def_class(p: Probe) -> None:
+    """And the defending side: does a hero's defence depend on the ATTACKER's class?
+
+    All sixteen land heroes have target-class columns attacking -- Lawrence
+    reads 45.0 against land, 4.5 against air and 11.25 against naval, a factor
+    of ten. Nothing says the defending column is a single number either, and
+    the app would be wrong for every defending hero facing anything but a land
+    stack if it is not.
+
+    Same control on the other side: a light-artillery stack the hero does not
+    buff, so the attacker's losses are the hero's own defence contribution and
+    nothing else.
+    """
+    attackers = [("inf", 400, "land", "land"), ("int", 200, "air", "air"),
+                 ("bb", 100, "naval", "sea")]
+    print(f"\n  {'hero':12} " + " ".join(f"{c:>10}" for _, _, c, _ in attackers)
+          + "   reading")
+    out: dict[str, dict[str, float]] = {}
+    for hero in sorted(HERO_ATK_ATTACKING):
+        cells = []
+        row: dict[str, float] = {}
+        for atk, an, acls, aterr in attackers:
+            # lart defending against each class, from CLASS_DEFENCE.
+            coef = {"land": 1.0, "air": 0.2, "naval": 0.2}[acls]
+            ov = settings()
+            ov.update(duel(1, atk, an, "lart", 10,
+                           atk_terrain=aterr, def_terrain="land"))
+            ov.update({HERO_FIELDS[0]: hero, HERO_FIELDS[1]: "10",
+                       HERO_FIELDS[2]: "100%"})
+            try:
+                p.submit(ov, create=HERO_FIELDS)
+            except (BareFormReturned, ValueError) as e:
+                print(f"    ! {hero} vs {atk}: {e}"[:100], file=sys.stderr)
+                cells.append(f"{'—':>10}")
+                continue
+            d = dict(p.last_details)
+            a = d.get("A.1.1") or {}
+            record("land_hero_def_class",
+                   {"hero": hero, "attacker": atk, "atk_class": acls,
+                    "level": 10, "def_n": 10, "detail": d},
+                   {k: (v or {}).get("lost") for k, v in d.items()})
+            if a.get("lost") is None or (a.get("pct") or 0) >= 99.9:
+                cells.append(f"{'wiped':>10}")
+                continue
+            excess = a["lost"] - coef * (effective_units(11) - 1)
+            row[acls] = excess
+            cells.append(f"{excess:10.2f}")
+        out[hero] = row
+        vals = list(row.values())
+        flat = (max(vals) - min(vals) < 0.05) if len(vals) == 3 else False
+        print(f"  {hero:12} " + " ".join(cells)
+              + ("   flat" if flat else "   COLUMNS DIFFER"))
+    print("\n  own defence by attacker class = " + json.dumps(
+        {h: {c: round(v, 2) for c, v in r.items()} for h, r in out.items()},
+        sort_keys=True))
+
 # Every (hero, unit) pair with a measured OUTPUT buff, and the level cap to
 # sweep to. Read with a SINGLE-TYPE stack, which needs no baseline subtraction
 # and cannot be contaminated by another curve.
@@ -8229,6 +8343,8 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "land_hero_screen": exp_land_hero_screen,
     "hero_new_buffs": exp_hero_new_buffs,
     "hank_sides": exp_hank_sides,
+    "land_hero_target_class": exp_land_hero_target_class,
+    "land_hero_def_class": exp_land_hero_def_class,
     "mixed_stacks": exp_mixed_stacks,
     "heroes": exp_heroes,
     "stack_limits": exp_stack_limits,

@@ -2692,6 +2692,88 @@ console.log('\n12s. the land heroes ATTACKING, re-decomposed');
 }
 
 // ===========================================================================
+console.log('\n12t. every hero has a column per class, on both sides');
+// ===========================================================================
+// Every land-hero reading in this project fired at INFANTRY, so one number per
+// side looked like the whole story. It is the LAND column and nothing else.
+// Richthofen was the first case found — 70.00 against aircraft, 16.66 against
+// infantry — and it looked like a quirk of one air hero. All sixteen land
+// heroes do it too: Lawrence reads 45.0 / 4.5 / 11.25 across the three classes
+// attacking, a factor of ten.
+{
+  let atkCells = 0;
+  let defCells = 0;
+  for (const r of rows) {
+    const m = r.meta || {};
+    if (!m.detail) continue;
+    if (r.experiment === 'land_hero_target_class') {
+      const want = (m.detail['B.1.1'] || {}).lost;
+      const pct = (m.detail['B.1.1'] || {}).pct;
+      if (want == null || (pct || 0) >= 99.9) continue;
+      if (m.hero === 'lucien_g') continue;      // banded, see 12s
+      const got = simulate({
+        terrain: 'land',
+        defenderTerrain: m.target_class === 'air' ? 'land'
+          : (m.target_class === 'naval' ? 'sea' : 'land'),
+        attacker: { rows: [{ unit: 'lart', count: 10 }],
+          hero: { code: m.hero, level: 10 } },
+        defender: { rows: [{ unit: m.target, count: m.def_n || 400 }] },
+      });
+      check(`${m.hero} attacking ${m.target_class}: ${want}`,
+        Math.abs(got.defender.hpLost - want) < 0.05,
+        `got ${got.defender.hpLost === null ? 'withheld' : got.defender.hpLost.toFixed(2)}`);
+      atkCells += 1;
+    }
+    if (r.experiment === 'land_hero_def_class') {
+      const want = (m.detail['A.1.1'] || {}).lost;
+      const pct = (m.detail['A.1.1'] || {}).pct;
+      if (want == null || (pct || 0) >= 99.9) continue;
+      const an = { inf: 400, int: 200, bb: 100 }[m.attacker];
+      const got = simulate({
+        terrain: m.atk_class === 'air' ? 'air' : (m.atk_class === 'naval' ? 'sea' : 'land'),
+        defenderTerrain: 'land',
+        attacker: { rows: [{ unit: m.attacker, count: an }] },
+        defender: { rows: [{ unit: 'lart', count: 10 }],
+          hero: { code: m.hero, level: 10 } },
+      });
+      check(`${m.hero} defending against ${m.atk_class}: ${want}`,
+        got.attacker.hpLost !== null && Math.abs(got.attacker.hpLost - want) < 0.05,
+        `got ${got.attacker.hpLost === null ? 'withheld' : got.attacker.hpLost.toFixed(2)}`);
+      defCells += 1;
+    }
+  }
+  check('every attacking class cell was replayed', atkCells >= 40, String(atkCells));
+  check('and every defending class cell was replayed too', defCells >= 45, String(defCells));
+
+  // The columns themselves, and the property that made the old single number
+  // look right: for every hero measured, the land column IS the old scalar.
+  check('all sixteen land heroes carry both column sets',
+    Object.values(HEROES).every((h) => h.atkByTargetClass && h.defByAttackerClass));
+  check('and every land column equals the scalar it replaced, so land battles are unchanged',
+    Object.entries(HEROES).every(([c, h]) =>
+      (c === 'lucien_g' || Math.abs(h.atkByTargetClass.land - h.atkAttacking) < 0.01)
+      && Math.abs(h.defByAttackerClass.land - h.atkDefending) < 0.01),
+    Object.entries(HEROES).filter(([c, h]) => c !== 'lucien_g'
+      && Math.abs(h.atkByTargetClass.land - h.atkAttacking) >= 0.01).map(([c]) => c).join(',') || 'all match');
+  check('the columns genuinely differ — larab is ten times bigger on land than air',
+    HEROES.larab.atkByTargetClass.land === 45 && HEROES.larab.atkByTargetClass.air === 4.5);
+  check('and a level curve is SCALED by the column, not replaced by it',
+    (() => {
+      // Richthofen's own attack runs 25 to 125 with level. Against a land
+      // target the whole curve scales by 16.66/70.
+      const l1 = simulate({ terrain: 'air', defenderTerrain: 'air',
+        attacker: { rows: [{ unit: 'tac', count: 10 }], hero: { code: 'rbaron', level: 1 } },
+        defender: { rows: [{ unit: 'int', count: 400 }] } });
+      const l20 = simulate({ terrain: 'air', defenderTerrain: 'air',
+        attacker: { rows: [{ unit: 'tac', count: 10 }], hero: { code: 'rbaron', level: 20 } },
+        defender: { rows: [{ unit: 'int', count: 400 }] } });
+      const h1 = l1.attacker.rows.find((x) => x.isHero);
+      const h20 = l20.attacker.rows.find((x) => x.isHero);
+      return Math.abs(h1.damageDealt - 25) < 0.05 && Math.abs(h20.damageDealt - 125) < 0.05;
+    })());
+}
+
+// ===========================================================================
 console.log('\n14. coverage of the record itself');
 // ===========================================================================
 {
@@ -2712,6 +2794,7 @@ console.log('\n14. coverage of the record itself');
     'hero_air_attacking', 'hero_class_columns', 'hero_columns_small',
     'togo_b_disagreement', 'togo_b_shape', 'togo_b_kind', 'hero_hp_scaling',
     'land_hero_attacking', 'land_hero_screen', 'hero_new_buffs', 'hank_sides',
+    'land_hero_target_class', 'land_hero_def_class',
     // Heroes are now modelled and replayed above: the sweeps that measured
     // them are physics the engine reproduces, not declared omissions.
     'heroes', 'hero_scaling', 'hero_table', 'hero_levels', 'air_rounds'];

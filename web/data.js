@@ -764,11 +764,17 @@ export const HEROES = {
   //    the server's own refusal ("Max hp for 2 Infantry is 47.200000"), so
   //    these are exact rather than bracketed.
   kangal:       { label: 'Orhan “Kangal” Demir', atkDefending: 20.0, atkAttacking: 10.0,
+                  atkByTargetClass: { land: 10, air: 5, naval: 3 },
+                  defByAttackerClass: { land: 20, air: 10, naval: 6 },
                   pool: 90, sits: 'first', maxLevel: 10,
                   buffs: { ac: { channel: 'defence', curve: { 1: 1.08, 2: 1.10, 3: 1.12, 4: 1.12, 5: 1.13, 6: 1.14, 7: 1.16, 8: 1.18, 9: 1.20, 10: 1.20 } } } },
   joffre:       { label: 'Joseph Joffre (Non Homeland)', atkDefending: 16.0, atkAttacking: 4.0,
+                  atkByTargetClass: { land: 4, air: 3, naval: 2 },
+                  defByAttackerClass: { land: 16, air: 12, naval: 8 },
                   pool: 120, sits: 'first', maxLevel: 15 },
   joffre_home:  { label: 'Joseph Joffre (Homeland)', atkDefending: 16.0, atkAttacking: 4.0,
+                  atkByTargetClass: { land: 4, air: 3, naval: 2 },
+                  defByAttackerClass: { land: 16, air: 12, naval: 8 },
                   pool: 120, sits: 'first', maxLevel: 15,
                   buffs: { inf: { channel: 'defence', curve: { 1: 1.10, 2: 1.15, 3: 1.15, 4: 1.16, 5: 1.20, 6: 1.22, 7: 1.24, 8: 1.26, 9: 1.28, 10: 1.30, 11: 1.32, 12: 1.34, 13: 1.36, 14: 1.38, 15: 1.40 } },
                            ac:  { channel: 'defence', curve: { 1: 1.10, 2: 1.15, 3: 1.15, 4: 1.16, 5: 1.20, 6: 1.22, 7: 1.24, 8: 1.26, 9: 1.28, 10: 1.30, 11: 1.32, 12: 1.34, 13: 1.36, 14: 1.38, 15: 1.40 } } },
@@ -777,19 +783,29 @@ export const HEROES = {
   // an ATTACK-ONLY light-tank buff added together, read off a stack the hero
   // buffs. Same defect in allen, georg and pershing; see HEROES.attackOnly.
   marco:        { label: 'Fiero “Marco” Martello', atkDefending: 15.0, atkAttacking: 15.0,
+                  atkByTargetClass: { land: 15, air: 2, naval: 5 },
+                  defByAttackerClass: { land: 15, air: 2, naval: 5 },
                   pool: 60, sits: 'first', maxLevel: 10,
                   buffs: { lt: { channel: 'attack', curve: { 1: 1.05, 2: 1.08, 3: 1.08, 4: 1.09, 5: 1.10, 6: 1.11, 7: 1.12, 8: 1.13, 9: 1.14, 10: 1.16 } } },
                   hpBuffs: { lt: { 1: 1.00, 2: 1.00, 3: 1.05, 4: 1.06, 5: 1.07, 6: 1.08, 7: 1.09, 8: 1.10, 9: 1.11, 10: 1.12 } } },
   allen:        { label: 'Viscount Allenby', atkDefending: 10.0, atkAttacking: 20.0,
+                  atkByTargetClass: { land: 20, air: 3, naval: 10 },
+                  defByAttackerClass: { land: 10, air: 1.5, naval: 5 },
                   pool: 50, sits: 'first', maxLevel: 15,
                   buffs: { cav: { channel: 'attack', curve: { 1: 1.10, 2: 1.15, 3: 1.20, 4: 1.20, 5: 1.24, 6: 1.24, 7: 1.27, 8: 1.27, 9: 1.30, 10: 1.32, 11: 1.34, 12: 1.36, 13: 1.38, 14: 1.40, 15: 1.40 } } } },
   larab:        { label: 'Lawrence of Arabia', atkDefending: 10.0, atkAttacking: 45.0,
+                  atkByTargetClass: { land: 45, air: 4.5, naval: 11.25 },
+                  defByAttackerClass: { land: 10, air: 1, naval: 2.5 },
                   pool: 75, sits: 'first', maxLevel: 20 },
   alvin:        { label: 'Alvin C. York', atkDefending: 8.30, atkAttacking: 25.0,
+                  atkByTargetClass: { land: 25, air: 4, naval: 3 },
+                  defByAttackerClass: { land: 8.3, air: 1.3, naval: 1 },
                   pool: 100, sits: 'first', maxLevel: 20,
                   buffs: { st: { channel: 'both', curve: { 1: 1.15, 2: 1.15, 3: 1.20, 4: 1.25, 5: 1.25, 6: 1.30, 7: 1.30, 8: 1.35, 9: 1.35, 10: 1.40, 11: 1.40, 12: 1.45, 13: 1.45, 14: 1.50, 15: 1.50, 16: 1.55, 17: 1.55, 18: 1.60, 19: 1.60, 20: 1.60 } } },
                   hpBuffs: { st: { 1: 1.00, 2: 1.05, 3: 1.10, 4: 1.10, 5: 1.14, 6: 1.14, 7: 1.18, 8: 1.18, 9: 1.22, 10: 1.22, 11: 1.26, 12: 1.26, 13: 1.30, 14: 1.30, 15: 1.34, 16: 1.34, 17: 1.38, 18: 1.38, 19: 1.42, 20: 1.42 } } },
   lucien:       { label: 'Lucien Laroche', atkDefending: 8.0, atkAttacking: 8.0,
+                  atkByTargetClass: { land: 8, air: 2, naval: 6 },
+                  defByAttackerClass: { land: 8, air: 2, naval: 6 },
                   pool: 40, sits: 'first', maxLevel: 15 },
   // The second unstable hero, and the second "w/" variant. Attacking, its own
   // contribution reads 37.94 against light artillery, 37.79 against infantry
@@ -810,6 +826,11 @@ export const HEROES = {
   // engine says so rather than quoting either end as though it were settled.
   // Tōgō-with-bombardment is the same family and much stronger.
   lucien_g:     { label: 'Lucien Laroche w/gas', atkDefending: 8.0, atkAttacking: 8.0,
+                  // The land cell reads 37.94 on a single-type stack and 8.00 on a
+                  // six-type one. 8.00 is what the table uses, for the reason above,
+                  // so the column is scaled to match it rather than contradict it.
+                  atkByTargetClass: { land: 8.0, air: 6.74, naval: 1.27 },
+                  defByAttackerClass: { land: 8, air: 2, naval: 6 },
                   atkAttackingBand: { lo: 8.0, hi: 37.94, measuredAt: 'level 10; 8.00 on a six-type stack, 36.44-37.94 on single-type stacks' },
                   pool: 40, sits: 'first', maxLevel: 15 },
   // atkAttacking was 62.0 and is 8.0. The old figure was this hero's own
@@ -820,6 +841,8 @@ export const HEROES = {
   // stormtroopers, all at the same curve, read on heavy tanks and confirmed at
   // level 10 on all five.
   pershing:     { label: 'John J. Pershing “Black Jack”', atkDefending: 8.0, atkAttacking: 8.0,
+                  atkByTargetClass: { land: 8, air: 4, naval: 8 },
+                  defByAttackerClass: { land: 8, air: 4, naval: 8 },
                   pool: 80, sits: 'first', maxLevel: 20,
                   buffs: { inf: { channel: 'attack', curve: { 1: 1.10, 2: 1.12, 3: 1.14, 4: 1.17, 5: 1.20, 6: 1.22, 7: 1.24, 8: 1.26, 9: 1.28, 10: 1.30, 11: 1.32, 12: 1.34, 13: 1.36, 14: 1.38, 15: 1.40, 16: 1.42, 17: 1.44, 18: 1.46, 19: 1.48, 20: 1.50 } },
                            cav: { channel: 'attack', curve: { 1: 1.10, 2: 1.12, 3: 1.14, 4: 1.17, 5: 1.20, 6: 1.22, 7: 1.24, 8: 1.26, 9: 1.28, 10: 1.30, 11: 1.32, 12: 1.34, 13: 1.36, 14: 1.38, 15: 1.40, 16: 1.42, 17: 1.44, 18: 1.46, 19: 1.48, 20: 1.50 } },
@@ -833,11 +856,17 @@ export const HEROES = {
                   hpBuffs: { inf: { 1: 1.00, 2: 1.50, 3: 1.50, 4: 1.70, 5: 1.70, 6: 1.10, 7: 1.10, 8: 1.12, 9: 1.12, 10: 1.14, 11: 1.14, 12: 1.16, 13: 1.16, 14: 1.18, 15: 1.18, 16: 1.20, 17: 1.20, 18: 1.22, 19: 1.22, 20: 1.25 },
                              ht:  { 1: 1.00, 2: 1.00, 3: 1.10, 4: 1.10, 5: 1.15, 6: 1.15, 7: 1.20, 8: 1.20, 9: 1.25, 10: 1.25, 11: 1.30, 12: 1.30, 13: 1.35, 14: 1.35, 15: 1.40, 16: 1.40, 17: 1.45, 18: 1.45, 19: 1.50, 20: 1.50 } } },
   georg:        { label: 'Georg Bruchmüller', atkDefending: 6.0, atkAttacking: 12.0,
+                  atkByTargetClass: { land: 12, air: 2, naval: 8 },
+                  defByAttackerClass: { land: 6, air: 1, naval: 4 },
                   pool: 40, sits: 'first', maxLevel: 20,
                   buffs: { art: { channel: 'attack', curve: { 1: 1.15, 2: 1.20, 3: 1.20, 4: 1.22, 5: 1.22, 6: 1.24, 7: 1.26, 8: 1.28, 9: 1.30, 10: 1.30, 11: 1.32, 12: 1.34, 13: 1.36, 14: 1.38, 15: 1.40, 16: 1.42, 17: 1.44, 18: 1.46, 19: 1.48, 20: 1.50 } } } },
   tatiana:      { label: 'Tatiana Minchakievich (Enemy Land)', atkDefending: 6.0, atkAttacking: 45.6,
+                  atkByTargetClass: { land: 45.6, air: 7.6, naval: 3.8 },
+                  defByAttackerClass: { land: 6, air: 1, naval: 0.5 },
                   pool: 15, sits: 'first', maxLevel: 20 },
   hank:         { label: 'Henry “Hank” Callahan', atkDefending: 6.0, atkAttacking: 5.0,
+                  atkByTargetClass: { land: 5, air: 1, naval: 3 },
+                  defByAttackerClass: { land: 6, air: 1.2, naval: 3.6 },
                   pool: 40, sits: 'first', maxLevel: 10,
                   // The two sides agree exactly at levels 1 through 9 and part
                   // at the cap: 1.10 attacking, 1.09 defending. Read on both
@@ -848,10 +877,16 @@ export const HEROES = {
                            curve:          { 1: 1.00, 2: 1.03, 3: 1.03, 4: 1.05, 5: 1.06, 6: 1.06, 7: 1.07, 8: 1.08, 9: 1.09, 10: 1.10 },
                            curveDefending: { 1: 1.00, 2: 1.03, 3: 1.03, 4: 1.05, 5: 1.06, 6: 1.06, 7: 1.07, 8: 1.08, 9: 1.09, 10: 1.09 } } } },
   johan:        { label: 'Johan “Aardvark” Maes', atkDefending: 5.0, atkAttacking: 4.0,
+                  atkByTargetClass: { land: 4, air: 0.5, naval: 2 },
+                  defByAttackerClass: { land: 5, air: 0.5, naval: 2.5 },
                   pool: 40, sits: 'first', maxLevel: 20 },
   tatiana_home: { label: 'Tatiana Minchakievich (Friendly Land)', atkDefending: 5.0, atkAttacking: 10.0,
+                  atkByTargetClass: { land: 10, air: 2, naval: 1 },
+                  defByAttackerClass: { land: 5, air: 1, naval: 0.5 },
                   pool: 15, sits: 'first', maxLevel: 20 },
   maeve:        { label: 'Fiona “Maeve” Porter', atkDefending: 4.0, atkAttacking: 4.0,
+                  atkByTargetClass: { land: 4, air: 1, naval: 1 },
+                  defByAttackerClass: { land: 4, air: 1, naval: 1 },
                   pool: 20, sits: 'last', maxLevel: 15 },
 };
 
@@ -993,6 +1028,9 @@ export const HEROES_OTHER_TERRAIN = {
   // raw excess, which is what the server printed.
   rbaron: { label: 'Manfred Von Richthofen', terrain: 'air', maxLevel: 20, sits: 'first',
             atkAttacking: 70.0, atkDefending: 25.0, pool: 61.2,
+            // Its scalar and its curve were both read AIR against AIR, so the
+            // class columns scale relative to the air cell, not the land one.
+            atkColumnBase: 'air',
             // 16.85 and 17.53 are the RAW excesses. The hero also absorbs a
             // share of the incoming round (weight 0.40), which leaves the
             // units slightly less damaged and so slightly less attenuated, so
@@ -1435,6 +1473,24 @@ export const PROVENANCE = {
       + 'reproduces at 308.00 exactly, from 8.0 plus buffs on the three types it contains. Hank\'s '
       + 'infantry buff also turned out to differ by side at its cap alone -- 1.10 attacking, 1.09 '
       + 'defending, with levels 1 to 9 identical on both.',
+  },
+  'HEROES.classColumns': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiments land_hero_target_class (48 requests: all sixteen land '
+      + 'heroes against one target of each class) and land_hero_def_class (48, the same sweep on '
+      + 'the defending side). Control stack is light artillery, which no hero buffs, so the excess '
+      + 'is the hero\'s own contribution and nothing else.',
+    note: 'A HERO HAS A COLUMN PER CLASS, on BOTH sides, and all twenty-two do. Every land-hero '
+      + 'reading in this project fired at INFANTRY, so one number per side looked like the whole '
+      + 'story -- it is the LAND column. Lawrence contributes 45.0 attacking land, 4.5 attacking '
+      + 'air and 11.25 attacking naval, a factor of ten from the same hero at the same level, and '
+      + 'defends at 10.0 / 1.0 / 2.5. Every one of the sixteen differs across the three. '
+      + 'Richthofen was the first case found and it read as a quirk of one air hero. WHY THE OLD '
+      + 'SINGLE NUMBER LOOKED RIGHT: for every hero measured, the land column equals the scalar it '
+      + 'replaced, exactly. A battle on land computes as it always did; every other pairing was '
+      + 'wrong. The column is applied as a RATIO to whichever class the scalar was read in, not as '
+      + 'a replacement, because two heroes have an own attack that moves with level and '
+      + 'overwriting it with a level-10 column threw the curve away.',
   },
   'STACK.composition': {
     confidence: 'measured',
