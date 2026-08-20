@@ -26,9 +26,11 @@ import {
   TRENCH_SAMPLED_LEVELS,
   TRENCH_MAX_LEVEL,
   AIR_ATTACK_VS_GROUND,
+  CLASS_ATTACK,
   GROUND_DEFENCE_VS_AIR,
   BUILDING_DAMAGE_PER_EFFECTIVE_UNIT,
   BUILDING_DAMAGE_FLOOR,
+  TRENCH_APPLIES_TO,
   FORTRESS,
   PATROL,
   ROSTER_ORDER,
@@ -193,6 +195,8 @@ export function patrolMode(mode, atkUnit, defUnit) {
   const a = resolveUnit(atkUnit);
   const d = resolveUnit(defUnit);
   const wanted = mode === 'patrol';
+  // The Balloon is excluded from the air-attacks-ground attenuation law: its
+  // three readings are all from LAND terrain, where nothing is attenuated.
   const eligible = !!(a && d && a.cls === 'air' && d.cls === 'land' && a.code !== 'bal');
   return {
     wanted,
@@ -445,10 +449,11 @@ export function coverageOf(atkUnit, defUnit) {
   }
   if (a.code === 'bal' || d.code === 'bal') {
     return {
-      level: 'unknown',
-      reason: 'The Balloon has nothing measured at all — no max HP, no attack, no defence. '
-        + 'Sending it in air terrain aborts the whole request server-side, so its fourteen rows '
-        + 'in results.jsonl are all empty.',
+      level: 'estimated',
+      reason: 'The Balloon is measured now — max HP 20.0, attack 3.0, defence 3.0 — but only in '
+        + 'LAND terrain, which is the only terrain the server will run it in. Its fourteen older '
+        + 'rows are empty because they were sent in air terrain, which aborts the whole request. '
+        + 'Treat a Balloon result as estimated: three readings, one terrain.',
     };
   }
   if (a.cls === 'air' && d.cls === 'land') {
@@ -497,22 +502,31 @@ export function attackCoefficient(atkUnit, defUnit) {
   const a = resolveUnit(atkUnit);
   const d = resolveUnit(defUnit);
   if (!a || !d) return { value: null, level: 'unknown', source: 'unrecognised unit' };
-  if (a.cls === 'air' && d.cls === 'land') {
-    const v = AIR_ATTACK_VS_GROUND[a.code];
-    if (v === undefined) {
-      return { value: null, level: 'unknown', source: `no air-to-ground reading for ${a.code}` };
-    }
-    return { value: v, level: 'measured', source: 'AIR_ATTACK_VS_GROUND (30 cells, flat across all ten ground targets)' };
+  // The whole matrix is measured now: a unit's coefficient is flat across
+  // targets within a class and changes only between classes, so one lookup by
+  // the TARGET'S CLASS covers every pairing. This used to fall through to
+  // "no reading for air attacking naval" and withhold a number.
+  const row = CLASS_ATTACK[a.code];
+  const v = row ? row[d.cls] : undefined;
+  if (v !== undefined) {
+    const sameClass = a.cls === d.cls;
+    return {
+      value: v,
+      level: (a.code === 'bal' || a.cls === 'air') ? 'estimated' : 'measured',
+      source: sameClass
+        ? `CLASS_ATTACK (${a.cls} vs ${a.cls}; flat across every target in the class)`
+        : `CLASS_ATTACK (${a.cls} attacking ${d.cls}, measured directly)`,
+    };
   }
-  if (a.code === d.code) {
-    if (a.atk === null) return { value: null, level: 'unknown', source: `${a.code} has no measured attack` };
-    return { value: a.atk, level: 'measured', source: 'UNITS.diagonal (same-class 10v10 duel)' };
+  if (a.cls === 'naval' && d.cls === 'air') {
+    return { value: null, level: 'unknown',
+             source: 'the server will not run a naval stack against an air one' };
   }
-  if (a.cls === d.cls) {
-    if (a.atk === null) return { value: null, level: 'unknown', source: `${a.code} has no measured attack` };
-    return { value: a.atk, level: 'estimated', source: `${a.label}'s same-class diagonal stat used as a stand-in for a target that was never tested` };
+  if (a.atk === null) {
+    return { value: null, level: 'unknown', source: `${a.code} has no measured attack` };
   }
-  return { value: null, level: 'unknown', source: `no reading for ${a.cls} attacking ${d.cls}` };
+  return { value: a.atk, level: 'estimated',
+           source: `${a.label}'s diagonal stat, with no reading for ${d.cls} targets` };
 }
 
 /**
@@ -574,8 +588,19 @@ function makeSide(cfg, role, derivation, caveats) {
   // unit type's max HP and the pool has to include that.
   const computePools = () => {
     for (const r of rows) {
+      // TRENCHES ARE INFANTRY-ONLY. Heavy tanks, artillery and cavalry read
+      // the identical pool and the identical output at trench 0 and trench 10;
+      // only infantry move. This engine applied both multipliers to every unit
+      // type, which inflates a dug-in tank stack by up to 35% of pool and 75%
+      // of output.
+      // The POOL bonus applies to whichever side is dug in; the OUTPUT bonus
+      // was only ever measured on a DEFENDER, and an attacker in a trench
+      // deals exactly what it deals outside one.
+      const digsIn = TRENCH_APPLIES_TO.includes(r.unit && r.unit.code);
+      r.trenchPool = digsIn ? tf.pool : 1;
+      r.trenchOutput = (digsIn && role === 'defender') ? tf.output : 1;
       r.perUnitMaxHP = (r.unit && r.unit.maxHP !== null)
-        ? r.unit.maxHP * tf.pool * (r.hpBuff || 1) : null;
+        ? r.unit.maxHP * r.trenchPool * (r.hpBuff || 1) : null;
       r.poolFull = r.perUnitMaxHP === null ? null : r.count * r.perUnitMaxHP;
       r.pool = r.poolFull === null ? null : r.poolFull * (r.hpPct / 100);
       r.hpLost = 0;
@@ -1179,8 +1204,11 @@ function runSimulation(config, derivation, caveats) {
 
     // 1. Defender's output — always from the PRE-round state (measured: a
     //    ground defender is not attenuated even losing 26% of its pool).
+    // The trench output bonus is applied PER ROW now (infantry only), so it
+    // must not also be applied to the whole stack -- that would square it for
+    // infantry and invent one for everything else.
     const defParts = stackOutput(def, (u) => defenceCoefficient(u, atk.unit).value,
-                                 def.tf.output * patrolScale);
+                                 patrolScale);
     const defOutput = defParts.total === null ? 0 : defParts.total;
     if (def.rows.length > 1 || def.hero) {
       for (const pt of defParts.parts) {
@@ -1575,7 +1603,8 @@ function stackOutput(side, coefFor, scale, mulEach) {
     // They did not, and the UI's row-vs-total sanity check caught it: a
     // defender on trench 10 reported rows totalling 141.67 against a stack
     // figure of 218.17, the same number times the 1.54 trench bonus.
-    const out = c * r.effective * unitScale * mm * mFor(r.unit) * k;
+    const out = c * r.effective * unitScale * mm * mFor(r.unit) * k
+      * (r.trenchOutput === undefined ? 1 : r.trenchOutput);
     r.damageDealt = out;
     total += out;
     parts.push({ row: r, coef: c, mul: mm, out, heroM: mFor(r.unit) });

@@ -34,7 +34,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 import {
-  UNITS, TRENCH_POOL, TRENCH_POOL_BRACKET, TRENCH_OUTPUT, PROVENANCE, NOT_MEASURED,
+  UNITS, CLASS_ATTACK, TRENCH_POOL, TRENCH_POOL_BRACKET, TRENCH_OUTPUT, PROVENANCE, NOT_MEASURED,
   MAX_UNIT_ROWS,
   HEROES,
 } from '../data.js';
@@ -154,11 +154,16 @@ console.log('\n2. unit_stats — the same-class diagonal, all four runs of the r
   }
   const skipped = rows.filter((r) => r.experiment === 'unit_stats'
     && (!r.readings || !Object.keys(r.readings).length));
-  check(`the ${skipped.length} balloon rows carry no readings, and the engine offers no numbers for it`,
-    skipped.length > 0 && skipped.every((r) => r.meta.unit === 'bal')
-      && simulate({ attacker: { unit: 'bal', count: 10 }, defender: { unit: 'bal', count: 10 } })
-        .attacker.hpLost === null,
-    'the Balloon must stay unmeasurable, not be interpolated from the other fliers');
+  // Those rows are still empty — they were sent in AIR terrain, which aborts
+  // the batch. The unit itself is measured now, in LAND terrain, so the engine
+  // must produce numbers rather than withhold them.
+  check(`the ${skipped.length} old balloon rows are still empty, and all of them are bal`,
+    skipped.length > 0 && skipped.every((r) => r.meta.unit === 'bal'),
+    'they were sent in air terrain, where the batch aborts');
+  check('but the Balloon is measured now and the engine computes it',
+    Math.abs(simulate({ attacker: { unit: 'bal', count: 10 },
+      defender: { unit: 'bal', count: 10 }, rounds: 1 }).attacker.hpLost - 30) < 0.05,
+    '3.0 defence x E(10)');
 }
 
 // ===========================================================================
@@ -221,11 +226,12 @@ for (const r of withReadings('air_vs_ground')) {
     cannotReproduce(`air_vs_ground ${tag} attacker loss`, A.lost, res.attacker.hpLost);
   }
 }
-check('the 10 balloon air_vs_ground rows are empty, and the engine withholds rather than guesses',
+check('the 10 balloon air_vs_ground rows are still empty — air terrain aborts the batch',
   rows.filter((r) => r.experiment === 'air_vs_ground' && r.meta.atk === 'bal'
-    && (!r.readings || !Object.keys(r.readings).length)).length === 10
-  && simulate({ attacker: { unit: 'bal', count: 10 }, defender: { unit: 'inf', count: 57 } })
-    .defender.hpLost === null);
+    && (!r.readings || !Object.keys(r.readings).length)).length === 10);
+check('and the Balloon now has all three constants, from land terrain',
+  UNITS.bal.maxHP === 20 && UNITS.bal.atk === 3.0 && UNITS.bal.def === 3.0,
+  JSON.stringify({ hp: UNITS.bal.maxHP, atk: UNITS.bal.atk, def: UNITS.bal.def }));
 
 // ===========================================================================
 console.log('\n5. trenches — 10 infantry vs 10 infantry across the nine sampled levels');
@@ -619,8 +625,13 @@ check('every constant in UNITS points at a PROVENANCE note that exists',
 // nothing. Naming the offender is what makes it speak up.
 const malformed = NOT_MEASURED.filter(
   (g) => !g.key || !g.what || !g.why || !g.closedBy);
+// No floor on the COUNT. There used to be one (>= 20), from when the list had
+// 26 entries and the worry was that gaps would be quietly dropped rather than
+// closed. That is backwards now: the list shrinking is the point, and a floor
+// would eventually force keeping a gap that no longer exists. What must hold
+// is that whatever remains is well-formed and honest.
 check(`NOT_MEASURED lists ${NOT_MEASURED.length} open gaps, each with key/what/why/closedBy`,
-  NOT_MEASURED.length >= 20 && malformed.length === 0,
+  NOT_MEASURED.length >= 1 && malformed.length === 0,
   malformed.length ? JSON.stringify(malformed[0]).slice(0, 140) : 'all well-formed');
 check('and every gap key is unique',
   new Set(NOT_MEASURED.map((g) => g.key)).size === NOT_MEASURED.length);
@@ -1300,6 +1311,55 @@ console.log('\n12i. building damage, replayed per attacking unit type');
   check('eight of the nine land types were replayed', n === 8, String(n));
 }
 
+console.log('\n12j. the class matrix — every unit against every target class');
+{
+  let n = 0, refused = 0;
+  for (const r of rows) {
+    const m = r.meta || {};
+    if (r.experiment !== 'class_matrix') continue;
+    if (m.error) { refused += 1; continue; }
+    const d = m.detail || {};
+    const obs = (d['B.1.1'] || {}).lost;
+    if (obs == null || (d['B.1.1'] || {}).pct >= 99.9) continue;
+    // Air attacking land is ATTENUATED, so the raw figure depends on the
+    // defender count this sweep happened to pick. Those cells are replayed
+    // properly by the 40-cell air_vs_ground section above, against the
+    // post-fire law; comparing them here at a different defender count would
+    // be comparing two different quantities.
+    if (UNITS[m.unit].cls === 'air' && m.target_class === 'land') continue;
+    n += 1;
+    const res = simulate({
+      attacker: { unit: m.unit, count: m.atk_n, hpPct: 100 },
+      defender: { unit: m.target, count: 30, hpPct: 100 },
+      rounds: 1,
+    });
+    // Only the coefficient is under test here, not the defender count the
+    // sweep chose, so compare per effective attacking unit.
+    const got = res.defender.damageDealt === null ? null : res.defender.hpLost;
+    if (got === null) continue;
+    check(`${m.unit} vs ${m.target_class}: coefficient reproduces`,
+      Math.abs(got / effectiveUnits(m.atk_n) - obs / effectiveUnits(m.atk_n)) <= 0.06
+      || Math.abs(got - obs) <= 0.06,
+      `engine ${(got / effectiveUnits(m.atk_n)).toFixed(2)} vs measured `
+      + `${(obs / effectiveUnits(m.atk_n)).toFixed(2)} per effective unit`);
+  }
+  check('the class matrix was replayed', n >= 40, String(n));
+  check('and the pairings the server refuses are recorded, not silently dropped',
+    refused >= 1, `${refused} refusals on record`);
+
+  // The finding: within a class, flat; between classes, not.
+  const cm = CLASS_ATTACK;
+  check('a submarine deals 40 against ships and 2.0 against land',
+    cm.sub.naval === 40.0 && cm.sub.land === 2.0);
+  check('infantry deal 4.0 on land, 2.0 against ships and 0.3 against aircraft',
+    cm.inf.land === 4.0 && cm.inf.naval === 2.0 && cm.inf.air === 0.3);
+  check('and every unit\'s land column equals its measured diagonal',
+    Object.entries(cm).every(([code, row]) => row.land === undefined
+      || UNITS[code].atk === null || UNITS[code].cls !== 'land'
+      || Math.abs(row.land - UNITS[code].atk) < 0.01),
+    'the two tables are independent readings of the same quantity');
+}
+
 console.log('\n13. heroes — replayed against every measured reading');
 // ===========================================================================
 // A hero is a unit plus a buff, and the app now models it. Replayed here
@@ -1380,7 +1440,9 @@ console.log('\n14. coverage of the record itself');
     'fortress', 'buildings', 'patrol', 'mixed_stacks', 'survivable_rig',
     'stack_order', 'allocation', 'hero_sides', 'multi_round',
     'offdiag', 'trench_gaps', 'hero_output_curves', 'hero_other_terrain',
-    'building_damage',
+    'building_damage', 'class_matrix', 'balloon', 'trench_generality',
+    'edges', 'bldg_caps', 'naval_matrix', 'air_matrix',
+    'land_attacks_air', 'air_defends_land', 'sea_vs_land', 'land_vs_sea',
     // Heroes are now modelled and replayed above: the sweeps that measured
     // them are physics the engine reproduces, not declared omissions.
     'heroes', 'hero_scaling', 'hero_table', 'hero_levels', 'air_rounds'];

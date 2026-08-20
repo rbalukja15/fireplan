@@ -5347,6 +5347,80 @@ def exp_balloon_and_trench(p: Probe) -> None:
                                "error": str(e)}, {})
 
 
+# Which terrain pair actually runs, per (attacker class, target class). Found
+# the hard way: a land attacker against an AIR-terrain defender aborts the
+# batch with no error at all, which is why "ground attacking air" was recorded
+# as never submitted when it had only been submitted wrongly. In LAND terrain
+# the same battle runs.
+TERRAIN_PAIR = {
+    ("land", "land"): ("land", "land"), ("land", "air"): ("land", "land"),
+    ("land", "naval"): ("land", "sea"),
+    ("air", "land"): ("air", "land"), ("air", "air"): ("air", "air"),
+    ("air", "naval"): ("air", "sea"),
+    ("naval", "land"): ("sea", "land"), ("naval", "air"): ("sea", "air"),
+    ("naval", "naval"): ("sea", "sea"),
+}
+CLASS_REP = {"land": ("inf", 60), "air": ("int", 40), "naval": ("bb", 30)}
+
+
+def exp_class_matrix(p: Probe) -> None:
+    """Every unit against every target CLASS: the whole coefficient table.
+
+    The cross-class sweep established the SHAPE -- a unit's coefficient is flat
+    across targets within a class and changes between classes -- so the table
+    is 17 units x 3 classes rather than 17 x 17. This fills it.
+
+    Air attacking land is ATTENUATED (the post-fire law), so those cells are
+    corrected for the attacker's own losses before being quoted; every other
+    pairing is read raw.
+    """
+    cls_of = {u: c for c, us in UNIT_CLASSES.items() for u in us}
+    print(f"\n  {'unit':8} {'class':6} " + " ".join(f"{c:>10}" for c in
+                                                    ("land", "air", "naval")))
+    table: dict[str, dict[str, float]] = {}
+    for unit in ROSTER_ORDER:
+        acls = cls_of.get(unit)
+        if not acls:
+            continue
+        row: dict[str, float] = {}
+        for tcls, (tgt, tn) in CLASS_REP.items():
+            at, dt = TERRAIN_PAIR[(acls, tcls)]
+            n = 10
+            ov = settings()
+            ov.update(duel(1, unit, n, tgt, tn, atk_terrain=at, def_terrain=dt))
+            try:
+                p.submit(ov)
+            except (BareFormReturned, ValueError) as e:
+                record("class_matrix", {"unit": unit, "target_class": tcls,
+                                        "error": str(e)}, {})
+                continue
+            d = dict(p.last_details)
+            record("class_matrix", {"unit": unit, "atk_n": n,
+                                    "target": tgt, "target_class": tcls,
+                                    "detail": d},
+                   {k: (v or {}).get("lost") for k, v in d.items()})
+            b = d.get("B.1.1") or {}
+            a = d.get("A.1.1") or {}
+            if b.get("lost") is None or (b.get("pct") or 0) >= 99.9:
+                continue
+            raw = b["lost"] / effective_units(n)
+            # Air attacking land is evaluated on the survivors of the round's
+            # own incoming fire, so the raw figure understates the stat.
+            if acls == "air" and tcls == "land" and a.get("pool"):
+                lost_frac = (a.get("lost") or 0) / a["pool"]
+                if lost_frac < 0.999:
+                    raw /= (1 - lost_frac)
+            row[tcls] = raw
+        if row:
+            table[unit] = row
+            print(f"  {unit:8} {acls:6} "
+                  + " ".join(f"{row[c]:10.2f}" if c in row else f"{'—':>10}"
+                             for c in ("land", "air", "naval")))
+    print(f"\n  {len(table)} of {len(ROSTER_ORDER)} units have at least one "
+          f"cell. A dash is a pairing the server\n  will not run, not a "
+          f"reading that failed — every refusal is recorded with its message.")
+
+
 def exp_variance(p: Probe, samples: int = 60) -> None:
     """Same battle repeatedly with variance ON, to characterise the roll.
 
@@ -5666,6 +5740,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "cross_class": exp_cross_class,
     "edges": exp_edges,
     "balloon_trench": exp_balloon_and_trench,
+    "class_matrix": exp_class_matrix,
     "buildings": exp_buildings,
     "trenches": exp_trenches,
     "air_vs_ground": exp_air_vs_ground,
@@ -5682,7 +5757,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
 # it is about to spend on someone else's ad-supported fan site before it starts
 # rather than after. Approximate by design: saturation re-runs add a few.
 REQUEST_ESTIMATE: dict[str, int] = {
-    "unit_stats": 20, "buildings": 14, "patrol": 18, "mixed_stacks": 8, "heroes": 23, "stack_limits": 4, "hero_scaling": 9, "hero_table": 28, "hero_levels": 16, "hero_caps": 30, "stack_ladder": 9, "stack_order": 5, "hero_output": 21, "hero_buff_confirm": 5, "allocation": 9, "hero_full": 24, "hero_hp_cap": 22, "hero_sides": 30, "multi_round": 8, "hero_curves": 110, "offdiag": 8, "trench_gaps": 12, "fortress_edges": 20, "building_damage": 9, "position": 15, "hero_output_curves": 70, "hero_other_terrain": 24, "cross_class": 70, "edges": 35, "balloon_trench": 15, "trenches": 10, "air_vs_ground": 30,
+    "unit_stats": 20, "buildings": 14, "patrol": 18, "mixed_stacks": 8, "heroes": 23, "stack_limits": 4, "hero_scaling": 9, "hero_table": 28, "hero_levels": 16, "hero_caps": 30, "stack_ladder": 9, "stack_order": 5, "hero_output": 21, "hero_buff_confirm": 5, "allocation": 9, "hero_full": 24, "hero_hp_cap": 22, "hero_sides": 30, "multi_round": 8, "hero_curves": 110, "offdiag": 8, "trench_gaps": 12, "fortress_edges": 20, "building_damage": 9, "position": 15, "hero_output_curves": 70, "hero_other_terrain": 24, "cross_class": 70, "edges": 35, "balloon_trench": 15, "class_matrix": 51, "trenches": 10, "air_vs_ground": 30,
     "land_matrix": 100, "size_factor": 33, "hp_scaling": 10,
     "fortress": 6, "terrain": 7, "variance": 60,
 }

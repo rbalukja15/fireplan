@@ -92,9 +92,14 @@ export const UNITS = {
   },
 
   bal: {
+    // Measured at last, in LAND terrain. Every earlier attempt sent it in AIR
+    // terrain, where the batch aborts with no error, so this read as "not one
+    // quantity ever measured" for the whole project. Four requests: 10
+    // balloons deal 30.00 to infantry and to heavy tanks alike, 20 infantry
+    // take 30.00 back from them, and the balloons' pool reads 200.0 for ten.
     code: 'bal', label: 'Balloon', cls: 'air',
-    maxHP: null, maxHPBracket: null,
-    atk: null, def: null,
+    maxHP: 20, maxHPBracket: [19.98, 20.02],
+    atk: 3.0, def: 3.0,
     provenance: { maxHP: 'UNITS.balloon', atk: 'UNITS.balloon', def: 'UNITS.balloon' },
   },
   int: {
@@ -149,7 +154,7 @@ export const AIR_ATTACK_VS_GROUND = {
   int: 5.0,
   tac: 30.0,
   zep: 5.0,
-  // bal: absent. Never measured, and cannot be submitted in air terrain.
+  bal: 3.0,   // measured in land terrain; flat against infantry and heavy tanks alike
 };
 
 // A ground unit's defence output while an air stack attacks it.
@@ -168,6 +173,54 @@ export const GROUND_DEFENCE_VS_AIR = {
 export const BUILDING_DAMAGE_PER_EFFECTIVE_UNIT = {
   inf: 0.30, lart: 0.30, ac: 1.00, st: 1.00, art: 1.50,
   cav: 2.00, rrg: 4.00, lt: 6.00,
+};
+
+// A UNIT'S ATTACK COEFFICIENT AGAINST EACH TARGET CLASS. This is the whole
+// matrix, and it is 16 x 3 rather than 17 x 17 because a unit's coefficient is
+// FLAT across targets within a class -- the naval and air matrices reproduce
+// their diagonals exactly, and eight single-type land duels off the diagonal
+// are exact too. Only the target's CLASS changes it.
+//
+// Air-attacking-land cells are corrected for the post-fire attenuation before
+// being quoted; every other cell is read raw. Naval attackers have no air
+// column: the server will not run that pairing.
+//
+// The land column reproduces UNITS[].atk, which is how we know the two agree.
+export const CLASS_ATTACK = {
+  inf:  { land: 4.0,  air: 0.3,  naval: 2.0 },
+  cav:  { land: 15.0, air: 2.0,  naval: 8.0 },
+  ac:   { land: 6.0,  air: 4.0,  naval: 3.0 },
+  lart: { land: 5.0,  air: 1.0,  naval: 1.0 },
+  art:  { land: 8.0,  air: 1.0,  naval: 8.0 },
+  rrg:  { land: 20.0, air: 2.0,  naval: 20.0 },
+  lt:   { land: 30.0, air: 3.0,  naval: 15.0 },
+  ht:   { land: 45.0, air: 4.0,  naval: 23.0 },
+  convoy: { land: 1.0, air: 0.5, naval: 0.5 },
+  st:   { land: 25.0, air: 4.0,  naval: 3.0 },
+  bal:  { land: 3.0,  air: 3.0,  naval: 3.0 },
+  // The land column for fliers comes from AIR_ATTACK_VS_GROUND, which was
+  // fitted over THIRTY cells; the single corrected cells here read 5.01,
+  // 30.03 and 5.00, so they agree, and the better-measured figure wins.
+  int:  { land: 5.0,  air: 20.0, naval: 3.6 },
+  tac:  { land: 30.0, air: 3.0,  naval: 23.64 },
+  zep:  { land: 5.0,  air: 5.0,  naval: 4.4 },
+  sub:  { land: 2.0,  naval: 40.0 },
+  cl:   { land: 10.0, naval: 10.0 },
+  bb:   { land: 40.0, naval: 40.0 },
+};
+
+// Which terrain pair the server will actually run, per (attacker class, target
+// class). Found the hard way: a land attacker against an AIR-terrain defender
+// aborts the batch with NO error at all, which is why "ground attacking air"
+// was recorded as never submitted when it had only ever been submitted wrongly.
+// In LAND terrain the same battle runs and infantry deal 0.30 to a fighter.
+export const TERRAIN_PAIR = {
+  'land/land': ['land', 'land'], 'land/air': ['land', 'land'],
+  'land/naval': ['land', 'sea'],
+  'air/land': ['air', 'land'], 'air/air': ['air', 'air'],
+  'air/naval': ['air', 'sea'],
+  'naval/land': ['sea', 'land'], 'naval/naval': ['sea', 'sea'],
+  // naval/air: the server will not run it.
 };
 
 // ---------------------------------------------------------------------------
@@ -279,6 +332,13 @@ export const TRENCH_OUTPUT = {
   13: 1.58, 14: 1.62, 15: 1.62, 16: 1.66, 17: 1.66, 18: 1.70, 19: 1.70,
   20: 1.75,
 };
+
+// TRENCHES ARE INFANTRY-ONLY. Measured with 200 attacking infantry so nothing
+// is censored: heavy tanks, artillery and cavalry read the IDENTICAL output
+// and the IDENTICAL pool at trench 0 and at trench 10, while infantry go from
+// 50.00 to 77.00 output and 200.0 to 247.8 pool. The first attempt at this was
+// censored - the attacker was wiped at 400.0 of 400.0 - and said nothing.
+export const TRENCH_APPLIES_TO = ['inf'];
 
 export const TRENCH_SAMPLED_LEVELS = [
   0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
@@ -642,26 +702,18 @@ export const FORM_DOMAINS = {
 // footnote. Ranked roughly by how likely a user is to hit it.
 
 export const NOT_MEASURED = [
-  { key: 'naval_off_diagonal', what: 'Naval unit vs a different naval unit (6 of 9 pairings).', why: 'Only the three diagonals were flown.', closedBy: 'a 6-cell naval sweep' },
-  { key: 'ground_attacking_air', what: 'A ground stack ATTACKING an air stack.', why: 'Only ground DEFENDING against air was measured. The roles are not interchangeable.', closedBy: 'a ground-attacks-air sweep' },
-  { key: 'air_defending', what: 'An air stack DEFENDING against a ground attacker.', why: 'Never submitted.', closedBy: 'the same sweep' },
-  { key: 'air_off_diagonal', what: 'Air vs a different air unit.', why: 'Only int/tac/zep diagonals exist; bal not even that.', closedBy: 'a 6-cell air sweep' },
-  { key: 'sea_land_air', what: 'Any sea-vs-land or sea-vs-air pairing.', why: 'Entirely absent from the record.', closedBy: 'a cross-class sweep' },
-  { key: 'balloon', what: 'The Balloon: max HP, attack, defence, class interactions — every quantity.', why: 'Sending bal in air terrain aborts the whole batch server-side with no error, so it has four rows in results.jsonl and all four are empty.', closedBy: 'unknown; the request itself fails' },
-  { key: 'building_damage_modelling', what: 'Damage to buildings per attacking unit type is MEASURED but not computed.', why: 'Its own column, which nothing else predicts: inf and lart 0.30, ac and st 1.00, art 1.50, cav 2.00, rrg 4.00, lt 6.00 per effective unit. Heavy tanks are CENSORED — they dealt exactly 250.00 against a fortress holding 250.00, so 8.82 is a floor and not a value. The engine still computes building damage for infantry only.', closedBy: 'wiring BUILDING_DAMAGE into the engine, plus one uncensored heavy-tank reading' },
+  { key: 'naval_vs_air', what: 'A naval stack against an air stack.', why: 'The server will not run it — the request comes back with no result rows and no message, the same signature a land-attacks-air-terrain request gives. Every other class pairing does run and is measured.', closedBy: 'nothing on dxcalc; it appears not to be a battle the calculator models' },
+  { key: 'class_matrix_precision', what: 'The air and naval columns of CLASS_ATTACK rest on ONE cell each.', why: 'The land column is corroborated three ways — the diagonal from unit_stats, eight off-diagonal duels, and the allocation sweep. The air and naval columns are a single reading per unit, and the fliers\u2019 land column had to be corrected for post-fire attenuation before it could be compared at all.', closedBy: 'a second cell per column, against a different target of the same class' },
+  { key: 'trench_attacking_output', what: 'Whether a trench raises OUTPUT for an attacking stack.', why: 'It raises the pool on either side, but the output bonus was only ever read on a DEFENDER, and an attacking infantry stack in a trench deals exactly what it deals outside one. So the engine applies the output bonus defending only. Whether that is the rule or an artifact of what was submitted is untested.', closedBy: 'two requests with a dug-in attacker at trench 0 and 20' },
   { key: 'multi_round_details', what: 'The reported DEATH count in a multi-round battle, and whether fortress DR decays across rounds.', why: 'The output law across rounds is now measured to 0.042% — survivors are whole units and m(f) applies to what those survivors have left. But the death count the page PRINTS does not follow floor(cumulative loss / per-unit HP): it reads one lower than that for rounds 2-5 of the ladder, and no simple per-round rule reproduces it either. Output is unaffected, since the survivor count that drives it does follow the floor rule. Fortress DR across rounds was not in the ladder.', closedBy: 'a ladder that varies the unit size so the death rule is over-determined, plus one fortress ladder' },
   { key: 'air_E_above_20', what: 'Which effective-count law an attenuated air stack above 20 units uses.', why: 'All 30 attenuated stacks were 10 units, where E(n) = n, so E(n_alive)·m(f_after) and a per-unit sum of m(f_i) are indistinguishable. They diverge above 20.', closedBy: 'one air_vs_ground cell with a 30-unit air stack' },
   { key: 'E_with_m_above_20', what: 'E(n) combined with m(f) for n > 20.', why: 'Only a 10-unit stack was ever damaged.', closedBy: 'an hp_scaling sweep at n=30' },
   { key: 'air_wiped', what: 'An air attacker reduced to zero survivors.', why: 'The post-fire law divides by the survivor count; at zero survivors it has no measured branch.', closedBy: 'one deliberately lopsided air_vs_ground cell' },
   { key: 'attenuation_scope', what: 'Whether post-fire evaluation applies to sea, or to air defending.', why: 'Only air-attacks-ground was measured; air-vs-air and sea-vs-sea are argued unattenuated from roundness, not read.', closedBy: 'a lopsided sea duel' },
-  { key: 'm_f_generality', what: 'Whether m(f) applies to defenders and to units other than infantry.', why: 'The HP sweep varied only an ATTACKING infantry stack.', closedBy: 'an hp_scaling sweep on the defender' },
-  { key: 'E_gaps', what: 'E(n) at n in 21-28, 31-44, 46-49, and above 113.', why: 'Interpolation only; the sampled endpoints bracket every gap.', closedBy: 'a few cheap counts' },
   { key: 'terrain_modelling', what: 'Terrain is MEASURED but not computed by the engine.', why: 'Sea and debark replace a land unit’s attack and defence with a flat 1.0 (measured: infantry and cavalry deal identical figures, which no multiplier can produce), and infantry are refused in air outright. The app offers no terrain control, so every figure here is LAND. Patrol IS modelled, but its attrition coefficient is a band (0.360-0.427), so patrol results stay estimates.', closedBy: 'a terrain control plus the EMBARKED_COEF term; the measurement is done' },
   { key: 'variance_modelling', what: 'simulateVariance is MEASURED but not applied.', why: 'ONE uniform ±10% roll per side per round, not per unit — 60 samples give sd 5.285 where a single roll predicts 5.774 and a per-unit roll 1.291. A big stack cannot average its luck away. Every figure here is the variance-OFF expectation; the band is in VARIANCE_BAND.', closedBy: 'showing the ±10% band beside each figure; the measurement is done' },
-  { key: 'trench_generality', what: 'Trench multipliers for any unit but infantry, and whether the output bonus multiplies the stat or the effective unit count.', why: 'Only 10v10 infantry was flown, and at n=10 E(n)=n, so the two readings of the output bonus are indistinguishable.', closedBy: 'one trench row with a 30-unit stack' },
   { key: 'trench_10_pool', what: 'The level-10 pool multiplier beyond 2 decimal places.', why: 'Bracketed to [1.2382, 1.2463], which excludes the tidy 1.25.', closedBy: 'a larger stack, which tightens the bracket' },
   { key: 'fortress_edges', what: 'A fortress against AIR or NAVAL attackers, and fortress-trench interaction.', why: 'The fortress caps at level 5 (the server refuses 6) and works on the ATTACKING side with the identical law — 30% at level 1 either way. Both are now measured. What has never been submitted is a fortress against anything but a land attacker, or a fortress and a trench together.', closedBy: 'a handful of requests' },
-  { key: 'building_caps', what: 'Workshop and factory level caps; workshop HP per level.', why: 'The sweep asked for 3, was not rejected, and never probed higher. Workshop shows 35 total at L3 with 20 in the top level, so HP is not uniform per level.', closedBy: 'two requests' },
   { key: 'hero_other_terrain_levels', what: 'The six air/naval heroes DEFENDING, and at any level but 10.', why: 'All six are decomposed ATTACKING at level 10 — own attack separated from multiplier with two attacker types apiece — and each buffs the thing its namesake commanded: Hersing submarines, von Thaden zeppelins, Richthofen fighters, T\u014dg\u014d battleships. Ivan buffs nothing and attacks at 1.00. What none of them has been read at is a DEFENDING stack, or any level but 10, and the land heroes proved both of those matter — thirteen of sixteen have different attack and defence values, and every curve moves with level.', closedBy: 'the same two-configuration decomposition run defending, plus a level sweep' },
 
   { key: 'position_modelling', what: 'Range is MEASURED but not enforced by the engine.', why: 'A BINARY gate, not a falloff: artillery fires at 50 km and not at 51, the railgun at 150 and not at 151, infantry at 1 and not at 25. Inside range the figure is identical to zero distance; outside it there is no battle at all. Only three ranges were read and the app has no distance control.', closedBy: 'a range column for the whole roster plus a distance input' },
@@ -702,9 +754,15 @@ export const PROVENANCE = {
     source: 'As UNITS.maxHP, but weaker: sub, cl and bb appear only in unit_stats. No row anywhere else in results.jsonl constrains their max HP, so the integer rests on a single bracket whose own inputs were not recorded.',
   },
   'UNITS.balloon': {
-    confidence: 'unmeasured',
-    source: 'results.jsonl: bal has 4 unit_stats rows and 10 air_vs_ground rows, and every one of them has empty readings.',
-    note: 'The probe refuses to send bal with terrain=air because doing so aborts the entire batch server-side with no error message. Nothing about this unit is known: not max HP, not attack, not defence. Do not interpolate it from the other fliers.',
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=balloon: four requests in LAND terrain.',
+    note: 'maxHP 20.0, attack 3.0, defence 3.0. Unmeasured for the whole project not because '
+      + 'the unit is special but because every attempt sent it in AIR terrain, where the batch '
+      + 'aborts server-side with no error at all and the probe now refuses to send it. In LAND '
+      + 'terrain it runs perfectly: 10 balloons deal 30.00 to 20 infantry AND to 20 heavy tanks '
+      + '(flat across targets, like every other unit within a class), 20 infantry deal 30.00 '
+      + 'back, and the balloons\' pool reads 200.0 for ten. A null result was a rig fault for '
+      + 'the eleventh time in this project.',
   },
 
   'AIR_ATTACK_VS_GROUND': {
