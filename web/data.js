@@ -889,7 +889,6 @@ export const FORM_DOMAINS = {
 export const NOT_MEASURED = [
     { key: 'air_to_air_mechanism', what: 'WHY an air stack is attenuated against surface targets and not against other aircraft.', why: 'The scope is measured hard and modelled. Attacking land or naval, an air stack fires with what survives the round; attacking air it does not \u2014 twenty fighters lose 58% of their pool to two hundred fighters and still deal the full 20.0 x E(20) = 400.00. Embarkation is seen by every attacker including air, which is what the discriminating cell showed: against two hundred EMBARKED fighters the same stack deals 98.61, the naval column attenuated. What no black-box reading can reach is the mechanism \u2014 whether air-to-air resolves simultaneously or whether something else exempts it.', closedBy: 'nothing available. The obvious experiment is an air stack whose target cannot shoot back, and there is no such configuration: every air unit bisects to a range of 5 km and 5 km is exactly where return fire stops, so an aircraft is never out of reach of what it is attacking' },
     { key: 'return_fire_generality', what: 'Whether the 5 km return-fire cut-off is a constant or every unit\u2019s own melee reach.', why: 'Past 5 km a bombarded defender deals exactly zero while still taking the attacker\u2019s full figure. That is measured hard \u2014 lart at 4 and 5 km loses 20.00, at 6, 7 and 8 km loses nothing, and three defenders that could easily shoot back (lart reaching 30, cruiser 40, battleship 75) are all silent at 8 km, as is a mixed inf+lart defender at 6. But every unit in the roster ALSO bisected to a melee attack range of exactly 5, so "the cut-off is the constant 5" and "the cut-off is the defender\u2019s own melee reach" predict the identical number everywhere. The two are indistinguishable in this game and the engine uses the constant.', closedBy: 'nothing available \u2014 it would need a unit whose melee reach is not 5, and there is none' },
-  { key: 'air_E_above_20_rival', what: 'Whether an attenuated air stack above 20 units uses E(survivors) or a per-unit sum of m(f).', why: 'The post-fire law now reproduces attenuated stacks at 10, 25, 40 and 50 units \u2014 three exactly and 40 units to 0.11% \u2014 so it does hold above the knee, which is what the app needs. But the RIVAL hypothesis was not properly separated: the two formulations I wrote reduce to the same expression for these stack sizes, so this is a confirmation of one law rather than a discrimination between two.', closedBy: 'a rival stated so it actually differs, then one cell where they disagree' },
                 { key: 'hero_other_terrain_levels', what: 'The six air/naval heroes DEFENDING, and at any level but 10.', why: 'All six are decomposed ATTACKING at level 10 — own attack separated from multiplier with two attacker types apiece — and each buffs the thing its namesake commanded: Hersing submarines, von Thaden zeppelins, Richthofen fighters, T\u014dg\u014d battleships. Ivan buffs nothing and attacks at 1.00. What none of them has been read at is a DEFENDING stack, or any level but 10, and the land heroes proved both of those matter — thirteen of sixteen have different attack and defence values, and every curve moves with level.', closedBy: 'the same two-configuration decomposition run defending, plus a level sweep' },
 
   ];
@@ -1242,6 +1241,22 @@ export const PROVENANCE = {
       + 'and infantry at 20 drifted to 0.340%. The error tracked how many rounds both sides '
       + 'survived, never what they were made of. The two anomalous infantry death counts that '
       + '"nothing explained" were this rule all along.',
+  },
+  'HP.affine': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=last_edges probe=air_E_above_20: attenuated air stacks at '
+      + '10, 25, 40 and 50 units. Plus one line of algebra.',
+    note: 'OUTPUT IS E(survivors) x m(f), and above the knee that is exact to 0.001% at all four '
+      + 'sizes. This was recorded as a gap on the grounds that the rival hypothesis -- a PER-UNIT '
+      + 'sum of m(f) rather than one stack-level term -- had never been separated. It cannot be, '
+      + 'and not because the sizes were unlucky: m is AFFINE, so sum_i m(f_i) = 0.05s + 0.95 '
+      + 'sum_i f_i, and sum_i f_i is the remaining pool over the per-unit HP, which is s x f. The '
+      + 'two expressions are identically equal for every stack and every distribution of damage. '
+      + 'That was the same hypothesis written twice, and no measurement at any size could have '
+      + 'told them apart. The rivals that DO differ put m somewhere else: inside E, which misses '
+      + 'by 0.33% at fifty units, or against the raw count instead of the saturated one, which '
+      + 'misses by 42.9%. Both are rejected by these four cells, so the discrimination the gap '
+      + 'asked for exists -- it was just aimed at the wrong pair.',
   },
   'STACK.composition': {
     confidence: 'measured',

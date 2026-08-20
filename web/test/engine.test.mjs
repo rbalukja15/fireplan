@@ -2255,6 +2255,61 @@ console.log('\n12o. the round law across five unit types, and the death rule');
 }
 
 // ===========================================================================
+console.log('\n12p. E(s) x m(f) above the knee, against rivals that differ');
+// ===========================================================================
+// This was recorded as a confirmation dressed up as a discrimination: the
+// "rival" formulation was a per-unit sum of m(f) instead of one stack-level
+// term, and the two were said to reduce to the same expression at these sizes.
+// They do not merely reduce at these sizes -- they are the same expression
+// EVERYWHERE, and the reason is worth writing down rather than measuring:
+//
+//     sum_i m(f_i) = sum_i (0.05 + 0.95 f_i) = 0.05 s + 0.95 sum_i f_i
+//     sum_i f_i    = remaining pool / per-unit HP = s x f
+//     => sum_i m(f_i) = s x m(f), exactly, for any stack and any split
+//
+// m is AFFINE. No measurement can separate a per-unit sum from a stack-level
+// term, at any size, however the damage is distributed. That was never a rival
+// hypothesis; it was the same one written twice.
+{
+  check('m is affine, so a per-unit sum equals the stack-level term exactly',
+    (() => {
+      // Three units at wildly different fractions, summed, against one m of
+      // their mean. If these ever diverge, m has stopped being affine.
+      const fs = [1.0, 0.42, 0.07];
+      const sum = fs.reduce((t, f) => t + hpMultiplier(f), 0);
+      const mean = fs.reduce((t, f) => t + f, 0) / fs.length;
+      return Math.abs(sum - fs.length * hpMultiplier(mean)) < 1e-12;
+    })());
+
+  // The rivals that DO differ put m somewhere else: inside E, or against the
+  // raw count instead of the saturated one. Both are rejected outright.
+  const cells = [[10, 800.0, 14.0, 295.01], [25, 2000.0, 14.0, 732.60],
+    [40, 3196.3, 14.0, 995.84], [50, 4000.0, 14.0, 1046.51]];
+  let bestErr = 0;
+  let insideErr = 0;
+  let rawErr = 0;
+  for (const [n, pool, lost, want] of cells) {
+    const f = (pool - lost) / pool;
+    const law = 30 * effectiveUnits(n) * hpMultiplier(f);
+    const inside = 30 * effectiveUnits(n * hpMultiplier(f));
+    const raw = 30 * n * hpMultiplier(f);
+    bestErr = Math.max(bestErr, Math.abs(law - want) / want);
+    insideErr = Math.max(insideErr, Math.abs(inside - want) / want);
+    rawErr = Math.max(rawErr, Math.abs(raw - want) / want);
+    check(`air stack of ${n}: E(s) x m(f) gives ${want}`,
+      Math.abs(law - want) / want < 0.0001, `${law.toFixed(2)}`);
+  }
+  check('E(s) x m(f) is exact to 0.001% at every size',
+    bestErr < 0.00002, `${(bestErr * 100).toFixed(4)}%`);
+  check('m INSIDE E is rejected — 0.33% at fifty units',
+    insideErr > 0.002 && insideErr < 0.01, `${(insideErr * 100).toFixed(3)}%`);
+  check('m against the RAW count is rejected outright — 42.9%',
+    rawErr > 0.4, `${(rawErr * 100).toFixed(1)}%`);
+  check('and the three are far enough apart that these four cells decide it',
+    insideErr / Math.max(bestErr, 1e-9) > 10);
+}
+
+// ===========================================================================
 console.log('\n14. coverage of the record itself');
 // ===========================================================================
 {
