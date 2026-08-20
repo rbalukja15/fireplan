@@ -1381,15 +1381,15 @@ function runSimulation(config, derivation, caveats) {
     // not pinned is the attrition coefficient, so the whole result drops to
     // estimated no matter how clean the matchup itself is.
     level = worst(level, 'estimated');
-    reasons.push('Flown as a PATROL. The attack stat is unchanged from a direct strike (measured: '
-      + 'every attacker\'s value comes back through patrol), but patrol charges only part of the '
-      + 'attacker\'s own losses against its output, and that fraction is NOT pinned — nine cells '
-      + `give ${patrol.range[0]}-${patrol.range[1]} and the scatter does not track the loss `
-      + 'fraction. This result uses 3/8 as a working value.');
-    caveats.push(`Patrol attrition coefficient is a band, not a number: ${patrol.range[0]}-`
-      + `${patrol.range[1]} over ${PATROL.cellsMeasured} cells. The delivery is probably discrete `
-      + '(ticks, or whole units dying at tick boundaries), so treat the damage figure as a central '
-      + 'estimate with a few percent either side, not a prediction.');
+    reasons.push('Flown as a PATROL. Both sides fire with what survives a fraction of their own '
+      + 'losses — the same post-fire law a strike pays in full, charged at a discount — and the '
+      + `fraction is ${patrol.c}, fitted across ${PATROL.cellsMeasured} cells on both channels. It `
+      + `is not pinned to the printed decimal, so the result stays estimated.`);
+    caveats.push(`Patrol attrition is ${patrol.c}, bracketed to ${patrol.range[0]}-`
+      + `${patrol.range[1]} over ${PATROL.cellsMeasured} cells — a band a tenth as wide as the one `
+      + 'this app shipped, which was an artifact of a survivor rule since corrected. The residual '
+      + 'is 0.3-0.5% and confined to air stacks against armoured cars, where the defender\'s own '
+      + 'attenuation is largest. Treat the figure as good to about half a per cent.');
   }
 
   // ---- coefficients --------------------------------------------------------
@@ -1583,6 +1583,8 @@ function runSimulation(config, derivation, caveats) {
 
   // Zero rounds when out of range: both sides take nothing, through the same
   // return path as any other battle rather than a second exit.
+  const patrolSolved = (patrol.applies && !outOfRange)
+    ? solvePatrol(atk, def, atkCoef.value, defCoef.value, patrol.c) : null;
   const loopRounds = outOfRange ? 0 : (patrol.applies ? 1 : rounds);
   const patrolScale = patrol.applies ? rounds : 1;
   for (let r = 1; r <= loopRounds; r += 1) {
@@ -1626,7 +1628,28 @@ function runSimulation(config, derivation, caveats) {
       ? { total: 0, parts: [] }
       : stackOutput(def, (u) => defenceCoefficient(u, atk.unit, battle.defenderTerrain,
                                              battle.terrain).value, patrolScale);
-    const defOutput = defParts.total === null ? 0 : defParts.total;
+    // PATROL ATTENUATES THE DEFENDER TOO, which this engine did not model at
+    // all: it reported 160.00 attacker losses where the server prints 110.46.
+    // The per-row decomposition below is left as stackOutput computed it,
+    // because the solver works on the stack and no measurement splits it.
+    const defOutput = (patrolSolved && patrolSolved.defOutput !== null
+      && patrolSolved.defOutput !== undefined)
+      ? patrolSolved.defOutput * patrolScale
+      : (defParts.total === null ? 0 : defParts.total);
+    // The rows have to sum to the stack. The solver works on the whole stack --
+    // no measurement splits patrol attenuation per row -- so the per-row
+    // figures are scaled to the solved total rather than left as stackOutput
+    // computed them. The suite's own row-vs-total check caught this the moment
+    // it was skipped, which is exactly what that check is for.
+    if (patrolSolved && defParts.total !== null && defParts.total > EPS
+        && Math.abs(defParts.total - defOutput) > EPS) {
+      const k = defOutput / defParts.total;
+      for (const pt of defParts.parts) {
+        pt.out *= k;
+        if (pt.row) pt.row.damageDealt = pt.out;
+        if (pt.hero && def.hero) def.hero.dealt = pt.out;
+      }
+    }
     if (def.rows.length > 1 || def.hero) {
       for (const pt of defParts.parts) {
         if (pt.hero) {
@@ -1722,25 +1745,28 @@ function runSimulation(config, derivation, caveats) {
       // PATROL. Same base stat as a strike; only a fraction c of the stack's
       // own losses is charged against its output, against the full fraction a
       // strike pays. c is a band, not a number -- see the caveat above.
-      const fLost = atk.pool > EPS ? atkLostThis / atk.pool : 0;
-      const factor = Math.max(0, 1 - patrol.c * fLost);
-      const lo = Math.max(0, 1 - patrol.range[1] * fLost);
-      const hi = Math.max(0, 1 - patrol.range[0] * fLost);
-      atkOutput = atkCoef.value * atkE * hpMultiplier(atkF) * factor * patrolScale;
+      atkOutput = patrolSolved.atkOutput === null
+        ? null : patrolSolved.atkOutput * patrolScale;
+      const loC = solvePatrol(atk, def, atkCoef.value, defCoef.value, patrol.range[0]);
+      const hiC = solvePatrol(atk, def, atkCoef.value, defCoef.value, patrol.range[1]);
       derivation.push({
         label: `${tag}Attacker output (patrol)`,
-        formula: `${atkCoef.value} x E(${atk.n})=${round4(atkE)} x m(${round4(atkF)})=`
-          + `${round4(hpMultiplier(atkF))} x (1 - ${patrol.c} x ${round4(fLost)})=${round4(factor)}`
-          + `${patrolScale !== 1 ? ` x ${round4(patrolScale)} rounds` : ''} = ${round4(atkOutput)}`
-          + ` — patrol charges only part of the attacker's own losses [estimated: c in `
-          + `${patrol.range[0]}-${patrol.range[1]} gives ${round4(atkCoef.value * atkE * hpMultiplier(atkF) * lo * patrolScale)}`
-          + `-${round4(atkCoef.value * atkE * hpMultiplier(atkF) * hi * patrolScale)}]`,
+        formula: `Both sides fire with what survives ${patrol.c} of their OWN losses — the same `
+          + `post-fire law a strike pays in full, charged at a discount. Each side's losses are `
+          + `the other's output, so the pair is solved as a fixed point`
+          + `${patrolScale !== 1 ? `, then scaled by ${round4(patrolScale)} rounds` : ''}. `
+          + `= ${round4(atkOutput)} [c in ${patrol.range[0]}-${patrol.range[1]} gives `
+          + `${round4((loC.atkOutput || 0) * patrolScale)}-${round4((hiC.atkOutput || 0) * patrolScale)}]`,
         value: atkOutput,
       });
-      if (atk.n > 20) {
-        caveats.push('Every patrol cell measured used a 10-unit air stack, where E(n) = n. '
-          + 'Above 20 the size factor and the attrition band interact in a way nobody has read.');
-      }
+      derivation.push({
+        label: `${tag}Defender output (patrol)`,
+        formula: `The defender is attenuated by the same law and the same fraction. This engine `
+          + `did not model that at all and reported 160.00 attacker losses where the server `
+          + `prints 110.46 — 45% out, in the direction that makes patrol look worse than it is. `
+          + `= ${round4(defOutput)}`,
+        value: defOutput,
+      });
     } else if (attenuated) {
       const nAlive = atk.n - atkDeathsThis;
       if (nAlive <= 0) {
@@ -2125,6 +2151,44 @@ function deathsFromShare(row, share) {
   if (remaining - share <= EPS) return alive;      // wiped: all of them
   if (remaining <= 0) return 0;
   return Math.min(alive, Math.floor(share / (remaining / alive)));
+}
+
+/**
+ * PATROL, both sides. Each fires with what survives a fraction c of its OWN
+ * losses that round -- the ordinary post-fire law, charged at a discount --
+ * and because each side's losses are the other's output, the pair is a fixed
+ * point rather than a sequence.
+ *
+ * The app modelled half of this. It attenuated the attacker with a
+ * multiplicative (1 - c x lossFraction) and left the DEFENDER unattenuated,
+ * which reported 160.00 attacker losses against a measured 110.46 -- 45% out,
+ * in the direction that makes patrol look worse than it is. A single c fits
+ * BOTH channels across 24 cells to 0.42% worst, and most of them under 0.1%.
+ *
+ * Sixty iterations is far past convergence; the map is a contraction because
+ * c < 1 and each output is monotone in the other side's loss.
+ */
+function solvePatrol(atk, def, atkCoef, defCoef, c) {
+  const fire = (side, coef, lost) => {
+    if (coef === null || coef === undefined) return null;
+    const hp = side.perUnitMaxHP;
+    if (!hp || side.n <= 0) return 0;
+    const L = c * lost;
+    const surv = side.n - Math.floor(L / hp);
+    if (surv <= 0) return 0;
+    const f = Math.max(0, Math.min(1, (side.pool - L) / (surv * hp)));
+    return coef * effectiveUnits(surv) * hpMultiplier(f);
+  };
+  let atkLost = 0;
+  let defLost = 0;
+  for (let i = 0; i < 60; i += 1) {
+    const a = fire(atk, atkCoef, atkLost);
+    const d = fire(def, defCoef, defLost);
+    if (a === null || d === null) return { atkOutput: a, defOutput: d };
+    atkLost = d;
+    defLost = a;
+  }
+  return { atkOutput: fire(atk, atkCoef, atkLost), defOutput: fire(def, defCoef, defLost) };
 }
 
 function refreshRound(side) {

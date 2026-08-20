@@ -36,6 +36,7 @@ import { dirname, join } from 'node:path';
 import {
   UNITS, CLASS_ATTACK, TRENCH_POOL, TRENCH_POOL_BRACKET, TRENCH_OUTPUT, PROVENANCE, NOT_MEASURED,
   UNIT_RANGE, MELEE_RANGE, EMBARKED_MAXHP, CLASS_ATTACK_CORROBORATED,
+  PATROL,
   BUILDINGS,
   GROUND_DEFENCE_VS_AIR,
   CLASS_DEFENCE, EMBARKED_ATTACK, EMBARKED_DEFENCE,
@@ -2908,6 +2909,81 @@ console.log('\n12v. E(n) at every rung that was interpolated');
 }
 
 // ===========================================================================
+console.log('\n12w. patrol — both sides, solved as a fixed point');
+// ===========================================================================
+// The last estimated number in the model, and the app modelled half the law.
+// Patrol attenuated the ATTACKER with a multiplicative (1 - c x lossFraction)
+// and left the DEFENDER untouched, so a patrolling stack was told it would
+// lose 160.00 where the server prints 110.46 — 45% out, in the direction that
+// makes patrol look worse than it is.
+{
+  const pp = rows.filter((r) => r.experiment === 'patrol_pin' && r.meta.detail);
+  let patrolCells = 0;
+  let strikeCells = 0;
+  let worstA = 0;
+  let worstB = 0;
+  for (const r of pp) {
+    const m = r.meta;
+    const a = m.detail['A.1.1'] || {};
+    const b = m.detail['B.1.1'] || {};
+    if (a.lost == null || b.lost == null) continue;
+    if ((a.pct || 0) >= 99.9 || (b.pct || 0) >= 99.9) continue;
+    const got = simulate({
+      mode: m.mode === 'patrol' ? 'patrol' : 'strike',
+      attacker: { unit: m.unit, count: m.atk_n },
+      defender: { unit: m.target, count: m.def_n },
+      rounds: 1,
+    });
+    const eA = Math.abs(got.attacker.hpLost - a.lost) / Math.max(a.lost, 1);
+    const eB = Math.abs(got.defender.hpLost - b.lost) / b.lost;
+    check(`${m.mode} ${m.unit} x${m.atk_n} vs ${m.target}: ${b.lost} out, ${a.lost} back`,
+      eA < 0.006 && eB < 0.006,
+      `got ${got.defender.hpLost.toFixed(2)} / ${got.attacker.hpLost.toFixed(2)}`);
+    if (m.mode === 'patrol') {
+      patrolCells += 1;
+      worstA = Math.max(worstA, eA);
+      worstB = Math.max(worstB, eB);
+    } else {
+      strikeCells += 1;
+    }
+  }
+  check('every patrol cell was replayed', patrolCells === 24, String(patrolCells));
+  check('and every strike cell alongside it, as its own reference',
+    strikeCells === 24, String(strikeCells));
+  check('both channels now fit under half a per cent',
+    worstA < 0.005 && worstB < 0.005,
+    `attacker ${(worstA * 100).toFixed(3)}%, defender ${(worstB * 100).toFixed(3)}%`);
+
+  // The defect this closed, stated as the number it produced.
+  check('the worst cell was 45% out on the attacker before the defender was attenuated',
+    (() => {
+      const got = simulate({ mode: 'patrol', attacker: { unit: 'tac', count: 40 },
+        defender: { unit: 'ac', count: 20 }, rounds: 1 });
+      // 110.46 measured; the old model reported the unattenuated 160.00.
+      return Math.abs(got.attacker.hpLost - 110.46) < 0.6
+        && Math.abs(got.attacker.hpLost - 160.0) > 40;
+    })());
+  check('the band is a tenth of what shipped, and no longer blamed on discreteness',
+    PATROL.attritionRange[1] - PATROL.attritionRange[0] < 0.01
+    && PATROL.cellsMeasured === 33
+    && !/probably discrete/.test(PROVENANCE['PATROL.attrition'].note));
+  check('patrol stays estimated, because c is not pinned to the printed decimal',
+    PROVENANCE['PATROL.attrition'].confidence === 'estimated'
+    && simulate({ mode: 'patrol', attacker: { unit: 'int', count: 10 },
+      defender: { unit: 'ac', count: 20 } }).coverage.level === 'estimated');
+  // A fixed point has to actually converge, and the rows have to sum to it.
+  check('the defender rows still sum to the solved stack total',
+    (() => {
+      const got = simulate({ mode: 'patrol',
+        attacker: { rows: [{ unit: 'tac', count: 20 }] },
+        defender: { rows: [{ unit: 'ac', count: 10 }, { unit: 'ht', count: 10 }] },
+        rounds: 1 });
+      const sum = got.defender.rows.reduce((t, r) => t + (r.damageDealt || 0), 0);
+      return Math.abs(sum - got.defender.damageDealt) < 0.01;
+    })());
+}
+
+// ===========================================================================
 console.log('\n14. coverage of the record itself');
 // ===========================================================================
 {
@@ -2929,7 +3005,7 @@ console.log('\n14. coverage of the record itself');
     'togo_b_disagreement', 'togo_b_shape', 'togo_b_kind', 'hero_hp_scaling',
     'land_hero_attacking', 'land_hero_screen', 'hero_new_buffs', 'hank_sides',
     'land_hero_target_class', 'land_hero_def_class',
-    'm_f_generality', 'building_levels', 'e_n_gaps',
+    'm_f_generality', 'building_levels', 'e_n_gaps', 'patrol_pin',
     // Heroes are now modelled and replayed above: the sweeps that measured
     // them are physics the engine reproduces, not declared omissions.
     'heroes', 'hero_scaling', 'hero_table', 'hero_levels', 'air_rounds'];

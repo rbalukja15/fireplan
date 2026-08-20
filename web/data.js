@@ -476,24 +476,34 @@ export const TRENCH_MAX_LEVEL = 20;
 //   SOFT -- attrition. A stack's output is reduced by its own losses, but a
 //   strike pays the full fraction while patrol pays only a part of it:
 //
-//       dealt = base * E(n) * (1 - c * own_fraction_lost)
+//       dealt = coefficient * E(survivors of c * own losses) * m(f of the rest)
 //
 //   c = 1.000 for a strike (that is the return-fire law, fitted to 0.005 HP
-//   across 30 cells) and c = 0.36..0.43 for patrol across nine cells. It does
-//   NOT close to a single value, and the scatter does not track f, so the real
-//   mechanism is probably discrete -- ticks, or whole units dying at tick
-//   boundaries -- rather than a smooth fraction. 3/8 sits inside the range and
-//   is used as the working value, but the app must show the range and must
-//   never present a patrol number as measured.
+//   across 30 cells) and c = 0.3772 for patrol across 33. BOTH SIDES pay it,
+//   so each side's losses are the other's output and the pair is solved as a
+//   FIXED POINT rather than in sequence.
+//
+//   This used to read "c = 0.36..0.43, it does NOT close to a single value,
+//   and the scatter does not track f, so the real mechanism is probably
+//   discrete". The scatter was the superseded survivor rule -- count minus
+//   floor(cumulative damage / max HP) -- and refitting the same nine cells
+//   with the corrected one collapses the range by a factor of ten. The app
+//   must still show the range and must never present a patrol number as
+//   measured, because 0.3772 is a fit and not a printed constant.
 //
 // The base attack stat is UNCHANGED between the two modes: every attacker's
 // air-to-ground value comes back through patrol (int 5.006/5.024/5.008,
 // tac 30.026/30.000/30.000, zep 5.003/5.002/5.015). So patrol is the same
 // weapon delivered differently, not a different weapon.
 export const PATROL = {
-  attritionCoefficient: 0.375,        // working value, = 3/8
-  attritionRange: [0.360, 0.427],     // what nine cells actually support
-  cellsMeasured: 9,
+  // Fitted on BOTH channels as a fixed point -- each side fires with what
+  // survives this fraction of its own losses, and each side's losses are the
+  // other's output. Worst error 0.47% over 33 cells.
+  attritionCoefficient: 0.3772,
+  // A tenth as wide as the band this app shipped. The old 0.360-0.427 was an
+  // artifact of the superseded survivor rule, not evidence of discreteness.
+  attritionRange: [0.3750, 0.3810],
+  cellsMeasured: 33,
   roundsScale: true,                  // damage is proportional to maxRounds
   strikeIgnoresRounds: true,          // a direct strike delivers once, always
   // Measured advantage of patrol over a direct strike at maxRounds=1: the RAW
@@ -1265,11 +1275,21 @@ export const PROVENANCE = {
     confidence: 'estimated',
     source: 'results.jsonl, experiment=patrol: 9 matchup cells at maxRounds=1, each compared '
       + 'against the corresponding air_vs_ground cell already on disk.',
-    note: 'The base stat is measured and unchanged between modes. The ATTRITION COEFFICIENT is '
-      + 'not pinned: nine cells give 0.360-0.427 and the residual does not track the loss '
-      + 'fraction, so the delivery is probably discrete rather than a smooth fraction. 3/8 is a '
-      + 'working value inside the range, not a measurement. Any patrol result is labelled '
-      + 'estimated for this reason alone.',
+    note: 'The base stat is measured and unchanged between modes. THE LAW IS SYMMETRIC AND THE '
+      + 'COEFFICIENT IS NEARLY PINNED: both sides fire with what survives a fraction c of their '
+      + 'OWN losses — the ordinary post-fire law a strike pays in full, charged at a discount — '
+      + 'and because each side\'s losses are the other\'s output, the pair is a FIXED POINT '
+      + 'rather than a sequence. c = 0.3772 fits BOTH channels across 33 cells to 0.47% worst, '
+      + 'most under 0.1%. THE OLD BAND WAS AN ARTIFACT: this note read 0.360-0.427 over nine '
+      + 'cells with the scatter blamed on the delivery being discrete rather than smooth. That '
+      + 'fit used the superseded survivor rule — count minus floor(cumulative damage / max HP) — '
+      + 'which the five-type rounds ladder overturned, and refitting the same nine cells with the '
+      + 'corrected rule collapses the range by a factor of ten. What is left is 0.3-0.5% and it '
+      + 'is confined to one family, an air stack against armoured cars, where the defender\'s own '
+      + 'attenuation is largest. AND THE APP MODELLED HALF OF IT: the defender was not attenuated '
+      + 'at all, so a patrolling stack was told it would lose 160.00 where the server prints '
+      + '110.46 — 45% out, in the direction that makes patrol look worse than it is. Patrol '
+      + 'results stay labelled estimated, because c is not pinned to the printed decimal.',
   },
   'PATROL.rounds': {
     confidence: 'measured',

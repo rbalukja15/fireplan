@@ -7427,6 +7427,58 @@ def exp_e_n_gaps(p: Probe) -> None:
         print("  E(n) is measured across the knee at 20 and the cap at 50, not "
               "interpolated through them.")
 
+
+def exp_patrol_pin(p: Probe) -> None:
+    """Pin the patrol attrition coefficient, the last estimated number.
+
+    PATROL.attrition has read 'estimated' since it was measured: nine cells
+    gave 0.360-0.427 and the note says the residual does not track the loss
+    fraction, so the delivery is probably discrete. That fit used the OLD
+    survivor rule -- count minus floor(cumulative damage / max HP) -- which
+    this week's rounds ladder overturned. Refitting the same nine cells with
+    the corrected rule collapses the range to a worst error of 0.283% at
+    c = 0.380, so the wide band was an artifact of the wrong survivor count and
+    not evidence of discreteness.
+
+    Two things still need buying. The coefficient is not pinned to the printed
+    precision, and the sweep only ever used ten attackers -- and c has almost
+    no leverage on a stack that barely gets hurt. And the strike-versus-patrol
+    comparison shows the DEFENDER's output falls too, which no model in the app
+    accounts for: 160.00 against a striking stack and 157.73 against a
+    patrolling one, from the same defender.
+
+    So: four attacker sizes against three defenders, each flown as a strike AND
+    as a patrol, so every cell has its own unattenuated reference rather than
+    borrowing one.
+    """
+    print(f"\n  {'unit':5} {'n':>3} {'target':6} {'mode':7} "
+          f"{'A lost':>9} {'B lost':>9}")
+    for unit in ("int", "tac"):
+        for n in (5, 10, 20, 40):
+            for tgt, tn in (("ac", 20), ("ht", 20), ("inf", 200)):
+                for mode in ("air", "patrol"):
+                    ov = settings()
+                    ov.update(duel(1, unit, n, tgt, tn,
+                                   atk_terrain=mode, def_terrain="land"))
+                    try:
+                        p.submit(ov)
+                    except (BareFormReturned, ValueError) as e:
+                        print(f"  {unit:5} {n:>3} {tgt:6} {mode:7}  {e}"[:92])
+                        continue
+                    d = dict(p.last_details)
+                    a = d.get("A.1.1") or {}
+                    b = d.get("B.1.1") or {}
+                    record("patrol_pin",
+                           {"unit": unit, "atk_n": n, "target": tgt,
+                            "def_n": tn, "mode": mode, "detail": d},
+                           {k: (v or {}).get("lost") for k, v in d.items()})
+                    wiped = ((a.get("pct") or 0) >= 99.9
+                             or (b.get("pct") or 0) >= 99.9)
+                    print(f"  {unit:5} {n:>3} {tgt:6} {mode:7} "
+                          f"{a.get('lost', 0) or 0:9.2f} "
+                          f"{b.get('lost', 0) or 0:9.2f}"
+                          + ("   WIPED — discarded" if wiped else ""))
+
 # Every (hero, unit) pair with a measured OUTPUT buff, and the level cap to
 # sweep to. Read with a SINGLE-TYPE stack, which needs no baseline subtraction
 # and cannot be contaminated by another curve.
@@ -8530,6 +8582,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "m_f_generality": exp_m_f_generality,
     "building_levels": exp_building_levels,
     "e_n_gaps": exp_e_n_gaps,
+    "patrol_pin": exp_patrol_pin,
     "mixed_stacks": exp_mixed_stacks,
     "heroes": exp_heroes,
     "stack_limits": exp_stack_limits,
