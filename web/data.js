@@ -1129,6 +1129,13 @@ export const PROVENANCE = {
     source: 'results.jsonl, experiment=unit_stats, meta.max_hp_bounds (fourth run).',
     method: 'The reading is the BRACKET (lost/pct/n, widened by both print precisions). The integer is an inference from "the bracket holds exactly one whole number", which is true for 16 of 16 units that have any reading at all.',
     crossCheck: 'For 13 of those 16 the air_vs_ground pools give a second, independent bracket around the same integer.',
+    note: 'DERIVED, and it cannot be anything else. A stack\'s POOL is never printed: the page gives '
+      + 'HP lost and a percentage to three significant figures, so pool = lost/pct is an INTERVAL and '
+      + 'max HP is that interval over the count. Every value in the table is the unique integer inside '
+      + 'its interval. More requests do not sharpen it — the binding constraint is the percentage\'s '
+      + 'significant figures, not the number of readings, which is a distinction this project got wrong '
+      + 'once already: unit_stats was re-run on the promise that the summary table would sharpen these '
+      + 'into clean integers, and it could not.',
     caution: 'results.jsonl does not store the pool and percentage that produced meta.max_hp_bounds for unit_stats, so those brackets cannot be re-derived from the file — the conclusion is on disk, the evidence is not. Do not display bracket midpoints (175.44, 260.12, 60.06): they are measurements of nothing.',
   },
   'UNITS.maxHP.formDefault': {
@@ -1261,7 +1268,7 @@ export const PROVENANCE = {
     confidence: 'derived',
     source: 'results.jsonl, experiment=trenches: 10 rows, 10 infantry vs 10 infantry, one session.',
     method: 'pool = lost / pct with the attacker\'s output invariant at exactly 40.0, so each multiplier is a BRACKET, not a reading. See TRENCH_POOL_BRACKET.',
-    note: 'Levels 4, 5, 15 and 20 each bracket a clean 2-decimal value. Level 10 does not: [1.2382, 1.2463] excludes 1.25, and the carried value 1.24 is not pinned to 2 decimals. The pool bonus applies while ATTACKING as well as defending (attacker trench 20 gave pool x1.35 and turned 2 deaths into 1). Levels 1-3 confer no pool bonus at all.',
+    note: 'Levels 4, 5, 15 and 20 each bracket a clean 2-decimal value. Level 10 is pinned too, now. This said its bracket was [1.2382, 1.2463] and that 1.24 was therefore not pinned to two decimals; a later sweep narrowed it to [1.23977, 1.24047], which is 0.0007 wide and contains exactly one two-decimal value. The note simply did not catch up with the bracket sitting beside it in TRENCH_POOL_BRACKET. The pool bonus applies while ATTACKING as well as defending (attacker trench 20 gave pool x1.35 and turned 2 deaths into 1). Levels 1-3 confer no pool bonus at all.',
     limits: 'Infantry only. That the multiplier is unit-independent and purely multiplicative is assumed.',
   },
   'TRENCH_OUTPUT': {
@@ -1276,8 +1283,8 @@ export const PROVENANCE = {
   },
 
   'resolution_order': {
-    confidence: 'derived (single round)',
-    note: '1. The defender\'s fortress DR is computed from the fortress HP at ROUND START. 2. Both sides\' outputs come from the PRE-round state, except an AIR attacker against GROUND, which uses its post-fire state. 3. Damage is applied; building damage is additive and unmitigated. 4. deaths = floor(HP lost / trench-inflated per-unit max HP). Every measurement used maxRounds=1, so this is a description of ONE round and multi-round iteration is unmeasured.',
+    confidence: 'measured',
+    note: '1. The defender\'s fortress DR is computed from the fortress HP at ROUND START. 2. Both sides\' outputs come from the PRE-round state, except an AIR attacker against GROUND, which uses its post-fire state. 3. Damage is applied; building damage is additive and unmitigated. 4. deaths = floor(this round\'s damage / the AVERAGE HP of the units entering the round), which is the remaining pool over the survivors -- not over a full unit. A stack whose pool reaches zero loses every unit, which the division alone does not give. 5. Survivors are count minus deaths, and the next round fires with those. THIS IS MEASURED ACROSS ROUNDS NOW. It used to end \'every measurement used maxRounds=1, so this is a description of ONE round and multi-round iteration is unmeasured\', and step 4 read \'floor(HP lost / trench-inflated per-unit max HP)\', which is a different and wrong rule. A ladder of five unit types spanning per-unit HP from 10 to 260, eight rounds each, fixed both: worst error 0.0032% with every death count exact.',
   },
   'result_semantics': {
     confidence: 'measured',

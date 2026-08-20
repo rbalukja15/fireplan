@@ -3290,6 +3290,69 @@ console.log('\n16. the page can express what the engine models');
 }
 
 // ===========================================================================
+console.log('\n17. provenance notes cannot contradict the data beside them');
+// ===========================================================================
+// This project has now found the same defect six times: a hand-written claim
+// about what is known, sitting next to the data that disproves it. The
+// standing-limits list said stacks saturate in roster order. coverageOf() said
+// ground-attacking-air had never been measured. TRENCH.gaps said 12 of 21
+// levels were missing. HEROES.levels said only buffs vary with level.
+// TRENCH_POOL said level 10 was not pinned to two decimals — with the bracket
+// that pins it exported three lines away. resolution_order described a death
+// rule the rounds ladder had already overturned.
+//
+// Each was fixed by hand. This checks the class rather than the instances.
+{
+  // 1. A note that claims something is unpinned must not sit beside a bracket
+  //    that pins it.
+  for (const [lvl, br] of Object.entries(TRENCH_POOL_BRACKET || {})) {
+    const twoDp = [];
+    for (let v = Math.floor(br[0] * 100); v <= Math.ceil(br[1] * 100); v += 1) {
+      if (v / 100 >= br[0] && v / 100 <= br[1]) twoDp.push(v / 100);
+    }
+    if (twoDp.length === 1) {
+      check(`trench ${lvl}: bracket pins one 2-dp value, so the note must not deny it`,
+        !new RegExp(`Level ${lvl} does not`).test(PROVENANCE.TRENCH_POOL.note),
+        `bracket ${JSON.stringify(br)} -> ${twoDp[0]}`);
+    }
+  }
+
+  // 2. No note may call a building cap unknown while the table holds a number.
+  const capsKnown = Object.values(BUILDINGS).every((b) => typeof b.maxLevel === 'number');
+  check('no live note calls a building cap unknown while every cap is a number',
+    !capsKnown || Object.entries(PROVENANCE)
+      .filter(([, v]) => v.confidence !== 'superseded')
+      .every(([, v]) => !/never probed higher|max level.*unknown/i.test(v.note || '')),
+    'caps: ' + Object.entries(BUILDINGS).map(([c, b]) => `${c}=${b.maxLevel}`).join(' '));
+
+  // 3. A 'measured' note may not describe its own subject as assumed. The
+  //    escape hatch is deliberate: a note that says what USED to be assumed,
+  //    and marks it closed, is exactly what this project wants to keep.
+  const closing = /SUPERSEDED|CLOSED|no longer|used to|MEASURED NOW|READ NOW|was an artifact|turned out|is a measurement now|does clamp|is pinned too/i;
+  for (const [k, v] of Object.entries(PROVENANCE)) {
+    if (v.confidence !== 'measured') continue;
+    const n = v.note || '';
+    const claim = n.match(/[^.]*\b(is assumed|not measured|never submitted|not pinned)\b[^.]*\./i);
+    if (!claim) continue;
+    check(`${k}: a measured note admitting an assumption must mark it closed`,
+      closing.test(n), claim[0].trim().replace(/\s+/g, ' ').slice(0, 100));
+  }
+
+  // 4. Every gap the app declares must still be absent from the measured data,
+  //    which is the same drift in the other direction.
+  check('no declared gap names a constant the table now holds',
+    NOT_MEASURED.every((g) => !/^class_matrix_precision$|^range_roster$|^defence_matrix$|^multi_round_heavy_units$|^hero_other_terrain_levels$/.test(g.key)),
+    NOT_MEASURED.map((g) => g.key).join(', '));
+
+  // 5. And the count of open gaps is pinned, so closing one silently — or
+  //    letting one reappear — shows up here rather than in a reader's face.
+  check('three gaps remain, and all three say why more requests will not help',
+    NOT_MEASURED.length === 3
+    && NOT_MEASURED.every((g) => /nothing available|no black-box|not known|nobody has proposed/i.test(g.closedBy + ' ' + g.why)),
+    NOT_MEASURED.map((g) => g.key).join(', '));
+}
+
+// ===========================================================================
 console.log('');
 if (unreproduced.length) {
   console.log('MEASUREMENTS THE ENGINE COULD NOT REPRODUCE:');
