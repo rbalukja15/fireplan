@@ -5076,6 +5076,277 @@ def exp_hero_other_terrain(p: Probe) -> None:
                      if good else "   nothing read"))
 
 
+def exp_cross_class(p: Probe) -> None:
+    """Every class pairing nobody has submitted: five declared gaps at once.
+
+    unit_stats measured each class against ITSELF, and air_vs_ground measured
+    air attacking land. That leaves the naval off-diagonal, the air
+    off-diagonal, ground ATTACKING air, air DEFENDING against ground, and
+    every sea-vs-land or sea-vs-air cell -- all of them extrapolation in the
+    app, and all of them one request per cell.
+
+    Each battle yields TWO cells, because one submission contains both roles.
+    """
+    naval = [u for u in roster(p, "naval") if u != "bal"]
+    air = [u for u in roster(p, "air") if u != "bal"]
+    land = ["inf", "art", "ht"]
+    sweeps = [
+        ("naval_matrix", naval, naval, "sea", "sea"),
+        ("air_matrix", air, air, "air", "air"),
+        ("land_attacks_air", land, air, "land", "air"),
+        ("air_defends_land", air, land, "air", "land"),
+        ("sea_vs_land", naval[:2], land, "sea", "land"),
+        ("land_vs_sea", land[:2], naval, "land", "sea"),
+    ]
+    for tag, atks, tgts, at, dt in sweeps:
+        if not atks or not tgts:
+            print(f"\n  {tag}: empty roster, skipped")
+            continue
+        print(f"\n  === {tag}: {at} attacks {dt} ===")
+        exp_matchups(p, atks, tgts, tag, atk_terrain=at, def_terrain=dt)
+
+
+def exp_edges(p: Probe) -> None:
+    """The small remaining edges, each one or two requests.
+
+    Every one of these is a named gap in the app that costs almost nothing to
+    close, and has stayed open only because none of them was ever the most
+    interesting thing to spend a request on.
+    """
+    print("\n  1. E(n) at the sampled gaps: 21-28, 31-44, 46-49\n")
+    print(f"  {'n':>4} {'defender lost':>14} {'E(n) implied':>13} "
+          f"{'E(n) predicted':>15}")
+    for n in (21, 23, 26, 28, 31, 35, 38, 42, 44, 46, 48, 49, 120, 200):
+        ov = settings()
+        ov.update(duel(1, "inf", n, "ht", 60))
+        try:
+            p.submit(ov)
+        except (BareFormReturned, ValueError) as e:
+            print(f"  {n:>4} refused: {str(e)[:50]}")
+            continue
+        d = dict(p.last_details)
+        record("edges", {"probe": "E_n", "n": n, "detail": d},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        b = (d.get("B.1.1") or {}).get("lost")
+        if b is None:
+            continue
+        implied = b / MEASURED_UNITS["inf"][1]
+        print(f"  {n:>4} {b:14.2f} {implied:13.4f} "
+              f"{effective_units(n):15.4f}"
+              + ("" if abs(implied - effective_units(n)) < 0.01 else "  <-- OFF"))
+
+    print("\n  2. m(f) on a DEFENDER, and on a unit that is not infantry\n")
+    print(f"  {'unit':5} {'side':9} {'hp%':>5} {'output':>9} {'x m(f)':>9} "
+          f"{'predicted':>10}")
+    for unit in ("inf", "ht"):
+        for hp in (100, 75, 50, 25):
+            ov = settings()
+            ov.update(duel(1, "inf", 60, unit, 10, def_hp=f"{hp}%"))
+            try:
+                p.submit(ov)
+            except (BareFormReturned, ValueError) as e:
+                print(f"  ! {unit} def {hp}%: {e}", file=sys.stderr)
+                continue
+            d = dict(p.last_details)
+            record("edges", {"probe": "m_f_defender", "unit": unit,
+                             "hp_pct": hp, "detail": d},
+                   {k: (v or {}).get("lost") for k, v in d.items()})
+            a = (d.get("A.1.1") or {}).get("lost")
+            if a is None:
+                continue
+            want = (MEASURED_UNITS[unit][2] * effective_units(10)
+                    * (0.05 + 0.95 * hp / 100))
+            print(f"  {unit:5} {'defending':9} {hp:>5} {a:9.2f} "
+                  f"{0.05 + 0.95 * hp / 100:9.4f} {want:10.2f}"
+                  + ("" if abs(a - want) < 0.05 else "  <-- OFF"))
+
+    print("\n  3. the trench pool multiplier at level 10, on a bigger stack\n")
+    for n in (10, 50):
+        ov = settings()
+        ov.update(duel(1, "inf", 10, "inf", n))
+        ov["B.1.trench"] = "10"
+        try:
+            p.submit(ov, create=("B.1.trench",))
+        except (BareFormReturned, ValueError) as e:
+            print(f"  ! trench pool n={n}: {e}", file=sys.stderr)
+            continue
+        d = dict(p.last_details)
+        record("edges", {"probe": "trench_pool", "def_n": n, "detail": d},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        b = d.get("B.1.1") or {}
+        if not b.get("pool"):
+            continue
+        lo, hi = hp_bounds(b, 1)
+        base = n * MEASURED_UNITS["inf"][0]
+        print(f"  n={n:<3} pool {b['pool']:9.1f}  multiplier bracket "
+              f"[{lo / base:.4f}, {hi / base:.4f}]")
+
+    print("\n  4. trench multipliers for a unit that is not infantry\n")
+    for unit in ("ht", "art"):
+        for lvl in (0, 10):
+            ov = settings()
+            ov.update(duel(1, "inf", 20, unit, 10))
+            ov["B.1.trench"] = str(lvl)
+            try:
+                p.submit(ov, create=("B.1.trench",))
+            except (BareFormReturned, ValueError) as e:
+                print(f"  ! trench {unit} {lvl}: {e}", file=sys.stderr)
+                continue
+            d = dict(p.last_details)
+            record("edges", {"probe": "trench_unit", "unit": unit,
+                             "level": lvl, "detail": d},
+                   {k: (v or {}).get("lost") for k, v in d.items()})
+            a = (d.get("A.1.1") or {}).get("lost")
+            b = d.get("B.1.1") or {}
+            print(f"  {unit:4} trench {lvl:>2}: attacker lost "
+                  + (f"{a:8.2f}" if a is not None else f"{'—':>8}")
+                  + f"  defender pool {b.get('pool', 0):9.1f}")
+
+    print("\n  5. workshop and factory level caps\n")
+    for bld in ("workshop", "factory"):
+        ov = settings()
+        ov.update(duel(1, "inf", 30, "inf", 10))
+        ov.update({"B.1.bldg.1.abb": bld, "B.1.bldg.1.lvl": "20",
+                   "B.1.bldg.1.hp": "100%"})
+        try:
+            p.submit(ov, create=("B.1.bldg.1.abb", "B.1.bldg.1.lvl",
+                                 "B.1.bldg.1.hp"))
+            print(f"  {bld:9} accepted level 20")
+            record("edges", {"probe": "bldg_cap", "bldg": bld, "cap": 20}, {})
+        except BareFormReturned as e:
+            m = MAX_LEVEL_RE.search(str(e))
+            cap = m.group(2) if m else "?"
+            print(f"  {bld:9} max level {cap}")
+            record("edges", {"probe": "bldg_cap", "bldg": bld, "cap": cap}, {})
+
+    print("\n  6. can a LAND stack engage an AIR stack at all?\n")
+    # Every land-attacks-air cell came back with no result rows and no `oops`,
+    # which is the aborted-batch signature. That could mean "the game has no
+    # such battle" or merely "this terrain pair is invalid" -- and those are
+    # very different things to tell a user. Vary the terrain pair to separate
+    # them.
+    for at, dt, label in (("land", "air", "land attacker, air defender"),
+                          ("land", "land", "both in land terrain"),
+                          ("air", "air", "both in air terrain"),
+                          ("air", "land", "air attacker, land defender")):
+        ov = settings()
+        ov.update(duel(1, "inf", 10, "int", 20, atk_terrain=at,
+                       def_terrain=dt))
+        try:
+            p.submit(ov)
+            d = dict(p.last_details)
+            record("edges", {"probe": "land_vs_air", "atk_terrain": at,
+                             "def_terrain": dt, "detail": d},
+                   {k: (v or {}).get("lost") for k, v in d.items()})
+            b = (d.get("B.1.1") or {}).get("lost")
+            print(f"  {label:30} " + (f"defender lost {b:.2f}"
+                                      if b is not None else "no rows"))
+        except (BareFormReturned, ValueError) as e:
+            record("edges", {"probe": "land_vs_air", "atk_terrain": at,
+                             "def_terrain": dt, "error": str(e)}, {})
+            print(f"  {label:30} {str(e)[:64]}")
+
+    print("\n  7. the balloon, one more time, in every terrain\n")
+    for terr in ("air", "land", "sea"):
+        ov = settings()
+        ov.update(duel(1, "bal", 10, "inf", 20, atk_terrain=terr,
+                       def_terrain="land"))
+        try:
+            p.submit(ov)
+            d = dict(p.last_details)
+            record("edges", {"probe": "balloon", "terrain": terr,
+                             "detail": d},
+                   {k: (v or {}).get("lost") for k, v in d.items()})
+            b = (d.get("B.1.1") or {}).get("lost")
+            print(f"  bal in {terr:5}: defender lost "
+                  + (f"{b:.2f}" if b is not None else "no rows"))
+        except (BareFormReturned, ValueError) as e:
+            record("edges", {"probe": "balloon", "terrain": terr,
+                             "error": str(e)}, {})
+            print(f"  bal in {terr:5}: {str(e)[:70]}")
+
+
+def exp_balloon_and_trench(p: Probe) -> None:
+    """The balloon, and whether trenches do anything for a non-infantry stack.
+
+    THE BALLOON has been "not one quantity measured" for the whole project,
+    because every attempt sent it in AIR terrain, where the batch aborts. It
+    works perfectly well in LAND terrain. Four requests give its attack, its
+    defence and its max HP.
+
+    TRENCHES: an artillery stack reads the identical output and the identical
+    pool at trench 0 and trench 10 -- no bonus at all. The heavy-tank reading
+    that would confirm it was CENSORED (the attacker was wiped), so it is
+    repeated here with an attacker that survives.
+    """
+    print("\n  1. the balloon, in land terrain where it actually runs\n")
+    print(f"  {'battle':28} {'A lost':>9} {'B lost':>9} {'B pool':>10}")
+    for label, a, an, b, bn in (("10 bal attack 20 inf", "bal", 10, "inf", 20),
+                                ("20 inf attack 10 bal", "inf", 20, "bal", 10),
+                                ("10 bal attack 10 bal", "bal", 10, "bal", 10),
+                                ("10 bal attack 20 ht", "bal", 10, "ht", 20)):
+        ov = settings()
+        ov.update(duel(1, a, an, b, bn, atk_terrain="land",
+                       def_terrain="land"))
+        try:
+            p.submit(ov)
+        except (BareFormReturned, ValueError) as e:
+            print(f"  {label:28} {str(e)[:50]}")
+            record("balloon", {"label": label, "error": str(e)}, {})
+            continue
+        d = dict(p.last_details)
+        record("balloon", {"label": label, "atk": [a, an], "def": [b, bn],
+                           "detail": d},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        av = (d.get("A.1.1") or {}).get("lost")
+        bv = d.get("B.1.1") or {}
+        print(f"  {label:28} "
+              + (f"{av:9.2f}" if av is not None else f"{'—':>9}")
+              + (f" {bv['lost']:9.2f}" if bv.get("lost") is not None else f" {'—':>9}")
+              + (f" {bv['pool']:10.1f}" if bv.get("pool") else f" {'—':>10}"))
+
+    print("\n  2. trenches on a non-infantry stack, with an attacker that "
+          "lives\n")
+    print(f"  {'unit':5} {'trench':>7} {'attacker lost':>14} "
+          f"{'defender pool':>14}")
+    for unit in ("ht", "art", "cav", "inf"):
+        for lvl in (0, 10):
+            ov = settings()
+            ov.update(duel(1, "inf", 200, unit, 10))
+            ov["B.1.trench"] = str(lvl)
+            try:
+                p.submit(ov, create=("B.1.trench",))
+            except (BareFormReturned, ValueError) as e:
+                print(f"  ! {unit} trench {lvl}: {e}", file=sys.stderr)
+                continue
+            d = dict(p.last_details)
+            record("trench_generality", {"unit": unit, "level": lvl,
+                                         "atk_n": 200, "detail": d},
+                   {k: (v or {}).get("lost") for k, v in d.items()})
+            a = d.get("A.1.1") or {}
+            b = d.get("B.1.1") or {}
+            flag = "" if (a.get("pct") or 0) < 99.9 else "  <-- ATTACKER WIPED"
+            print(f"  {unit:5} {lvl:>7} "
+                  + (f"{a.get('lost', 0):14.2f}" if a.get("lost") is not None
+                     else f"{'—':>14}")
+                  + f" {b.get('pool', 0):14.1f}{flag}")
+
+    print("\n  3. workshop and factory caps, with the server's own words\n")
+    for bld in ("workshop", "factory", "barracks"):
+        ov = settings()
+        ov.update(duel(1, "inf", 30, "inf", 10))
+        ov.update({"B.1.bldg.1.abb": bld, "B.1.bldg.1.lvl": "20",
+                   "B.1.bldg.1.hp": "100%"})
+        try:
+            p.submit(ov, create=("B.1.bldg.1.abb", "B.1.bldg.1.lvl",
+                                 "B.1.bldg.1.hp"))
+            print(f"  {bld:10} accepted level 20")
+        except BareFormReturned as e:
+            print(f"  {bld:10} {str(e)[:90]}")
+            record("balloon", {"probe": "bldg_cap", "bldg": bld,
+                               "error": str(e)}, {})
+
+
 def exp_variance(p: Probe, samples: int = 60) -> None:
     """Same battle repeatedly with variance ON, to characterise the roll.
 
@@ -5392,6 +5663,9 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "position": exp_position,
     "hero_output_curves": exp_hero_output_curves,
     "hero_other_terrain": exp_hero_other_terrain,
+    "cross_class": exp_cross_class,
+    "edges": exp_edges,
+    "balloon_trench": exp_balloon_and_trench,
     "buildings": exp_buildings,
     "trenches": exp_trenches,
     "air_vs_ground": exp_air_vs_ground,
@@ -5408,7 +5682,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
 # it is about to spend on someone else's ad-supported fan site before it starts
 # rather than after. Approximate by design: saturation re-runs add a few.
 REQUEST_ESTIMATE: dict[str, int] = {
-    "unit_stats": 20, "buildings": 14, "patrol": 18, "mixed_stacks": 8, "heroes": 23, "stack_limits": 4, "hero_scaling": 9, "hero_table": 28, "hero_levels": 16, "hero_caps": 30, "stack_ladder": 9, "stack_order": 5, "hero_output": 21, "hero_buff_confirm": 5, "allocation": 9, "hero_full": 24, "hero_hp_cap": 22, "hero_sides": 30, "multi_round": 8, "hero_curves": 110, "offdiag": 8, "trench_gaps": 12, "fortress_edges": 20, "building_damage": 9, "position": 15, "hero_output_curves": 70, "hero_other_terrain": 24, "trenches": 10, "air_vs_ground": 30,
+    "unit_stats": 20, "buildings": 14, "patrol": 18, "mixed_stacks": 8, "heroes": 23, "stack_limits": 4, "hero_scaling": 9, "hero_table": 28, "hero_levels": 16, "hero_caps": 30, "stack_ladder": 9, "stack_order": 5, "hero_output": 21, "hero_buff_confirm": 5, "allocation": 9, "hero_full": 24, "hero_hp_cap": 22, "hero_sides": 30, "multi_round": 8, "hero_curves": 110, "offdiag": 8, "trench_gaps": 12, "fortress_edges": 20, "building_damage": 9, "position": 15, "hero_output_curves": 70, "hero_other_terrain": 24, "cross_class": 70, "edges": 35, "balloon_trench": 15, "trenches": 10, "air_vs_ground": 30,
     "land_matrix": 100, "size_factor": 33, "hp_scaling": 10,
     "fortress": 6, "terrain": 7, "variance": 60,
 }

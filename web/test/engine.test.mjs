@@ -548,14 +548,24 @@ check('every trench level 0-20 is measured and exact',
 check('a sampled trench level is exact', trenchFactors(15).exact === true && trenchFactors(0).exact === true);
 check('trench above 20 is clamped and flagged',
   trenchFactors(25).level === 20 && trenchFactors(25).exact === false);
-check('building damage from a non-infantry attacker is withheld, not extrapolated',
+// Eight of nine land types are measured now. Cavalry is one of them, so it
+// must COMPUTE; the heavy tank is the censored one and must still be withheld.
+check('building damage from a measured attacker is computed',
   (() => {
     const r = simulate({
       attacker: { unit: 'cav', count: 30 },
       defender: { unit: 'cav', count: 30, buildings: [{ code: 'fortress', level: 3 }] },
     });
+    return Math.abs(r.defender.damageToBuildings - 2.0 * effectiveUnits(30)) < 1e-6;
+  })(), '2.00 per effective unit');
+check('and from the CENSORED heavy tank it is withheld, and said to be censored',
+  (() => {
+    const r = simulate({
+      attacker: { unit: 'ht', count: 30 },
+      defender: { unit: 'ht', count: 30, buildings: [{ code: 'fortress', level: 3 }] },
+    });
     return r.defender.damageToBuildings === null
-      && r.coverage.caveats.some((c) => /only ever been measured for infantry/.test(c));
+      && r.coverage.caveats.some((c) => /CENSORED, not unknown/.test(c));
   })());
 check('a fortress against an air attacker still computes, but is downgraded and caveated',
   (() => {
@@ -1260,6 +1270,36 @@ console.log('\n12h. the six heroes that only work on air and naval stacks');
     defending.coverage.caveats.join(' | ').slice(0, 150));
 }
 
+console.log('\n12i. building damage, replayed per attacking unit type');
+{
+  let n = 0;
+  for (const r of rows) {
+    const m = r.meta || {};
+    if (r.experiment !== 'building_damage' || m.error) continue;
+    const obs = ((m.detail || {})['B.1.bldg.1'] || {}).lost;
+    if (obs == null) continue;
+    const res = simulate({
+      attacker: { unit: m.attacker, count: m.atk_n, hpPct: 100 },
+      defender: { unit: 'inf', count: 10, hpPct: 100,
+                  buildings: [{ code: 'fortress', level: 5 }] },
+      rounds: 1,
+    });
+    if (res.defender.damageToBuildings === null) {
+      // The censored heavy tank: withheld on purpose, so there is nothing to
+      // compare and that is the correct outcome rather than a skip.
+      check(`${m.attacker}: withheld because the reading is censored`,
+        m.attacker === 'ht', `${m.attacker} dealt ${obs}`);
+      continue;
+    }
+    n += 1;
+    check(`${m.attacker} vs a fortress: `
+      + `${res.defender.damageToBuildings.toFixed(2)} vs measured ${obs}`,
+      Math.abs(res.defender.damageToBuildings - obs) <= 0.05,
+      `${(res.defender.damageToBuildings - obs).toFixed(3)} off`);
+  }
+  check('eight of the nine land types were replayed', n === 8, String(n));
+}
+
 console.log('\n13. heroes — replayed against every measured reading');
 // ===========================================================================
 // A hero is a unit plus a buff, and the app now models it. Replayed here
@@ -1340,6 +1380,7 @@ console.log('\n14. coverage of the record itself');
     'fortress', 'buildings', 'patrol', 'mixed_stacks', 'survivable_rig',
     'stack_order', 'allocation', 'hero_sides', 'multi_round',
     'offdiag', 'trench_gaps', 'hero_output_curves', 'hero_other_terrain',
+    'building_damage',
     // Heroes are now modelled and replayed above: the sweeps that measured
     // them are physics the engine reproduces, not declared omissions.
     'heroes', 'hero_scaling', 'hero_table', 'hero_levels', 'air_rounds'];
@@ -1386,7 +1427,7 @@ console.log('\n14. coverage of the record itself');
   //     nothing to replay them against. Each is named in NOT_MEASURED.
   const declaredNonReplay = ['stack_limits', 'hero_caps', 'hero_targets',
     'hero_hp_cap', 'hero_curves', 'variance', 'terrain', 'position',
-    'building_damage', 'fortress_edges'];
+    'fortress_edges'];
   void declaredNonReplay;
   check('every unreplayed experiment is one the engine declares and explains',
     notReplayed.every((e) => declaredNonReplay.includes(e)),

@@ -159,10 +159,15 @@ export const GROUND_DEFENCE_VS_AIR = {
   rrg: 0.7, lt: 3.0, ht: 4.0, convoy: 0.5, st: 1.0,
 };
 
-// Damage a stack deals to BUILDINGS, per effective unit. One unit type has
-// ever been measured. Absence from this table means "no reading exists".
+// Damage a stack deals to BUILDINGS, per effective unit. Its own column:
+// nothing in the unit table predicts it, and the ratio to a unit's attack
+// value runs from 0.04 to 0.20. Absence from this table means "no reading
+// exists" -- which now applies only to the heavy tank, whose reading is
+// CENSORED: it dealt exactly 250.00 against a fortress holding 250.00, so 8.82
+// is a floor and not a value.
 export const BUILDING_DAMAGE_PER_EFFECTIVE_UNIT = {
-  inf: 0.3,
+  inf: 0.30, lart: 0.30, ac: 1.00, st: 1.00, art: 1.50,
+  cav: 2.00, rrg: 4.00, lt: 6.00,
 };
 
 // ---------------------------------------------------------------------------
@@ -492,10 +497,7 @@ export const VARIANCE_BAND = { lo: 0.90, hi: 1.10, rolls: 'one per side per roun
 // in the unit table predicts it, and the ratio to the unit's attack value
 // ranges from 0.04 to 0.20. ht is a FLOOR, not a value -- it dealt exactly
 // 250.00 against a fortress holding 250.00, so the reading is censored.
-export const BUILDING_DAMAGE = {
-  inf: 0.30, lart: 0.30, ac: 1.00, st: 1.00, art: 1.50,
-  cav: 2.00, rrg: 4.00, lt: 6.00,
-};
+// The censored one, kept separate so it can never be mistaken for a value.
 export const BUILDING_DAMAGE_FLOOR = { ht: 8.82 };
 
 // The fortress caps at level 5 -- the server refuses 6 and says so. That is

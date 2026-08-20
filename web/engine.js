@@ -28,6 +28,7 @@ import {
   AIR_ATTACK_VS_GROUND,
   GROUND_DEFENCE_VS_AIR,
   BUILDING_DAMAGE_PER_EFFECTIVE_UNIT,
+  BUILDING_DAMAGE_FLOOR,
   FORTRESS,
   PATROL,
   ROSTER_ORDER,
@@ -1126,9 +1127,15 @@ function runSimulation(config, derivation, caveats) {
 
   const bdRate = BUILDING_DAMAGE_PER_EFFECTIVE_UNIT[atk.unit.code];
   if (def.buildings.length && bdRate === undefined) {
-    caveats.push(`Damage to buildings has only ever been measured for infantry (0.3 per effective `
-      + `unit). There is no reading for ${atk.unit.label}, and nothing in the model predicts it, so `
-      + 'building damage is withheld.');
+    const floor = BUILDING_DAMAGE_FLOOR[atk.unit.code];
+    caveats.push(floor
+      ? `Damage to buildings from ${atk.unit.label} is CENSORED, not unknown: it `
+        + `dealt exactly the fortress's whole pool, so ${floor} per effective unit `
+        + 'is a floor and not a value. Building damage is withheld rather than '
+        + 'quoted as if the reading were complete.'
+      : `Damage to buildings has no reading for ${atk.unit.label}, and nothing in `
+        + 'the model predicts it — the per-unit figures range from 0.30 to 6.00 '
+        + 'with no relation to the unit\'s attack value. Building damage is withheld.');
   }
 
   // ---- rounds --------------------------------------------------------------
