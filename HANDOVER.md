@@ -48,6 +48,62 @@ What that session established, in one place:
   0.25, 0.5 and 0.75 all deliver one whole strike — while patrol genuinely
   does; whole rounds repeat in both.
 
+### 2026-08-20: the last of the closeable gaps
+
+Twelve gaps at the start of the day, three at the end, and the three that
+remain are closed as far as this method reaches — two of them provably so.
+
+**Range, all seventeen units, by bisection.** Ten melee types reach exactly 5;
+lart 30, art 50, rrg 150, cl 40, bb 75. `UNIT_RANGE` used to say infantry reach
+1, which was never a measurement: it came from a three-value ladder (0, 1, 25),
+so 1 was the largest distance anyone had *tried*. Two rules came out of the
+sweep that nobody was looking for. Past 5 km a bombarded defender deals exactly
+zero while taking the attacker's full figure, and the cut-off belongs to the
+distance rather than the defender — lart reaching 30, a cruiser 40 and a
+battleship 75 are all silent at 8 km. And a row that cannot reach is inert: it
+neither fires nor counts toward `E()` for the rows that do.
+
+**The defence matrix, which did not exist.** `CLASS_ATTACK` was a full 17x3
+table with no counterpart, so a cross-class pairing had a measured attack
+coefficient and an unmeasured defence one and the engine withheld the *entire*
+battle. 243 of 289 pairings were unknown; none are now. Two attackers of each
+class against all seventeen defenders, and every pair agreed. Two corroborations
+came free: all seventeen same-class cells reproduce that unit's measured
+defence diagonal, and the air column reproduces all ten values of
+`GROUND_DEFENCE_VS_AIR` from a different sweep.
+
+**Embarkation is a class change**, not two stat overrides. A non-naval unit in
+sea or debark terrain attacks and defends on a flat column (1.0 land and naval,
+0.5 air), holds a flat 10 HP whatever it is, and is hit on the attacker's naval
+column. Twenty heavy tanks at sea report a pool of 200.0, not 5194.8. The
+near-miss is worth keeping: it looked like an embarked unit simply *is* a
+convoy — the convoy's land and air columns are exactly 1.0 and 0.5 — and it is
+wrong in the third cell. Two of three agreeing is what a wrong law looks like
+from the inside.
+
+**The round law was wrong in two places and my explanation for it was wrong
+too.** A ladder on five unit types spanning 10 to 260 HP disproved "high
+per-unit HP makes the survivor count coarse": the stormtrooper at 40 is exact
+through eight rounds while the armoured car at 60 is the worst in the roster.
+Survivors are count minus *deaths*, not count minus `floor(cumulative / max
+HP)`; and a round's casualties are counted against what the survivors have
+left, not against a full unit. Worst error across 48 cells fell from 0.970% to
+0.0032%, with every death count exact.
+
+**The six air/naval heroes**, decomposed on both sides across their level
+ranges. A buff channel has both signs; a hero's own attack can move with level
+and its HP pool can too; a hero has target-class columns; a hero's own output is
+not attenuated and its HP is not part of its stack's attenuation; and where a
+hero sits is not a property of the hero but the same strongest-first saturation
+the units obey.
+
+What is left, and why more requests will not help: whether the 5 km return-fire
+cut-off is a constant or every unit's own melee reach (no unit in the roster has
+a different one), why air-to-air is exempt from attenuation (no configuration
+puts an aircraft out of reach of what it is attacking — air range is 5 and
+return fire stops at 5), and a 1% disagreement between two configurations on
+Tōgō-with-bombardment.
+
 ### 2026-08-19, third stretch: closing the list
 
 NOT_MEASURED went from 26 gaps to **12**, and two of those twelve are things
@@ -203,6 +259,66 @@ the real rule gives that one pair. Against nine rows it is out by 40% of the
 stack total. **Three separate laws in this project were fitted on the single
 pair `inf` + `art` and written down as properties of the roster.** If a fit
 rests on one pair of anything, say so in the note.
+
+**2026-08-20 added five more, and one of them is a category this document did
+not have.**
+
+*Twelfth: a token mismatch fails silently three times in a row.* `UNITS[].cls`
+says `'sea'`; `CLASS_ATTACK`'s third column is called `'naval'`. Written out
+longhand at each site, that comparison failed in three separate places without
+a single error: the embarked filter matched every unit including the ships, so
+a battleship in sea terrain fought at a flat 1.0 instead of 40; the
+naval-vs-air branch could never fire; and the whole naval attack column was
+unreachable, so infantry hit a battleship for 4.0 where the record says 2.0.
+There is one `combatClass()` now and a test asserting the two token spaces
+agree. **A comparison between two vocabularies belongs in one function, not at
+every call site.**
+
+*Thirteenth: a test with no power reads exactly like a null result.* I wrote an
+exemption into the model saying air attackers are blind to embarkation, on the
+strength of a fighter dealing 98.89 to infantry on land and 98.61 to the same
+infantry at sea. The two columns that pair was meant to distinguish are
+`int.land = 5.0` and `int.naval = 5.0`. The same number. That reading could not
+have shown a difference if one existed, and "no difference" became "blind to
+the difference". **Before recording a null, check that the two hypotheses
+predict different numbers for the configuration you actually sent.** The cell
+that discriminates — an air stack against embarked *fighters*, where the
+columns are 20.0 and 5.0 — says everyone sees embarkation.
+
+*Fourteenth: a rival hypothesis that is algebraically the same hypothesis.*
+`air_E_above_20_rival` stood as a gap because the "rival" — a per-unit sum of
+`m(f)` instead of one stack-level term — had never been separated. It cannot
+be. `m` is affine, so `sum_i m(f_i) = 0.05s + 0.95 sum_i f_i` and `sum_i f_i =
+s x f` identically, for any stack and any distribution of damage. No
+measurement at any size would ever have separated them. **A gap that asks for a
+measurement is worth one minute of algebra first** — the rivals that do differ
+(`m` inside `E`, `m` against the raw count) were then rejected by data already
+on disk.
+
+*Fifteenth: the terrain-pair artifact, for the fourth and fifth time.*
+`TERRAIN_PAIR` sends a naval attacker against an air defender as `sea/air`, and
+`sea/air` aborts the batch. It took out the ships' entire air column, which was
+recorded as "the server will not run a naval stack against an air one", and
+then three air rows of the defence matrix. Both run perfectly as `sea/land`.
+That makes five refusals recorded as properties of the game — ground-attacks-
+air, the Balloon, naval-vs-air, the ships' air column, air defenders vs naval.
+**A refusal is a fact about one configuration until it has been tried in
+another.**
+
+*Sixteenth, and the new category: a test suite can encode an old state of
+knowledge and then defend it.* Six assertions failed when the defence matrix
+landed — "land attacking air is never measured and never numbered", "exactly 46
+of 289 pairings are measured", "land off-diagonal is estimated". Every one had
+been true and correct when written. Every one was now asserting the absence of
+something the record contained. The same rot had reached the page itself: the
+standing-limits list in `index.html` still told the reader that stacks saturate
+in ROSTER order and damage splits by attack x count, months after both were
+measured and overturned, and it sat directly below an engine that computes
+neither. **A hand-written claim about what is known goes stale in exactly the
+way a hand-written constant does.** `coverageOf()` is derived from the
+coefficient lookups now, and the limits list is rendered from `NOT_MEASURED`,
+so neither can disagree with the record. When a test fails because the record
+grew, update the assertion in the same commit and say so — do not widen it.
 
 **A tenth, of a different kind: a law can fit everything you have and still be
 wrong, if the scope of the fit was narrower than the claim.** "The stack
