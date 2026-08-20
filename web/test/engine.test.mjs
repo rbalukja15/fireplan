@@ -2864,6 +2864,50 @@ console.log('\n12u. m(f) on both axes, and every building level');
 }
 
 // ===========================================================================
+console.log('\n12v. E(n) at every rung that was interpolated');
+// ===========================================================================
+// E(n) is the other law in every output term, and its note listed n in 21-28,
+// 31-44, 46-49 and above 113 as untested — interpolated because the curve is
+// smooth and every gap is bracketed. That is a fair reason to interpolate and
+// not a reason to call it measured, and the knee at 20 and the cap at 50 both
+// sit inside those ranges.
+{
+  const en = rows.filter((r) => r.experiment === 'e_n_gaps' && r.meta.detail);
+  let rungs = 0;
+  let worst = 0;
+  for (const r of en) {
+    const want = (r.meta.detail['B.1.1'] || {}).lost;
+    const pct = (r.meta.detail['B.1.1'] || {}).pct;
+    if (want == null || (pct || 0) >= 99.9) continue;
+    const got = simulate({
+      attacker: { rows: [{ unit: 'lart', count: r.meta.n }] },
+      defender: { rows: [{ unit: 'inf', count: 800 }] },
+    });
+    const err = Math.abs(got.defender.hpLost - want) / Math.max(want, 1);
+    worst = Math.max(worst, err);
+    check(`E(${r.meta.n}): ${want}`, err < 0.001,
+      `got ${got.defender.hpLost.toFixed(2)}`);
+    rungs += 1;
+  }
+  check('every previously untested rung was replayed', rungs === 22, String(rungs));
+  check('worst error across them is rounding, not misfit', worst < 0.0001,
+    `${(worst * 100).toFixed(4)}%`);
+  check('the knee at 20 and the cap at 50 are both inside what was measured',
+    en.some((r) => r.meta.n === 21) && en.some((r) => r.meta.n === 49));
+  check('and the cap still holds four hundred units out',
+    Math.abs(effectiveUnits(400) - 35) < 1e-9);
+  check('the note no longer lists untested ranges',
+    /EVERY RUNG IS MEASURED NOW/.test(PROVENANCE.E_n.note)
+    && !/interpolation there is derived/.test(PROVENANCE.E_n.note));
+  check('and the death-clamp note says it was read',
+    /READ NOW, and it does clamp/.test(PROVENANCE.deaths.note));
+  check('the three superseded building notes are labelled, not deleted',
+    ['BUILDINGS.hp.oneLevel', 'BUILDINGS.hp.workshop', 'BUILDINGS.maxLevel.unknown']
+      .every((k) => PROVENANCE[k].confidence === 'superseded'
+        && /SUPERSEDED by BUILDINGS\.levels/.test(PROVENANCE[k].note)));
+}
+
+// ===========================================================================
 console.log('\n14. coverage of the record itself');
 // ===========================================================================
 {
@@ -2885,7 +2929,7 @@ console.log('\n14. coverage of the record itself');
     'togo_b_disagreement', 'togo_b_shape', 'togo_b_kind', 'hero_hp_scaling',
     'land_hero_attacking', 'land_hero_screen', 'hero_new_buffs', 'hank_sides',
     'land_hero_target_class', 'land_hero_def_class',
-    'm_f_generality', 'building_levels',
+    'm_f_generality', 'building_levels', 'e_n_gaps',
     // Heroes are now modelled and replayed above: the sweeps that measured
     // them are physics the engine reproduces, not declared omissions.
     'heroes', 'hero_scaling', 'hero_table', 'hero_levels', 'air_rounds'];

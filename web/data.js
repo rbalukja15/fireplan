@@ -1148,7 +1148,7 @@ export const PROVENANCE = {
     confidence: 'measured',
     source: 'Independently confirmed at n = 10, 15, 20, 29, 30, 45, 50, 57 and 113, all exact to print precision. The non-trivial fits are E(29) = 27.65 (st dealt exactly 27.65), E(45) = 34.5833 (cav dealt exactly 34.58), E(30) = 28.3333, E(50) = 35.',
     formula: 'E(n) = n for n <= 20; else 20 + k(60-k)/60 with k = min(n,50) - 20. Saturates at 35 effective units, so stacking past 50 does nothing.',
-    note: 'The min(n,50) cap does real work: uncapped, n=57 predicts 13.67 where 14.0 was measured. Untested at n in 21-28, 31-44, 46-49 and above 113 — interpolation there is derived, not measured, and the curve is smooth with every gap bracketed.',
+    note: 'The min(n,50) cap does real work: uncapped, n=57 predicts 13.67 where 14.0 was measured. EVERY RUNG IS MEASURED NOW. This used to list n in 21-28, 31-44, 46-49 and above 113 as untested, interpolated on the grounds that the curve is smooth and every gap is bracketed \u2014 a fair reason to interpolate and not a reason to call it measured, especially with the knee at 20 and the cap at 50 both sitting inside the untested ranges. All 22 were submitted: worst error 0.0032%, which is rounding of the second printed decimal. The cap holds out to n = 400.',
   },
   'm_f': {
     confidence: 'measured',
@@ -1166,7 +1166,7 @@ export const PROVENANCE = {
     confidence: 'measured',
     source: '81 of 81 stack readings across air_vs_ground, fortress and trenches agree.',
     formula: 'deaths = floor(HP lost / effective per-unit max HP), where "effective" means the TRENCH-INFLATED figure. At trench 4, 40.0 HP lost kills 1 infantry rather than 2, because per-unit HP has grown to about 23.',
-    note: 'Whether the death count clamps to the stack size when a damaged stack is wiped was never read: the hp_scaling rows record no death figure.',
+    note: 'READ NOW, and it does clamp. The hp_scaling rows carry no death figure, which is why this stood open; the five-type rounds ladder does, and it contains wipes \u2014 light artillery and stormtroopers both lose their whole stack by round three and the server reports 50 dead of 50. The division alone gives 49, because the last round\'s floor leaves one standing, so the clamp is a rule rather than an artifact of the arithmetic.',
   },
   'RETURN_FIRE': {
     confidence: 'derived',
@@ -1211,22 +1211,22 @@ export const PROVENANCE = {
     source: 'Fortress pool read from its own result row at every level: exactly 50 / 100 / 150 / 200 / 250 at L1-L5. Damage comes off the top level.',
   },
   'BUILDINGS.hp.oneLevel': {
-    confidence: 'derived',
+    confidence: 'superseded',
     source: 'One observation per type (railway/aerodrome/harbor L1 = 60, barracks L2 = 80, factory L3 = 120, recruiting L1 = 5.0 and destroyed outright by the 8.5 damage).',
-    note: 'Only the fortress has HP per level confirmed at more than one level. "40 per level" for the factory is 120/3 from a single reading.',
+    note: 'SUPERSEDED by BUILDINGS.levels, which measured every building at every level it has. The factory figure was 120/3 from a single reading and is now four: 40, 80, 120, 160. Only the fortress has HP per level confirmed at more than one level. "40 per level" for the factory is 120/3 from a single reading.',
   },
   'BUILDINGS.hp.workshop': {
-    confidence: 'measured at L3 only',
+    confidence: 'superseded',
     source: '35 HP total at level 3, with 20 in the top level.',
-    note: 'Workshop HP is NOT uniform per level. 5 + 10 + 20 = 35 is a plausible doubling series and is assumed, not measured — only L3 was ever flown. Two requests would settle it.',
+    note: 'SUPERSEDED by BUILDINGS.levels. The assumed series was right \u2014 the workshop reads 5, 15, 35 at levels 1, 2 and 3 \u2014 but it is a measurement now rather than a plausible guess. Workshop HP is NOT uniform per level. 5 + 10 + 20 = 35 is a plausible doubling series and is assumed, not measured — only L3 was ever flown. Two requests would settle it.',
   },
   'BUILDINGS.maxLevel.server': {
     confidence: 'measured',
     source: 'The server states each cap itself: "oops: max level for X is N", read by parse_max_level(). Fortress 5, barracks 2, recruiting / railway / aerodrome / harbor 1.',
   },
   'BUILDINGS.maxLevel.unknown': {
-    confidence: 'unmeasured',
-    note: 'The sweep asked workshop and factory for level 3, was not rejected, and never probed higher. The form\'s lvl select offers 1-5 for every type, which is a UI cap and not a server cap. The true cap is at least 3 and otherwise unknown.',
+    confidence: 'superseded',
+    note: 'SUPERSEDED by BUILDINGS.levels. Both caps came back the moment anyone pressed the button: the server states max level 3 for the workshop and 4 for the factory. The factory null had reached the UI as unbounded. The sweep asked workshop and factory for level 3, was not rejected, and never probed higher. The form\'s lvl select offers 1-5 for every type, which is a UI cap and not a server cap. The true cap is at least 3 and otherwise unknown.',
   },
 
   'TRENCH_POOL': {

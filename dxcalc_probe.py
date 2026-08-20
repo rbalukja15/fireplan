@@ -7381,6 +7381,52 @@ def exp_building_levels(p: Probe) -> None:
         linear = max(per) - min(per) < 0.05
         print(f"  {b}: {'LINEAR at ' + str(per[0]) + ' per level' if linear else 'NOT linear — ' + str(per)}")
 
+
+def exp_e_n_gaps(p: Probe) -> None:
+    """Every untested rung of E(n), the other law that is in every output term.
+
+    E(n) = n below 20 and 20 + k(60-k)/60 above it, k = min(n,50) - 20. The
+    provenance note lists what has never been submitted: n in 21-28, 31-44,
+    46-49 and above 113. The curve is smooth and every gap is bracketed, which
+    is a fair reason to interpolate and not a reason to call it measured.
+
+    The knee at 20 and the cap at 50 are where a wrong law would show, and
+    both are inside the untested ranges. Light artillery is the probe because
+    its coefficient is 5.0 and its per-unit HP is 10, so the defender's return
+    fire cannot wipe it at any of these sizes.
+    """
+    untested = ([21, 22, 23, 24, 25, 26, 27, 28] + [31, 33, 36, 39, 41, 43, 44]
+                + [46, 47, 48, 49] + [130, 200, 400])
+    print(f"\n  {'n':>4} {'dealt':>10} {'E(n) implied':>13} {'E(n) predicted':>15}"
+          f"   error")
+    worst = 0.0
+    for n in untested:
+        ov = settings()
+        ov.update(duel(1, "lart", n, "inf", 800))
+        try:
+            p.submit(ov)
+        except (BareFormReturned, ValueError) as e:
+            print(f"  {n:>4}  {e}"[:96])
+            continue
+        d = dict(p.last_details)
+        b = d.get("B.1.1") or {}
+        record("e_n_gaps", {"n": n, "detail": d},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        if b.get("lost") is None or (b.get("pct") or 0) >= 99.9:
+            print(f"  {n:>4} {'wiped/none':>10}")
+            continue
+        implied = b["lost"] / 5.0
+        predicted = effective_units(n)
+        err = abs(implied - predicted) / max(predicted, 1.0) * 100
+        worst = max(worst, err)
+        print(f"  {n:>4} {b['lost']:10.2f} {implied:13.4f} {predicted:15.4f}"
+              f"   {err:.4f}%" + ("" if err < 0.05 else "   <-- MISFIT"))
+    print(f"\n  Worst error across {len(untested)} previously untested rungs: "
+          f"{worst:.4f}%")
+    if worst < 0.05:
+        print("  E(n) is measured across the knee at 20 and the cap at 50, not "
+              "interpolated through them.")
+
 # Every (hero, unit) pair with a measured OUTPUT buff, and the level cap to
 # sweep to. Read with a SINGLE-TYPE stack, which needs no baseline subtraction
 # and cannot be contaminated by another curve.
@@ -8483,6 +8529,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "land_hero_def_class": exp_land_hero_def_class,
     "m_f_generality": exp_m_f_generality,
     "building_levels": exp_building_levels,
+    "e_n_gaps": exp_e_n_gaps,
     "mixed_stacks": exp_mixed_stacks,
     "heroes": exp_heroes,
     "stack_limits": exp_stack_limits,
