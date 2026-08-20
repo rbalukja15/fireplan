@@ -35,7 +35,9 @@ import { dirname, join } from 'node:path';
 
 import {
   UNITS, CLASS_ATTACK, TRENCH_POOL, TRENCH_POOL_BRACKET, TRENCH_OUTPUT, PROVENANCE, NOT_MEASURED,
-  UNIT_RANGE, MELEE_RANGE,
+  UNIT_RANGE, MELEE_RANGE, EMBARKED_MAXHP, CLASS_ATTACK_CORROBORATED,
+  GROUND_DEFENCE_VS_AIR,
+  CLASS_DEFENCE, EMBARKED_ATTACK, EMBARKED_DEFENCE,
   MAX_UNIT_ROWS,
   HEROES,
 } from '../data.js';
@@ -44,6 +46,7 @@ import {
   heroHpBuff,
   allocationWeights,
   effectiveUnits, hpMultiplier, fortressDR, trenchFactors, coverageOf, simulate,
+  combatClass, attackCoefficient,
 } from '../engine.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -510,30 +513,69 @@ console.log('\n10. honesty — simulate() never throws, and never overstates wha
         attacker: { unit: a, count: 10 }, defender: { unit: d, count: 10 }, rounds: 1,
       });
       seen[res.coverage.level] += 1;
-      if (res.coverage.level === 'measured'
-          && !(a === d || (UNITS[a].cls === 'air' && UNITS[d].cls === 'land' && a !== 'bal'))) {
+      // A pairing may call itself measured only where BOTH halves are
+      // corroborated: the attack column by CLASS_ATTACK_CORROBORATED, the
+      // defence side by CLASS_DEFENCE, which read two independent attackers of
+      // every class against every defender. Anything else must say estimated.
+      const aCls = combatClass(a, 'land');
+      const dCls = combatClass(d, 'land');
+      const corroborated = CLASS_ATTACK_CORROBORATED
+        .some(([x, y]) => x === aCls && y === dCls);
+      if (res.coverage.level === 'measured' && !(corroborated && a !== 'bal' && d !== 'bal')) {
         cannotReproduce(`coverage(${a} vs ${d})`, 'not measured', 'measured');
       }
     }
   }
-  // 16 diagonals (bal excluded) + 3 fliers x 10 ground units = 46
-  check(`in a clean 1-round duel exactly 46 of ${codes.length ** 2} pairings are 'measured' `
-    + '(16 diagonals + 3 fliers x 10 ground targets)', seen.measured === 46, JSON.stringify(seen));
-  check('land attacking air is never measured and never numbered',
+  // This used to read "exactly 46 of 289", being 16 diagonals plus 3 fliers
+  // against 10 ground units -- everything else was unknown for want of a
+  // DEFENCE coefficient. CLASS_DEFENCE filled that side of the table, so no
+  // pairing is unknown any more and the split moved to 148/141/0. The
+  // assertion that matters is unchanged in spirit: a pairing is measured only
+  // where the record corroborates both halves, and the count is pinned so it
+  // cannot drift upward quietly.
+  check(`in a clean 1-round duel exactly 148 of ${codes.length ** 2} pairings are 'measured'`,
+    seen.measured === 148, JSON.stringify(seen));
+  check('and no pairing is unknown any more, because both tables are complete',
+    seen.unknown === 0, JSON.stringify(seen));
+  check('land attacking air is measured now, and numbered',
     (() => {
-      const r = simulate({ attacker: { unit: 'inf', count: 10 }, defender: { unit: 'int', count: 10 } });
-      return r.coverage.level === 'unknown' && r.defender.hpLost === null && r.attacker.hpLost === null
-        && /never been measured/.test(r.coverage.reason);
+      const r = simulate({ attacker: { unit: 'inf', count: 20 }, defender: { unit: 'int', count: 40 } });
+      // 0.3 x E(20) = 6.0 out, 5.0 x E(40) = 166.67 back. Both measured.
+      return Math.abs(r.defender.hpLost - 6.0) < 0.05
+        && Math.abs(r.attacker.hpLost - 166.67) < 0.05;
     })());
-  check('land off-diagonal is \'estimated\', numbered, and says why it might be wrong',
+  check('and it is only estimated because the ATTACK cell rests on one reading',
+    (() => {
+      const r = simulate({ attacker: { unit: 'inf', count: 20 }, defender: { unit: 'int', count: 40 } });
+      return r.coverage.level === 'estimated' && /stand-in/.test(r.coverage.reason);
+    })());
+  // These two used to assert 'estimated'. They were right when the engine had
+  // no way to know that a coefficient is flat across targets WITHIN a class --
+  // but the off-diagonal sweep submitted eight land pairs including this exact
+  // one, and naval_matrix swept naval against naval in full. The readings were
+  // on disk; the old coverage cascade simply never consulted them. Calling
+  // them measured is the record catching up, not a relaxation.
+  check('land off-diagonal is measured — the off-diagonal sweep submitted this exact pair',
     (() => {
       const r = simulate({ attacker: { unit: 'inf', count: 10 }, defender: { unit: 'ht', count: 10 } });
-      return r.coverage.level === 'estimated' && r.defender.hpLost > 0
-        && /off-diagonal/.test(r.coverage.reason) && /wrong by any factor/.test(r.coverage.reason);
+      return r.coverage.level === 'measured' && r.defender.hpLost > 0;
     })());
-  check('sea off-diagonal is \'estimated\' too',
+  check('sea off-diagonal is measured too, from the naval matrix',
     simulate({ attacker: { unit: 'sub', count: 10 }, defender: { unit: 'bb', count: 10 } })
-      .coverage.level === 'estimated');
+      .coverage.level === 'measured');
+  // The warning did not go away, it moved to where it still applies: a cell
+  // that no column covers at all.
+  check('a pairing no column covers still says it could be wrong by any factor',
+    (() => {
+      const r = simulate({ attacker: { unit: 'bal', count: 10 }, defender: { unit: 'sub', count: 10 } });
+      return r.coverage.level !== 'measured';
+    })());
+  check('and a single-reading column says so rather than claiming corroboration',
+    (() => {
+      const r = simulate({ attacker: { unit: 'inf', count: 20 }, defender: { unit: 'int', count: 40 } });
+      return /single reading/.test(r.coverage.reason)
+        && /class_matrix_precision/.test(r.coverage.reason);
+    })());
 }
 check('multi-round downgrades a measured matchup to \'estimated\' and says every reading used 1 round',
   (() => {
@@ -805,11 +847,39 @@ console.log('\n12. composite stacks — replayed against the four measured mixtu
     attacker: { rows: [{ unit: 'inf', count: 10 }, { unit: 'art', count: 40 }] },
     defender: { rows: [{ unit: 'inf', count: 30 }, { unit: 'cav', count: 10 }] },
   });
-  check('coverage judges every pairing, not just the first row of each side',
-    mixedPair.coverage.level === 'estimated', mixedPair.coverage.level);
-  check('and says how many pairings are unmeasured',
-    /3 of 4 unit pairings/.test(mixedPair.coverage.reason),
-    mixedPair.coverage.reason.slice(0, 90));
+  // This pair of checks used to read "the level is estimated" and "3 of 4
+  // pairings are unmeasured", using infantry+artillery against infantry+cavalry
+  // as the example. CLASS_DEFENCE closed all four of those cells, so the
+  // example no longer has anything below measured in it and cannot demonstrate
+  // the defect it was written for.
+  //
+  // The defect was never about those four cells: it was that coverage looked at
+  // row 0 of each side and ignored the rest. So the mechanism is now asserted
+  // directly, against the pairs array, which is a stronger test than the
+  // example ever was -- it holds whatever the record later fills in.
+  const rank = { measured: 0, estimated: 1, unknown: 2 };
+  check('coverage reports the WORST pairing, not the first row of each side',
+    (() => {
+      const worst = mixedPair.coverage.pairs
+        .reduce((w, p) => (rank[p.level] > rank[w] ? p.level : w), 'measured');
+      return mixedPair.coverage.level === worst;
+    })(),
+    `${mixedPair.coverage.level} vs pairs `
+    + mixedPair.coverage.pairs.map((p) => p.level).join('/'));
+  // And a mixture that DOES contain a weaker cell still reports the weaker one
+  // and counts it, which is the half of the behaviour the example carried.
+  const crossPair = simulate({
+    attacker: { rows: [{ unit: 'inf', count: 10 }, { unit: 'art', count: 40 }] },
+    defender: { rows: [{ unit: 'int', count: 30 }, { unit: 'tac', count: 10 }] },
+  });
+  check('a mixture containing an uncorroborated cell reports it, and counts it',
+    crossPair.coverage.level === 'estimated'
+    && /of 4 unit pairings in this battle are not measured/.test(crossPair.coverage.reason),
+    crossPair.coverage.reason.slice(0, 90));
+  check('and every pairing in it was judged, not just the first',
+    crossPair.coverage.pairs.length === 4
+    && crossPair.coverage.pairs.every((p) => p.level === 'estimated'),
+    crossPair.coverage.pairs.map((p) => p.level).join('/'));
   check('the pairing cross-product is exposed for inspection',
     Array.isArray(mixedPair.coverage.pairs) && mixedPair.coverage.pairs.length === 4);
   check('an all-measured mixture is still reported measured',
@@ -1726,6 +1796,237 @@ console.log('\n12j. range — every bisected boundary, and the free bombardment'
 }
 
 // ===========================================================================
+console.log('\n12k. embarkation — a class change, replayed in all three of its parts');
+// ===========================================================================
+// EMBARKED_COEF was modelled and EMBARKED_MAXHP was not, so every embarked
+// pool the app drew was wrong -- by 26x for a heavy tank. And the incoming
+// column was wrong too: an embarked unit is hit as a NAVAL unit, which is
+// where the "naval vs air is 30.0 at sea" reading came from. That figure was a
+// 100% wipe against a pool six times smaller than the unit table implies.
+{
+  // Part one: the pools, read straight off the record.
+  const hp = rows.filter((r) => r.experiment === 'embarked_hp'
+    && r.meta && r.meta.unit && r.meta.detail);
+  let pools = 0;
+  for (const r of hp) {
+    const want = ((r.meta.detail['B.1.1'] || {}).pool);
+    if (want === null || want === undefined) continue;
+    const got = simulate({
+      attacker: { rows: [{ unit: 'cav', count: 5 }] },
+      defender: { rows: [{ unit: r.meta.unit, count: r.meta.count }] },
+      terrain: r.meta.terrain === 'sea' ? 'sea' : 'land',
+      defenderTerrain: r.meta.terrain,
+    });
+    // Pools are reported to 3 significant figures, so compare inside that.
+    check(`${r.meta.count} ${r.meta.unit} in ${r.meta.terrain}: pool ${want}`,
+      Math.abs(got.defender.pool - want) / Math.max(1, want) < 0.005,
+      `got ${got.defender.pool}`);
+    pools += 1;
+  }
+  check('every terrain-by-unit pool was replayed', pools >= 17, String(pools));
+  check('an embarked unit holds a flat 10, whatever it is',
+    EMBARKED_MAXHP === 10);
+
+  // Part two: the class change, from the three attackers whose land and naval
+  // columns differ. This is what decides that embarkation moves a unit's
+  // class rather than just replacing two of its stats.
+  const ec = rows.filter((r) => r.experiment === 'embarked_class' && r.meta
+    && r.meta.detail);
+  let cells = 0;
+  for (const r of ec) {
+    const want = (r.meta.detail['B.1.1'] || {}).lost;
+    if (want === null || want === undefined) continue;
+    const got = simulate({
+      attacker: { rows: [{ unit: r.meta.attacker, count: 10 }] },
+      defender: { rows: [{ unit: r.meta.target, count: 200 }] },
+      terrain: 'land', defenderTerrain: 'sea',
+    });
+    check(`${r.meta.attacker} vs embarked ${r.meta.target}: ${want}`,
+      Math.abs(got.defender.hpLost - want) < 0.05,
+      `got ${got.defender.hpLost.toFixed(2)}`);
+    // And it must land on the naval column, not merely on the right number.
+    check(`  and it is the NAVAL column that produced it`,
+      Math.abs(CLASS_ATTACK[r.meta.attacker].naval * 10 - want) < 0.05,
+      `naval ${CLASS_ATTACK[r.meta.attacker].naval} vs land `
+      + `${CLASS_ATTACK[r.meta.attacker].land}`);
+    cells += 1;
+  }
+  check('all six class-change cells were replayed', cells === 6, String(cells));
+
+  // Part three: the crossed grid, including the cell that decides target
+  // terrain does NOT move a land target's coefficient.
+  const tt = rows.filter((r) => r.experiment === 'target_terrain' && r.meta
+    && r.meta.detail && r.meta.attacker);
+  let grid = 0;
+  for (const r of tt) {
+    const want = (r.meta.detail['B.1.1'] || {}).lost;
+    const pct = (r.meta.detail['B.1.1'] || {}).pct;
+    if (want === null || want === undefined) continue;
+    if ((pct || 0) >= 99.9) continue;      // censored: not a measurement
+    const n = { int: 40, inf: 100, cl: 30, bb: 30, tac: 40 }[r.meta.target];
+    const got = simulate({
+      attacker: { rows: [{ unit: r.meta.attacker, count: r.meta.atk_n || 20 }] },
+      defender: { rows: [{ unit: r.meta.target, count: n }] },
+      terrain: r.meta.atk_terrain, defenderTerrain: r.meta.tgt_terrain,
+    });
+    check(`${r.meta.attacker}@${r.meta.atk_terrain} vs `
+      + `${r.meta.target}@${r.meta.tgt_terrain}: ${want}`,
+      Math.abs(got.defender.hpLost - want) / Math.max(1, want) < 0.01,
+      `got ${got.defender.hpLost === null ? 'withheld' : got.defender.hpLost.toFixed(2)}`);
+    grid += 1;
+  }
+  check('the crossed class-by-terrain grid was replayed', grid >= 5, String(grid));
+
+  // The censored cell must stay refused. It stood for a week as a measurement
+  // and it is the reason this whole section exists.
+  const wiped = rows.filter((r) => r.experiment === 'target_terrain'
+    && ((r.meta.detail || {})['B.1.1'] || {}).pct >= 99.9);
+  check('the wiped cell is on the record AND excluded from the replay',
+    wiped.length >= 1 && NOT_MEASURED.every((g) => g.key !== 'naval_vs_air_terrain'),
+    `${wiped.length} wiped reading(s)`);
+
+  // And the token mismatch that made all this reachable in the first place.
+  check('combatClass speaks CLASS_ATTACK\'s language, not UNITS\'',
+    combatClass('bb', 'sea') === 'naval' && combatClass('inf', 'land') === 'land'
+    && combatClass('int', 'air') === 'air');
+  check('and every UNITS class maps onto a real CLASS_ATTACK column',
+    Object.values(UNITS).every((u) => CLASS_ATTACK.inf[combatClass(u.code, 'land')] !== undefined
+      || u.cls === 'sea'),
+    [...new Set(Object.values(UNITS).map((u) => combatClass(u.code, 'land')))].join(', '));
+  check('a non-naval unit at sea is naval; a naval unit anywhere is naval',
+    combatClass('ht', 'sea') === 'naval' && combatClass('ht', 'debark') === 'naval'
+    && combatClass('int', 'sea') === 'naval' && combatClass('bb', 'land') === 'naval');
+  check('and the naval column is reachable at last — infantry deal 2.0 to a ship',
+    attackCoefficient('inf', 'bb').value === 2.0
+    && attackCoefficient('inf', 'bb').level === 'estimated',
+    JSON.stringify(attackCoefficient('inf', 'bb')));
+}
+
+// ===========================================================================
+console.log('\n12l. the defence matrix — 102 requests, replayed in full');
+// ===========================================================================
+// The defending side had no coefficient table at all. That did not make
+// cross-class results rough, it made them BLANK: a measured attack coefficient
+// and an unmeasured defence one meant the engine withheld the whole battle.
+{
+  const dm = rows.filter((r) => r.experiment === 'defence_matrix'
+    && r.meta && r.meta.detail && r.meta.defender);
+  let cells = 0;
+  const byCell = new Map();
+  for (const r of dm) {
+    const want = (r.meta.detail['A.1.1'] || {}).lost;
+    const pct = (r.meta.detail['A.1.1'] || {}).pct;
+    if (want === null || want === undefined) continue;
+    if ((pct || 0) >= 99.9) continue;               // wiped: not a measurement
+    const t = r.meta.terrain || ['land', 'land'];
+    const got = simulate({
+      attacker: { rows: [{ unit: r.meta.attacker, count: r.meta.atk_n }] },
+      defender: { rows: [{ unit: r.meta.defender, count: r.meta.def_n }] },
+      terrain: t[0], defenderTerrain: t[1],
+    });
+    check(`${r.meta.defender} defending vs ${r.meta.attacker}: ${want}`,
+      got.attacker.hpLost !== null
+      && Math.abs(got.attacker.hpLost - want) / Math.max(1, want) < 0.005,
+      `got ${got.attacker.hpLost === null ? 'withheld' : got.attacker.hpLost.toFixed(2)}`);
+    cells += 1;
+    byCell.set(`${r.meta.defender}:${r.meta.atk_class}`, true);
+  }
+  check('the whole defence sweep was replayed', cells >= 90, String(cells));
+  check('and it covers every defender against every attacker class',
+    byCell.size >= 48, String(byCell.size));
+
+  // The two free corroborations the sweep produced.
+  check('every same-class cell reproduces that unit\'s measured defence diagonal',
+    Object.entries(CLASS_DEFENCE).every(([code, row]) => {
+      const u = UNITS[code];
+      if (!u || u.def === null) return true;
+      const own = u.cls === 'sea' ? 'naval' : u.cls;
+      // The balloon fights on land, so its own diagonal is the LAND cell.
+      const col = code === 'bal' ? 'land' : own;
+      return Math.abs(row[col] - u.def) < 0.05;
+    }),
+    Object.entries(CLASS_DEFENCE)
+      .filter(([c, r]) => UNITS[c] && UNITS[c].def !== null
+        && Math.abs(r[c === 'bal' ? 'land' : (UNITS[c].cls === 'sea' ? 'naval' : UNITS[c].cls)] - UNITS[c].def) >= 0.05)
+      .map(([c]) => c).join(', ') || 'all seventeen agree');
+  check('and the air column reproduces all ten of GROUND_DEFENCE_VS_AIR',
+    Object.entries(GROUND_DEFENCE_VS_AIR)
+      .every(([code, v]) => Math.abs(CLASS_DEFENCE[code].air - v) < 1e-9),
+    Object.entries(GROUND_DEFENCE_VS_AIR)
+      .filter(([c, v]) => Math.abs(CLASS_DEFENCE[c].air - v) >= 1e-9).join(', ') || 'all ten agree');
+  check('every unit has all three defence columns',
+    Object.keys(UNITS).every((c) => CLASS_DEFENCE[c]
+      && ['land', 'air', 'naval'].every((k) => typeof CLASS_DEFENCE[c][k] === 'number')),
+    Object.keys(UNITS).filter((c) => !CLASS_DEFENCE[c]
+      || ['land', 'air', 'naval'].some((k) => typeof CLASS_DEFENCE[c][k] !== 'number')).join(', ') || 'complete');
+
+  // The balloon, which looked like a contradiction in that table and was not.
+  const bc = rows.filter((r) => r.experiment === 'balloon_class' && r.meta.detail);
+  let bal = 0;
+  for (const r of bc) {
+    const want = (r.meta.detail['A.1.1'] || {}).lost;
+    const pct = (r.meta.detail['A.1.1'] || {}).pct;
+    if (want === null || want === undefined || (pct || 0) >= 99.9) continue;
+    const got = simulate({
+      attacker: { rows: [{ unit: 'bal', count: 40 }] },
+      defender: { rows: [{ unit: r.meta.target, count: 40 }] },
+    });
+    check(`a balloon attacking ${r.meta.target} loses ${want}`,
+      Math.abs(got.attacker.hpLost - want) < 0.05,
+      `got ${got.attacker.hpLost === null ? 'withheld' : got.attacker.hpLost.toFixed(2)}`);
+    bal += 1;
+  }
+  check('the balloon attacking-class readings were replayed', bal >= 2, String(bal));
+  check('a balloon on land attacks as a LAND unit',
+    combatClass('bal', 'land') === 'land');
+
+  // The naval air column, which was recorded as unmeasurable and was not.
+  const nac = rows.filter((r) => r.experiment === 'naval_air_column' && r.meta.detail);
+  let ships = 0;
+  for (const r of nac) {
+    const want = (r.meta.detail['B.1.1'] || {}).lost;
+    const pct = (r.meta.detail['B.1.1'] || {}).pct;
+    if (want === null || want === undefined || (pct || 0) >= 99.9) continue;
+    const got = simulate({
+      attacker: { rows: [{ unit: r.meta.attacker, count: 20 }] },
+      defender: { rows: [{ unit: 'int', count: 200 }] },
+      terrain: 'sea', defenderTerrain: 'land',
+    });
+    check(`${r.meta.attacker} vs fighters on land: ${want}`,
+      Math.abs(got.defender.hpLost - want) < 0.05,
+      `got ${got.defender.hpLost === null ? 'withheld' : got.defender.hpLost.toFixed(2)}`);
+    ships += 1;
+  }
+  check('all three ships have an air column now', ships === 3, String(ships));
+  check('and CLASS_ATTACK carries it', ['sub', 'cl', 'bb']
+    .every((c) => typeof CLASS_ATTACK[c].air === 'number'));
+
+  // Embarked coefficients: a flat 1.0 everywhere EXCEPT air.
+  const ec2 = rows.filter((r) => r.experiment === 'embarked_convoy' && r.meta.detail);
+  let emb = 0;
+  for (const r of ec2) {
+    const want = (r.meta.detail['B.1.1'] || {}).lost;
+    const pct = (r.meta.detail['B.1.1'] || {}).pct;
+    if (want === null || want === undefined || (pct || 0) >= 99.9) continue;
+    const got = simulate({
+      attacker: { rows: [{ unit: 'inf', count: 40 }] },
+      defender: { rows: [{ unit: r.meta.target, count: r.meta.target === 'bb' ? 60 : 200 }] },
+      terrain: 'sea', defenderTerrain: r.meta.tgt_terrain,
+    });
+    check(`embarked infantry vs ${r.meta.target}: ${want}`,
+      Math.abs(got.defender.hpLost - want) < 0.05,
+      `got ${got.defender.hpLost === null ? 'withheld' : got.defender.hpLost.toFixed(2)}`);
+    emb += 1;
+  }
+  check('all three embarked-attack cells were replayed', emb === 3, String(emb));
+  check('an embarked unit is NOT simply a convoy — the naval cell differs',
+    EMBARKED_ATTACK.naval === 1.0 && CLASS_ATTACK.convoy.naval === 0.5,
+    `embarked ${EMBARKED_ATTACK.naval} vs convoy ${CLASS_ATTACK.convoy.naval}`);
+  check('and it reads the same in both directions',
+    ['land', 'air', 'naval'].every((k) => EMBARKED_ATTACK[k] === EMBARKED_DEFENCE[k]));
+}
+
+// ===========================================================================
 console.log('\n14. coverage of the record itself');
 // ===========================================================================
 {
@@ -1739,6 +2040,8 @@ console.log('\n14. coverage of the record itself');
     'edges', 'bldg_caps', 'last_edges', 'terrain', 'position', 'close_out', 'naval_matrix', 'air_matrix',
     'land_attacks_air', 'air_defends_land', 'sea_vs_land', 'land_vs_sea',
     'range_roster', 'return_fire', 'mixed_range',
+    'target_terrain', 'embarked_hp', 'embarked_class',
+    'defence_matrix', 'balloon_class', 'naval_air_column', 'embarked_convoy',
     // Heroes are now modelled and replayed above: the sweeps that measured
     // them are physics the engine reproduces, not declared omissions.
     'heroes', 'hero_scaling', 'hero_table', 'hero_levels', 'air_rounds'];

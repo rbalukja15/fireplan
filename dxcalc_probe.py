@@ -5250,6 +5250,600 @@ def exp_mixed_range(p: Probe) -> None:
     except (BareFormReturned, ValueError) as e:
         print(f"  no battle: {e}")
 
+
+# Target stacks sized so the reading cannot be censored: each pool comfortably
+# exceeds the largest output any attacker below can produce against it.
+TERRAIN_TARGETS = {"int": 40, "inf": 100, "cl": 30, "bb": 30, "tac": 40}
+
+
+def _coef_against(p: Probe, atk: str, atk_terrain: str, tgt: str,
+                  tgt_terrain: str, atk_n: int = 20) -> float | None:
+    """Damage per effective attacking unit, or None if the reading is censored.
+
+    A wiped defender reports its own pool rather than what it was hit with, so
+    that number is not a measurement of the attacker and must be refused rather
+    than written down.
+    """
+    n = TERRAIN_TARGETS.get(tgt, 40)
+    ov = settings()
+    ov.update(duel(1, atk, atk_n, tgt, n,
+                   atk_terrain=atk_terrain, def_terrain=tgt_terrain))
+    try:
+        p.submit(ov)
+    except (BareFormReturned, ValueError) as e:
+        print(f"    ! {atk}@{atk_terrain} vs {tgt}@{tgt_terrain}: {e}",
+              file=sys.stderr)
+        record("target_terrain", {"attacker": atk, "atk_terrain": atk_terrain,
+                                  "target": tgt, "tgt_terrain": tgt_terrain,
+                                  "refused": True}, {})
+        return None
+    d = dict(p.last_details)
+    b = d.get("B.1.1") or {}
+    record("target_terrain", {"attacker": atk, "atk_terrain": atk_terrain,
+                              "target": tgt, "tgt_terrain": tgt_terrain,
+                              "atk_n": atk_n, "detail": d},
+           {k: (v or {}).get("lost") for k, v in d.items()})
+    if (b.get("pct") or 0) >= 99.9:
+        print(f"    ! {atk} vs {tgt}@{tgt_terrain}: DEFENDER WIPED "
+              f"({b.get('pct')}%) — reading discarded", file=sys.stderr)
+        return None
+    if b.get("lost") is None:
+        return None
+    return b["lost"] / effective_units(atk_n)
+
+
+def exp_target_terrain(p: Probe) -> None:
+    """Is the coefficient column a target CLASS or a target TERRAIN?
+
+    CLASS_ATTACK holds one column per target class, and every cell in it was
+    read through TERRAIN_PAIR -- a table that picks the terrain FROM the class.
+    Land targets were read on land, air targets in the air, naval targets at
+    sea. So in every cell of that matrix the two moved together, and nothing
+    measured so far can tell them apart.
+
+    The close-out sweep is what made this urgent. A battleship deals 30.0 per
+    effective unit to fighters in SEA terrain and 6.0 to the same fighters on
+    LAND -- a factor of five from the target's terrain alone, with its class
+    held fixed. Either that is a naval-specific quirk or the whole air and
+    naval columns of CLASS_ATTACK are terrain effects wearing a class label.
+
+    Four cells decide it, because class and terrain are crossed rather than
+    varied one at a time:
+
+        target       on LAND      at SEA
+        int (air)      a            b
+        inf (land)     c            d
+
+      a == c and b == d, a != b   ->  TERRAIN decides; the class column is a
+                                      relabelled terrain column
+      a == b and c == d, a != c   ->  CLASS decides; the sea reading was a
+                                      naval quirk
+      all four differ            ->  both matter and the table needs two axes
+    """
+    print("\n  1. class crossed with terrain, attacker held at battleship\n")
+    print(f"  {'target':6} {'class':6} {'terrain':8} {'per eff. unit':>14}")
+    grid: dict[tuple[str, str], float] = {}
+    for tgt, cls in (("int", "air"), ("inf", "land")):
+        for terr in ("land", "sea"):
+            v = _coef_against(p, "bb", "sea", tgt, terr)
+            if v is not None:
+                grid[(tgt, terr)] = v
+            print(f"  {tgt:6} {cls:6} {terr:8} "
+                  + (f"{v:14.4f}" if v is not None else f"{'refused':>14}"))
+
+    a = grid.get(("int", "land"))
+    b = grid.get(("int", "sea"))
+    c = grid.get(("inf", "land"))
+    d = grid.get(("inf", "sea"))
+    print()
+    if None in (a, b, c, d):
+        print("  A cell is missing, so the question is NOT decided. Nothing "
+              "goes into CLASS_ATTACK\n  on a partial grid.")
+    else:
+        same = lambda x, y: abs(x - y) < 0.02 * max(x, y, 1.0)
+        if same(a, c) and same(b, d) and not same(a, b):
+            print("  TERRAIN decides. Two different classes read the same "
+                  "figure in the same terrain,\n  and the same class reads "
+                  "different figures in different terrain. The air and naval\n"
+                  "  columns of CLASS_ATTACK are terrain columns with a class "
+                  "label on them.")
+        elif same(a, b) and same(c, d) and not same(a, c):
+            print("  CLASS decides, and the battleship-vs-fighters reading was "
+                  "a naval quirk rather\n  than a general rule.")
+        elif same(a, b) and same(c, d) and same(a, c):
+            print("  NEITHER moves the figure here. That contradicts the "
+                  "close-out reading and means\n  the rig, not the game, "
+                  "produced one of the two.")
+        else:
+            print("  BOTH matter: the table needs a target-terrain axis as "
+                  "well as a class one.")
+
+    print("\n  2. the same crossing from an AIR attacker, to check it "
+          "generalises\n")
+    print(f"  {'attacker':8} {'target':6} {'terrain':8} {'per eff. unit':>14}")
+    for atk, atk_terr in (("int", "air"), ("inf", "land")):
+        for tgt, terr in (("inf", "land"), ("inf", "sea"),
+                          ("int", "land"), ("int", "sea")):
+            if atk == tgt:
+                continue
+            v = _coef_against(p, atk, atk_terr, tgt, terr)
+            print(f"  {atk:8} {tgt:6} {terr:8} "
+                  + (f"{v:14.4f}" if v is not None else f"{'refused':>14}"))
+
+
+def exp_embarked_hp(p: Probe) -> None:
+    """The pools in the terrain grid, which nobody was reading.
+
+    EMBARKED_COEF says a non-naval unit in sea terrain attacks at a flat 1.0.
+    That is measured and modelled. What went unnoticed is sitting in the same
+    responses: the POOL changes too.
+
+        40 fighters on land   pool 2400   ->  60 HP each, the table value
+        40 fighters at sea    pool  400   ->  10 HP each
+        100 infantry on land  pool 2000   ->  20 HP each, the table value
+        100 infantry at sea   pool 1000   ->  10 HP each
+
+    A flat 10, the same for a fighter as for a rifleman. So embarkation
+    replaces BOTH of a unit's numbers, and the app models one of them -- every
+    embarked pool it draws is wrong, by 6x for a fighter.
+
+    It also explains a reading this project nearly wrote down as physics. The
+    battleship-vs-fighters cell at sea was recorded as 30.0 per effective unit;
+    it was a 100% wipe, lost exactly equal to a pool that is six times smaller
+    than anyone thought. Sizing a target stack by the table's max HP guarantees
+    that wipe in sea terrain.
+    """
+    print("\n  1. per-unit HP by terrain, read off the pools\n")
+    print(f"  {'unit':6} {'terrain':8} {'count':>5} {'pool':>9} "
+          f"{'per unit':>9} {'table':>7}")
+    for unit in ("inf", "cav", "ht", "int", "tac", "cl", "bb"):
+        for terr in ("land", "sea", "debark"):
+            n = 20
+            # A naval unit is refused on land; a land unit is refused in air.
+            # Neither refusal is news, and neither is a reading.
+            ov = settings()
+            atk = "bb" if terr == "sea" else "inf"
+            if unit in ("cl", "bb") and terr != "sea":
+                continue
+            if atk == unit:
+                atk = "cav" if terr != "sea" else "sub"
+            ov.update(duel(1, atk, 5, unit, n,
+                           atk_terrain="sea" if terr == "sea" else "land",
+                           def_terrain=terr))
+            try:
+                p.submit(ov)
+            except (BareFormReturned, ValueError) as e:
+                print(f"  {unit:6} {terr:8} {n:>5} {'refused':>9}   {e}"[:110])
+                continue
+            d = dict(p.last_details)
+            b = d.get("B.1.1") or {}
+            record("embarked_hp", {"unit": unit, "terrain": terr, "count": n,
+                                   "detail": d},
+                   {k: (v or {}).get("lost") for k, v in d.items()})
+            pool = b.get("pool")
+            if pool is None:
+                print(f"  {unit:6} {terr:8} {n:>5} {'—':>9}")
+                continue
+            per = pool / n
+            print(f"  {unit:6} {terr:8} {n:>5} {pool:9.1f} {per:9.2f} "
+                  f"{MEASURED_UNITS.get(unit, (0,))[0]:7.1f}")
+
+    print("\n  2. the naval-vs-air cell, with a stack that can survive it\n")
+    # int at sea holds 10 HP each, so 200 of them is a 2000-point pool. The
+    # attacker is cut to 10 so even a coefficient of 100 could not wipe it.
+    print(f"  {'target terrain':14} {'lost':>10} {'pct':>7} {'per eff. unit':>14}")
+    for terr in ("land", "sea", "air"):
+        ov = settings()
+        ov.update(duel(1, "bb", 10, "int", 200,
+                       atk_terrain="sea", def_terrain=terr))
+        try:
+            p.submit(ov)
+        except (BareFormReturned, ValueError) as e:
+            print(f"  {terr:14} {'—':>10}   {e}"[:110])
+            record("embarked_hp", {"probe": "bb_vs_air", "terrain": terr,
+                                   "refused": True}, {})
+            continue
+        d = dict(p.last_details)
+        b = d.get("B.1.1") or {}
+        record("embarked_hp", {"probe": "bb_vs_air", "terrain": terr,
+                               "detail": d},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        if b.get("lost") is None:
+            print(f"  {terr:14} {'—':>10}")
+            continue
+        if (b.get("pct") or 0) >= 99.9:
+            print(f"  {terr:14} {b['lost']:10.2f} {b['pct']:7.1f}  WIPED — "
+                  f"still censored, do not record")
+            continue
+        print(f"  {terr:14} {b['lost']:10.2f} {b['pct']:7.2f} "
+              f"{b['lost'] / effective_units(10):14.4f}")
+
+
+def exp_embarked_class(p: Probe) -> None:
+    """An embarked target: is it hit as LAND, or as NAVAL?
+
+    A battleship deals 40.0 per effective unit to fighters at sea, which is
+    also what it deals to infantry and to another battleship -- so it cannot
+    tell the three apart and decides nothing. The attackers that CAN are the
+    ones whose land and naval columns differ:
+
+        attacker   land column   naval column
+        cav           15.0           8.0
+        lart           5.0           1.0
+        ht            45.0          23.0
+
+    Each is fired at infantry at sea and at fighters at sea. If the figure
+    lands on the naval column, embarkation moves a unit into the naval class
+    for incoming damage as well as replacing its attack with 1.0 and its HP
+    with 10 -- one rule with three consequences. If it lands on the land
+    column, the class is unchanged and only the two stats are replaced.
+
+    Targets are 200 strong because an embarked unit holds ten HP whatever it
+    is, and a stack sized off the unit table's max HP is the exact mistake
+    that censored the last naval-vs-air reading.
+    """
+    expect = {"cav": (15.0, 8.0), "lart": (5.0, 1.0), "ht": (45.0, 23.0)}
+    print(f"\n  {'attacker':8} {'target':10} {'per eff. unit':>14} "
+          f"{'land col':>9} {'naval col':>10}  verdict")
+    votes = {"land": 0, "naval": 0, "neither": 0}
+    for atk, (land_c, naval_c) in expect.items():
+        for tgt in ("inf", "int"):
+            ov = settings()
+            ov.update(duel(1, atk, 10, tgt, 200,
+                           atk_terrain="land", def_terrain="sea"))
+            try:
+                p.submit(ov)
+            except (BareFormReturned, ValueError) as e:
+                print(f"  {atk:8} {tgt + '@sea':10} {'refused':>14}   {e}"[:110])
+                continue
+            d = dict(p.last_details)
+            b = d.get("B.1.1") or {}
+            record("embarked_class", {"attacker": atk, "target": tgt,
+                                      "tgt_terrain": "sea", "detail": d},
+                   {k: (v or {}).get("lost") for k, v in d.items()})
+            if b.get("lost") is None:
+                continue
+            if (b.get("pct") or 0) >= 99.9:
+                print(f"  {atk:8} {tgt + '@sea':10} {'WIPED':>14}  discarded")
+                continue
+            per = b["lost"] / effective_units(10)
+            near = lambda x: abs(per - x) < 0.05 * max(x, 1.0)
+            verdict = ("NAVAL column" if near(naval_c)
+                       else "land column" if near(land_c) else "NEITHER")
+            votes["naval" if near(naval_c) else
+                  "land" if near(land_c) else "neither"] += 1
+            print(f"  {atk:8} {tgt + '@sea':10} {per:14.4f} {land_c:9.1f} "
+                  f"{naval_c:10.1f}  {verdict}")
+    print()
+    if votes["naval"] and not votes["land"] and not votes["neither"]:
+        print("  EMBARKATION IS A CLASS CHANGE. A unit in sea or debark "
+              "terrain is hit as a naval\n  unit, attacks at a flat 1.0 and "
+              "holds a flat 10 HP — one rule, three consequences.")
+    elif votes["land"] and not votes["naval"]:
+        print("  The class is UNCHANGED; embarkation replaces the two stats "
+              "and nothing else.")
+    else:
+        print(f"  Split verdict {votes} — not decided, nothing goes in the "
+              f"table.")
+
+
+# One attacker per class, plus a second for the flatness check. Each is sized
+# large enough that the DEFENDER's output cannot wipe it, because a wiped
+# attacker reports its own pool and that is not a measurement of the defender.
+DEF_PROBE_ATTACKERS = {
+    "land": [("inf", 200), ("ht", 60)],
+    "air": [("int", 100), ("tac", 100)],
+    "naval": [("bb", 60), ("cl", 100)],
+}
+DEF_PROBE_N = 40          # defender count, fixed so E() is one constant
+
+
+def _defence_cell(p: Probe, defender: str, atk: str, atk_n: int,
+                  acls: str, dcls: str) -> float | None:
+    """The DEFENDER's coefficient, read off the attacker's losses.
+
+    attacker_lost = coef x E(defender count) x m(1) -- the defending side is
+    not attenuated even when it is losing badly, which is what makes this
+    readable in one request. A wiped attacker is refused rather than recorded.
+    """
+    terr = TERRAIN_PAIR[(acls, dcls)]
+    ov = settings()
+    ov.update(duel(1, atk, atk_n, defender, DEF_PROBE_N,
+                   atk_terrain=terr[0], def_terrain=terr[1]))
+    try:
+        p.submit(ov)
+    except (BareFormReturned, ValueError) as e:
+        print(f"    ! {atk} vs {defender}: {e}"[:110], file=sys.stderr)
+        record("defence_matrix", {"defender": defender, "attacker": atk,
+                                  "atk_class": acls, "refused": True}, {})
+        return None
+    d = dict(p.last_details)
+    a = d.get("A.1.1") or {}
+    record("defence_matrix", {"defender": defender, "attacker": atk,
+                              "atk_class": acls, "def_class": dcls,
+                              "atk_n": atk_n, "def_n": DEF_PROBE_N,
+                              "terrain": list(terr), "detail": d},
+           {k: (v or {}).get("lost") for k, v in d.items()})
+    if a.get("lost") is None:
+        return None
+    if (a.get("pct") or 0) >= 99.9:
+        print(f"    ! {atk} vs {defender}: ATTACKER WIPED ({a.get('pct')}%) — "
+              f"reading discarded", file=sys.stderr)
+        return None
+    return a["lost"] / effective_units(DEF_PROBE_N)
+
+
+def exp_defence_matrix(p: Probe) -> None:
+    """The defending side's coefficient table, which has never existed.
+
+    CLASS_ATTACK is a full 17 x 3 table and there is no equivalent for the
+    other half of a battle. The consequence is not a rough number, it is no
+    number at all: a cross-class pairing has a measured attack coefficient and
+    an unmeasured defence one, so the app withholds the entire result. Land
+    attacking air -- one of the commonest things a player would type in -- has
+    always come back blank for exactly this reason.
+
+    Four cells fell out of the terrain sweep and hinted at the shape. A Fighter
+    defends at 5.0 against infantry AND at 5.0 against a battleship; infantry
+    defend at 2.5 against a battleship. Flat within an attacker class, which is
+    the same shape the attack table has. That is a hint from four cells, not a
+    law, so this sweep reads TWO attackers per class for every defender rather
+    than one, and says so when they disagree.
+    """
+    cls_of = {u: c for c, us in UNIT_CLASSES.items() for u in us}
+    print(f"\n  {'defender':8} {'class':6} " + " ".join(f"{c:>18}" for c in
+                                                        ("vs land", "vs air",
+                                                         "vs naval")))
+    table: dict[str, dict[str, float]] = {}
+    disagreements = 0
+    for defender in ROSTER_ORDER:
+        dcls = cls_of.get(defender)
+        if not dcls:
+            continue
+        row: dict[str, float] = {}
+        cells: list[str] = []
+        for acls in ("land", "air", "naval"):
+            vals = []
+            for atk, atk_n in DEF_PROBE_ATTACKERS[acls]:
+                if atk == defender:
+                    continue
+                v = _defence_cell(p, defender, atk, atk_n, acls, dcls)
+                if v is not None:
+                    vals.append((atk, v))
+            if not vals:
+                cells.append(f"{'—':>18}")
+                continue
+            lo = min(v for _, v in vals)
+            hi = max(v for _, v in vals)
+            flat = (hi - lo) <= 0.02 * max(hi, 1.0)
+            if not flat:
+                disagreements += 1
+            row[acls] = (lo + hi) / 2
+            cells.append(f"{row[acls]:12.3f}" + ("  flat" if flat or len(vals) < 2
+                                                 else "  SPLIT"))
+        table[defender] = row
+        print(f"  {defender:8} {dcls:6} " + " ".join(cells))
+
+    print("\n  CLASS_DEFENCE = " + json.dumps(
+        {k: {c: round(v, 4) for c, v in r.items()} for k, r in table.items()},
+        sort_keys=True))
+    if disagreements:
+        print(f"\n  {disagreements} cell(s) where two attackers of the SAME "
+              f"class read different figures.\n  The defending side is then "
+              f"NOT flat within an attacker class, and a single\n  column per "
+              f"class is the wrong shape for it.")
+    else:
+        print("\n  Every cell agreed across two independent attackers of the "
+              "same class. The defending\n  side has the same shape as the "
+              "attacking one: flat within a class, changing between.")
+
+
+def exp_defence_gaps(p: Probe) -> None:
+    """The five defence cells TERRAIN_PAIR refused, retried in a terrain that runs.
+
+    Same trap, fourth and fifth time. TERRAIN_PAIR sends a naval attacker
+    against an air defender as sea/air, and sea/air aborts the batch -- so
+    three air units came back empty and would have been written down as "the
+    server will not run it" if this project had not already made that mistake
+    three times. It runs perfectly as sea/LAND, which is also the terrain the
+    attack table's air column was read in, so the two halves match.
+
+    The Balloon is refused in air terrain outright and is read on land, as
+    every other balloon reading is. A naval attacker cannot come ashore, so its
+    cell is sea/land like the others.
+    """
+    print(f"\n  {'defender':8} {'attacker':8} {'terrain':10} "
+          f"{'per eff. unit':>14}")
+    out: dict[str, dict[str, float]] = {}
+    probes = [("int", "bb", 60, "naval"), ("int", "cl", 100, "naval"),
+              ("tac", "bb", 60, "naval"), ("tac", "cl", 100, "naval"),
+              ("zep", "bb", 60, "naval"), ("zep", "cl", 100, "naval"),
+              ("bal", "int", 100, "air"), ("bal", "tac", 100, "air"),
+              ("bal", "bb", 60, "naval"), ("bal", "cl", 100, "naval")]
+    for defender, atk, atk_n, acls in probes:
+        terr = ("sea" if acls == "naval" else "air", "land")
+        ov = settings()
+        ov.update(duel(1, atk, atk_n, defender, DEF_PROBE_N,
+                       atk_terrain=terr[0], def_terrain=terr[1]))
+        try:
+            p.submit(ov)
+        except (BareFormReturned, ValueError) as e:
+            print(f"  {defender:8} {atk:8} {'/'.join(terr):10} "
+                  f"{'refused':>14}  {e}"[:120])
+            record("defence_matrix", {"defender": defender, "attacker": atk,
+                                      "atk_class": acls, "retry": True,
+                                      "refused": True}, {})
+            continue
+        d = dict(p.last_details)
+        a = d.get("A.1.1") or {}
+        record("defence_matrix", {"defender": defender, "attacker": atk,
+                                  "atk_class": acls, "def_class": "air",
+                                  "atk_n": atk_n, "def_n": DEF_PROBE_N,
+                                  "terrain": list(terr), "retry": True,
+                                  "detail": d},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        if a.get("lost") is None:
+            print(f"  {defender:8} {atk:8} {'/'.join(terr):10} {'—':>14}")
+            continue
+        if (a.get("pct") or 0) >= 99.9:
+            print(f"  {defender:8} {atk:8} {'/'.join(terr):10} "
+                  f"{'WIPED':>14}  discarded")
+            continue
+        v = a["lost"] / effective_units(DEF_PROBE_N)
+        out.setdefault(defender, {}).setdefault(acls, []).append(v) \
+            if False else None
+        out.setdefault(defender, {})[f"{acls}:{atk}"] = v
+        print(f"  {defender:8} {atk:8} {'/'.join(terr):10} {v:14.4f}")
+    print("\n  " + json.dumps(out, sort_keys=True))
+    for defender, cells in sorted(out.items()):
+        by_cls: dict[str, list[float]] = {}
+        for k, v in cells.items():
+            by_cls.setdefault(k.split(":")[0], []).append(v)
+        for acls, vals in by_cls.items():
+            if len(vals) > 1 and max(vals) - min(vals) > 0.02 * max(vals):
+                print(f"  ! {defender} vs {acls}: two attackers disagree "
+                      f"{vals} — not flat, do not record a single column")
+
+
+def exp_balloon_class(p: Probe) -> None:
+    """What class does a BALLOON attack as? The defence table disagrees with itself.
+
+    CLASS_DEFENCE says a balloon defends at 10.0 against air attackers, read
+    from a fighter and a bomber which agreed exactly. It also says 3.0 against
+    land attackers, read from infantry and a heavy tank which agreed exactly.
+    And the balloon's own diagonal -- balloon attacking balloon, in land
+    terrain, the only terrain the server will run it in -- is 3.0.
+
+    3.0 is the LAND column. So either the balloon's air column is not flat, or
+    a balloon in land terrain attacks as a land unit, and those two readings of
+    the same number mean very different things.
+
+    One request separates them. A balloon attacking infantry loses
+
+        5.0  x E(40) = 166.67   if it counts as a LAND attacker
+        0.4  x E(40) =  13.33   if it counts as an AIR attacker
+
+    which is not a distinction that needs a tolerance.
+    """
+    print(f"\n  {'target':8} {'balloon lost':>13} {'if land':>9} "
+          f"{'if air':>8}  verdict")
+    verdicts = []
+    for tgt in ("inf", "ht", "bal"):
+        ov = settings()
+        ov.update(duel(1, "bal", 40, tgt, 40,
+                       atk_terrain="land", def_terrain="land"))
+        try:
+            p.submit(ov)
+        except (BareFormReturned, ValueError) as e:
+            print(f"  {tgt:8} {'refused':>13}  {e}"[:100])
+            continue
+        d = dict(p.last_details)
+        a = d.get("A.1.1") or {}
+        record("balloon_class", {"target": tgt, "detail": d},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        if a.get("lost") is None or (a.get("pct") or 0) >= 99.9:
+            print(f"  {tgt:8} {'wiped/none':>13}  discarded")
+            continue
+        e40 = effective_units(40)
+        # The defender's own table entry, both ways round.
+        land_c, air_c = {"inf": (5.0, 0.4), "ht": (45.0, 4.0),
+                         "bal": (3.0, 10.0)}[tgt]
+        per = a["lost"] / e40
+        near = lambda x: abs(per - x) < 0.03 * max(x, 1.0)
+        v = ("LAND attacker" if near(land_c) else
+             "AIR attacker" if near(air_c) else "NEITHER")
+        verdicts.append(v)
+        print(f"  {tgt:8} {a['lost']:13.2f} {land_c * e40:9.2f} "
+              f"{air_c * e40:8.2f}  {v} (read {per:.3f})")
+    print()
+    if verdicts and all(v == "LAND attacker" for v in verdicts):
+        print("  A BALLOON IN LAND TERRAIN ATTACKS AS A LAND UNIT. Its own "
+              "diagonal of 3.0 is the\n  LAND column of CLASS_DEFENCE, not a "
+              "second and smaller air reading — the table\n  is flat after "
+              "all, and the balloon is simply not in the air when it fights.")
+    elif verdicts and all(v == "AIR attacker" for v in verdicts):
+        print("  It attacks as an AIR unit, so the balloon's air defence "
+              "column is NOT flat: 10.0\n  from a fighter or a bomber, 3.0 "
+              "from another balloon. One column cannot hold both.")
+    else:
+        print(f"  Mixed or unreadable: {verdicts}. Nothing goes in the table.")
+
+
+def exp_embarked_is_convoy(p: Probe) -> None:
+    """Two loose ends that look like the same law.
+
+    ONE. CLASS_ATTACK has no air column for sub, cl or bb, because a naval
+    stack against an air one was recorded as something the server refuses. It
+    does not refuse it; sea/air aborts and sea/land runs. A battleship reads
+    6.0 against fighters on land, twice, so the column exists and is simply
+    missing.
+
+    TWO. EMBARKED_COEF says an embarked unit attacks at a flat 1.0 and
+    EMBARKED_MAXHP says it holds 10 HP. Its DEFENCE was set to that same flat
+    1.0, and two readings say otherwise:
+
+        embarked fighters answering infantry   1.0 per effective unit
+        embarked infantry answering a fighter  0.5 per effective unit
+
+    1.0 and 0.5 are the land and air columns of the CONVOY. The convoy is also
+    where the flat 1.0 attack came from -- an embarked unit was described from
+    the start as fighting exactly as well as a convoy. So the rule may not be
+    two constants at all: it may be that an embarked unit IS a convoy, in both
+    directions and against every class. That predicts an embarked attacker
+    deals 0.5 against air and naval targets rather than 1.0, which is the cell
+    nobody has ever sent.
+    """
+    print("\n  1. the naval air column, in the terrain that runs\n")
+    print(f"  {'attacker':8} {'per eff. unit':>14}")
+    for atk in ("sub", "cl", "bb"):
+        ov = settings()
+        ov.update(duel(1, atk, 20, "int", 200,
+                       atk_terrain="sea", def_terrain="land"))
+        try:
+            p.submit(ov)
+        except (BareFormReturned, ValueError) as e:
+            print(f"  {atk:8} {'refused':>14}  {e}"[:100])
+            continue
+        d = dict(p.last_details)
+        b = d.get("B.1.1") or {}
+        record("naval_air_column", {"attacker": atk, "detail": d},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        if b.get("lost") is None or (b.get("pct") or 0) >= 99.9:
+            print(f"  {atk:8} {'wiped/none':>14}  discarded")
+            continue
+        print(f"  {atk:8} {b['lost'] / effective_units(20):14.4f}")
+
+    print("\n  2. does an embarked attacker deal 1.0, or a convoy's column?\n")
+    print(f"  {'target':10} {'terrain':8} {'per eff. unit':>14} "
+          f"{'flat 1.0':>9} {'convoy':>7}")
+    # 40 embarked infantry attacking, so E(40) = 33.33 and the two hypotheses
+    # are 33.33 apart from each other at every target.
+    for tgt, tterr, convoy_c in (("inf", "land", 1.0), ("int", "land", 0.5),
+                                 ("bb", "sea", 0.5)):
+        ov = settings()
+        ov.update(duel(1, "inf", 40, tgt, 200 if tgt != "bb" else 60,
+                       atk_terrain="sea", def_terrain=tterr))
+        try:
+            p.submit(ov)
+        except (BareFormReturned, ValueError) as e:
+            print(f"  {tgt:10} {tterr:8} {'refused':>14}  {e}"[:100])
+            continue
+        d = dict(p.last_details)
+        b = d.get("B.1.1") or {}
+        record("embarked_convoy", {"target": tgt, "tgt_terrain": tterr,
+                                   "detail": d},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        if b.get("lost") is None or (b.get("pct") or 0) >= 99.9:
+            print(f"  {tgt:10} {tterr:8} {'wiped/none':>14}  discarded")
+            continue
+        per = b["lost"] / effective_units(40)
+        near = lambda x: abs(per - x) < 0.03 * max(x, 1.0)
+        verdict = ("CONVOY column" if near(convoy_c) and convoy_c != 1.0
+                   else "flat 1.0 (= convoy land)" if near(1.0)
+                   else "NEITHER")
+        print(f"  {tgt:10} {tterr:8} {per:14.4f} {1.0:9.1f} {convoy_c:7.1f}"
+              f"  {verdict}")
+
 # Every (hero, unit) pair with a measured OUTPUT buff, and the level cap to
 # sweep to. Read with a SINGLE-TYPE stack, which needs no baseline subtraction
 # and cannot be contaminated by another curve.
@@ -6323,6 +6917,13 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "range_roster": exp_range_roster,
     "return_fire": exp_return_fire,
     "mixed_range": exp_mixed_range,
+    "target_terrain": exp_target_terrain,
+    "embarked_hp": exp_embarked_hp,
+    "embarked_class": exp_embarked_class,
+    "defence_matrix": exp_defence_matrix,
+    "defence_gaps": exp_defence_gaps,
+    "balloon_class": exp_balloon_class,
+    "embarked_is_convoy": exp_embarked_is_convoy,
     "mixed_stacks": exp_mixed_stacks,
     "heroes": exp_heroes,
     "stack_limits": exp_stack_limits,

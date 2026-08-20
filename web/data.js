@@ -159,6 +159,56 @@ export const AIR_ATTACK_VS_GROUND = {
 
 // A ground unit's defence output while an air stack attacks it.
 // NOT the same as a ground unit attacking air, which is unmeasured.
+// THE DEFENDING SIDE'S COEFFICIENT TABLE, the mirror of CLASS_ATTACK. For a
+// long time this did not exist, and the consequence was not a rough number but
+// no number at all: a cross-class pairing had a measured attack coefficient and
+// an unmeasured defence one, so the engine withheld the whole result. Land
+// attacking air -- one of the commonest things a player would type in -- came
+// back blank for exactly that reason.
+//
+// Read off the ATTACKER's losses, which works in one request because the
+// defending side is not attenuated even when it is losing badly:
+//
+//     attacker_lost = coef x E(defender count) x m(1)
+//
+// TWO attackers of each class against every defender, 102 requests, and every
+// single cell agreed between them -- so the defending side has the same shape
+// as the attacking one: flat within an attacker class, changing between them.
+// That was a hypothesis from four cells before this sweep, not a law.
+//
+// Two independent checks came out of it for free. Every same-class cell
+// reproduces that unit's measured defence diagonal exactly, all seventeen of
+// them. And the air column reproduces all ten values of GROUND_DEFENCE_VS_AIR
+// below, which was read by different attackers in a different sweep.
+//
+// The naval-vs-air cells are read as sea/LAND. TERRAIN_PAIR sends that pairing
+// as sea/air, which aborts the batch -- the same trap that produced three
+// separate "the server will not run it" findings. sea/land is also the terrain
+// the attack table's air column was read in, so the two halves match.
+export const CLASS_DEFENCE = {
+  inf:    { land: 5.0,  air: 0.4,  naval: 2.5 },
+  cav:    { land: 7.5,  air: 1.0,  naval: 4.0 },
+  ac:     { land: 12.0, air: 8.0,  naval: 6.0 },
+  lart:   { land: 1.0,  air: 0.2,  naval: 0.2 },
+  art:    { land: 2.7,  air: 0.3,  naval: 2.7 },
+  rrg:    { land: 6.7,  air: 0.7,  naval: 6.7 },
+  lt:     { land: 30.0, air: 3.0,  naval: 15.0 },
+  ht:     { land: 45.0, air: 4.0,  naval: 23.0 },
+  convoy: { land: 1.0,  air: 0.5,  naval: 0.5 },
+  st:     { land: 6.3,  air: 1.0,  naval: 0.8 },
+  bal:    { land: 3.0,  air: 10.0, naval: 3.0 },
+  int:    { land: 5.0,  air: 20.0, naval: 5.0 },
+  tac:    { land: 30.0, air: 3.0,  naval: 30.0 },
+  zep:    { land: 5.0,  air: 5.0,  naval: 5.0 },
+  sub:    { land: 2.0,  air: 1.0,  naval: 40.0 },
+  cl:     { land: 10.0, air: 12.5, naval: 10.0 },
+  bb:     { land: 40.0, air: 6.0,  naval: 40.0 },
+};
+
+// Superseded by CLASS_DEFENCE's air column, which reproduces every one of
+// these from different attackers. Kept because it is an independent reading of
+// the same ten numbers, and a second source that agrees is worth more than a
+// tidy file.
 export const GROUND_DEFENCE_VS_AIR = {
   inf: 0.4, cav: 1.0, ac: 8.0, lart: 0.2, art: 0.3,
   rrg: 0.7, lt: 3.0, ht: 4.0, convoy: 0.5, st: 1.0,
@@ -186,6 +236,28 @@ export const BUILDING_DAMAGE_PER_EFFECTIVE_UNIT = {
 // column: the server will not run that pairing.
 //
 // The land column reproduces UNITS[].atk, which is how we know the two agree.
+// HOW WELL EACH COLUMN OF CLASS_ATTACK IS CORROBORATED, by (attacker class,
+// target class). This is a fact about the RECORD, not about the game, and it
+// lives here so nothing has to infer it from a unit's class at the call site.
+//
+//   land x land   the diagonal from unit_stats (four byte-identical runs),
+//                 eight off-diagonal duels, and the nine-attacker allocation
+//                 sweep -- three independent corroborations.
+//   air  x land   thirty cells: three fliers against all ten ground units,
+//                 each ground value confirmed by three independent attackers.
+//   air  x air    the diagonal, flown four times.
+//   naval x naval the diagonal, flown four times.
+//
+// Everything else in the matrix is ONE cell from the class sweep. One cell is
+// a reading, not a corroboration, so those are reported as estimated and named
+// in the class_matrix_precision gap. A blanket "air attackers are estimated"
+// was tried instead and was wrong in both directions at once: it understated
+// the fliers' thirty-cell land column and the four-run air diagonal, and it
+// said nothing about the single-cell land-vs-air and naval columns.
+export const CLASS_ATTACK_CORROBORATED = [
+  ['land', 'land'], ['air', 'land'], ['air', 'air'], ['naval', 'naval'],
+];
+
 export const CLASS_ATTACK = {
   inf:  { land: 4.0,  air: 0.3,  naval: 2.0 },
   cav:  { land: 15.0, air: 2.0,  naval: 8.0 },
@@ -204,9 +276,14 @@ export const CLASS_ATTACK = {
   int:  { land: 5.0,  air: 20.0, naval: 3.6 },
   tac:  { land: 30.0, air: 3.0,  naval: 23.64 },
   zep:  { land: 5.0,  air: 5.0,  naval: 4.4 },
-  sub:  { land: 2.0,  naval: 40.0 },
-  cl:   { land: 10.0, naval: 10.0 },
-  bb:   { land: 40.0, naval: 40.0 },
+  // The air column for the ships was blank because a naval stack against an
+  // air one was recorded as something the server refuses. It does not: sea/air
+  // aborts the batch and sea/land runs, which is the fourth time a terrain
+  // pair was mistaken for a rule about the game. Read against fighters on
+  // land, the same terrain the attack table's air column uses everywhere else.
+  sub:  { land: 2.0,  air: 1.0,  naval: 40.0 },
+  cl:   { land: 10.0, air: 12.5, naval: 10.0 },
+  bb:   { land: 40.0, air: 6.0,  naval: 40.0 },
 };
 
 // Which terrain pair the server will actually run, per (attacker class, target
@@ -545,6 +622,48 @@ export const DAMAGE_ALLOCATION = 'attack_times_count';
 // cavalry give. A battleship in sea terrain deals its full 40. Debark refuses
 // a battleship outright ("Only balloons and ferriable units...").
 export const EMBARKED_COEF = 1.0;
+
+// EMBARKATION IS A CLASS CHANGE, not a pair of stat overrides. A non-naval
+// unit in sea or debark terrain:
+//   attacks at a flat 1.0                (EMBARKED_COEF, measured earlier)
+//   holds a flat 10 HP, whatever it is   (this constant)
+//   is hit on the attacker's NAVAL column
+//
+// The HP is read straight off the pools and is the same for everything: 20
+// infantry, 20 cavalry, 20 heavy tanks, 20 fighters and 20 bombers all report
+// a pool of exactly 200.0 in sea terrain and in debark terrain, against 398.9,
+// 500.0, 5194.8, 1200.0 and 1599.1 on land. Naval units keep their own -- a
+// cruiser reads 50 and a battleship 200.
+//
+// The class change is measured six ways for six, using the three attackers
+// whose land and naval columns differ: cavalry deals 8.0 per effective unit to
+// embarked infantry AND to embarked fighters (land column 15.0, naval 8.0),
+// light artillery 1.0 (against 5.0), a heavy tank 23.0 (against 45.0). Every
+// one lands on the naval column exactly.
+//
+// This is also what censored the naval-vs-air reading that stood for a week as
+// "30.0 per effective unit". It was a 100% wipe: lost exactly equalled a pool
+// six times smaller than the unit table implies. Sized properly the cell reads
+// 40.0, which is the battleship's plain attack value.
+export const EMBARKED_MAXHP = 10;
+
+// An embarked unit's own coefficients, in BOTH directions. The flat 1.0 that
+// EMBARKED_COEF records is the land column and only the land column: against
+// AIR the figure is 0.5, measured both ways round.
+//
+//   attacking  40 embarked infantry deal 1.0 per effective unit to infantry,
+//              0.5 to fighters, 1.0 to a battleship
+//   defending  40 embarked fighters answer infantry at 1.0, 100 embarked
+//              infantry answer a fighter at 0.5 and a battleship at 1.0
+//
+// The obvious guess was that an embarked unit simply IS a convoy -- that is
+// where the flat 1.0 came from, and the convoy's land and air columns are
+// exactly 1.0 and 0.5. It is wrong in the third cell: a convoy reads 0.5
+// against naval targets and an embarked unit reads 1.0. Two cells out of three
+// agreeing is what a wrong law looks like from the inside, which is why the
+// naval cell was sent rather than inferred.
+export const EMBARKED_ATTACK = { land: 1.0, air: 0.5, naval: 1.0 };
+export const EMBARKED_DEFENCE = { land: 1.0, air: 0.5, naval: 1.0 };
 export const EMBARKED_TERRAIN = ['sea', 'debark'];
 
 // RANGE IS A BINARY GATE, measured by moving one side's position while the
@@ -736,7 +855,7 @@ export const FORM_DOMAINS = {
 // footnote. Ranked roughly by how likely a user is to hit it.
 
 export const NOT_MEASURED = [
-  { key: 'naval_vs_air_terrain', what: 'What a naval-vs-air reading MEANS, given it depends on the target\u2019s terrain.', why: 'It runs after all \u2014 the earlier "the server will not run it" was a terrain-pair artifact, the third time this project made that mistake. A battleship against fighters reads 30.0 per effective unit with the fighters in SEA terrain and 6.0 with them on LAND, so the target\u2019s terrain changes the coefficient and not just its class. Neither figure is in CLASS_ATTACK because it is not yet clear which one the class column should hold.', closedBy: 'a few cells that vary target terrain independently of target class' },
+  { key: 'embarked_target_class', what: 'What a unit COUNTS AS when it is embarked and something shoots at it \u2014 for an air attacker.', why: 'Embarkation is a class change for surface attackers, measured six ways for six: cavalry, light artillery and a heavy tank all hit an embarked target on their naval column. An AIR attacker does not see it that way \u2014 a fighter deals 98.89 to a hundred infantry on land and 98.61 to the same hundred at sea, a 0.3% difference where the two columns are 27% apart. So the rule is asymmetric, and the engine encodes the asymmetry as measured. What is NOT measured is why, or whether some third attacker class would split it further.', closedBy: 'the same crossing run from a zeppelin and a bomber, which would say whether it is air attackers in general or the fighter specifically' },
     { key: 'return_fire_generality', what: 'Whether the 5 km return-fire cut-off is a constant or every unit\u2019s own melee reach.', why: 'Past 5 km a bombarded defender deals exactly zero while still taking the attacker\u2019s full figure. That is measured hard \u2014 lart at 4 and 5 km loses 20.00, at 6, 7 and 8 km loses nothing, and three defenders that could easily shoot back (lart reaching 30, cruiser 40, battleship 75) are all silent at 8 km, as is a mixed inf+lart defender at 6. But every unit in the roster ALSO bisected to a melee attack range of exactly 5, so "the cut-off is the constant 5" and "the cut-off is the defender\u2019s own melee reach" predict the identical number everywhere. The two are indistinguishable in this game and the engine uses the constant.', closedBy: 'nothing available \u2014 it would need a unit whose melee reach is not 5, and there is none' },
     { key: 'class_matrix_precision', what: 'The air and naval columns of CLASS_ATTACK rest on ONE cell each.', why: 'The land column is corroborated three ways — the diagonal from unit_stats, eight off-diagonal duels, and the allocation sweep. The air and naval columns are a single reading per unit, and the fliers\u2019 land column had to be corrected for post-fire attenuation before it could be compared at all.', closedBy: 'a second cell per column, against a different target of the same class' },
     { key: 'multi_round_heavy_units', what: 'Multi-round drift on units with large per-unit HP, and two anomalous death counts.', why: 'The round law was fitted on 50-vs-50 INFANTRY at 0.042%. Cavalry reproduces exactly too, but heavy tanks drift to 0.5% by round four \u2014 260 HP per unit makes the whole-unit survivor count coarse and the model more sensitive to it. Separately, the printed death count is the sum of per-round floor(round damage / per-unit HP), which reproduces 10 of 12 measured cells; infantry rounds 3 and 4 come out one short and nothing explains it.', closedBy: 'a maxRounds ladder on two or three more unit types, chosen for their per-unit HP' },
@@ -988,6 +1107,56 @@ export const PROVENANCE = {
       + 'reaches, and E() counts only the rows that do. The alternative -- counting the '
       + 'unreachable units toward E() -- would let a stack gain output by adding units that '
       + 'cannot shoot, which is why it was worth four requests rather than an assumption.',
+  },
+  'CLASS_DEFENCE.matrix': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=defence_matrix (92 requests: two attackers of each class '
+      + 'against all seventeen defenders) plus defence_gaps (10, refilling the cells TERRAIN_PAIR '
+      + 'refused) and balloon_class (3).',
+    note: 'THE DEFENDING SIDE\'S WHOLE TABLE, which did not exist before. Read off the ATTACKER\'s '
+      + 'losses -- attacker_lost = coef x E(defender count) x m(1) -- which works in one request '
+      + 'because a defending stack is not attenuated even when it is losing badly. Every cell was '
+      + 'read by TWO independent attackers of the same class and every pair agreed, so the '
+      + 'defending side has the same shape as the attacking one: flat within an attacker class, '
+      + 'changing between them. That was a guess from four cells before this sweep. Two free '
+      + 'corroborations came with it: all seventeen same-class cells reproduce that unit\'s '
+      + 'measured defence diagonal, and the air column reproduces all ten values of '
+      + 'GROUND_DEFENCE_VS_AIR, read by different attackers in a different sweep. WHAT THIS '
+      + 'CHANGED: a cross-class pairing used to have a measured attack coefficient and no defence '
+      + 'one, so the engine withheld the ENTIRE battle. Land attacking air -- one of the commonest '
+      + 'things a player would enter -- came back blank for exactly that reason. 0 of 289 pairings '
+      + 'are unknown now, against 243 before.',
+  },
+  'CLASS_DEFENCE.balloon': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=balloon_class: three requests.',
+    note: 'A BALLOON IN LAND TERRAIN ATTACKS AS A LAND UNIT. This began as an apparent '
+      + 'contradiction: the sweep read a balloon defending at 10.0 against a fighter and a bomber, '
+      + 'which agreed exactly, while the balloon\'s own diagonal reads 3.0 -- its LAND figure. '
+      + 'Either its air column was not flat or the attacking balloon was never in the air. A '
+      + 'balloon attacking forty infantry loses 166.67, which is 5.0 x E(40), the land column; the '
+      + 'air column would have given 13.33. Stated for the ATTACKING side only, which is the side '
+      + 'that was measured. What a balloon counts as when it is the TARGET has not been tested and '
+      + 'does not arise, because CLASS_ATTACK.bal is 3.0 in all three columns.',
+  },
+  'EMBARKED.rule': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiments embarked_hp (20 requests), embarked_class (6), '
+      + 'embarked_convoy (6) and target_terrain (8).',
+    note: 'EMBARKATION IS A CLASS CHANGE WITH THREE CONSEQUENCES, and the app modelled one of '
+      + 'them. A non-naval unit in sea or debark terrain (1) attacks and defends on its own flat '
+      + 'column, 1.0 against land and naval targets and 0.5 against air, (2) holds a flat 10 HP '
+      + 'whatever it is, and (3) is hit on the attacker\'s NAVAL column. The HP is read straight '
+      + 'off the pools: 20 infantry, 20 cavalry, 20 heavy tanks, 20 fighters and 20 bombers all '
+      + 'report exactly 200.0 at sea against 398.9, 500.0, 5194.8, 1200.0 and 1599.1 on land. The '
+      + 'class change is six readings for six, from the three attackers whose land and naval '
+      + 'columns differ. THE NEAR-MISS WORTH RECORDING: an embarked unit looked like it simply WAS '
+      + 'a convoy -- that is where the flat 1.0 came from, and the convoy\'s land and air columns '
+      + 'are exactly 1.0 and 0.5. It is wrong in the third cell, where a convoy reads 0.5 against '
+      + 'naval targets and an embarked unit reads 1.0. Two cells of three agreeing is what a wrong '
+      + 'law looks like from the inside. AND THE COST OF NOT KNOWING IT: the naval-vs-air cell '
+      + 'stood for a week as \'30.0 per effective unit\'. It was a 100% wipe against a pool six '
+      + 'times smaller than the unit table implies. Sized properly it reads 40.0.',
   },
   'STACK.composition': {
     confidence: 'measured',

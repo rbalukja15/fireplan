@@ -27,11 +27,16 @@ import {
   TRENCH_MAX_LEVEL,
   AIR_ATTACK_VS_GROUND,
   CLASS_ATTACK,
+  CLASS_ATTACK_CORROBORATED,
   GROUND_DEFENCE_VS_AIR,
+  CLASS_DEFENCE,
   BUILDING_DAMAGE_PER_EFFECTIVE_UNIT,
   BUILDING_DAMAGE_FLOOR,
   TRENCH_APPLIES_TO,
   EMBARKED_COEF,
+  EMBARKED_MAXHP,
+  EMBARKED_ATTACK,
+  EMBARKED_DEFENCE,
   EMBARKED_TERRAIN,
   UNIT_RANGE,
   MELEE_RANGE,
@@ -421,7 +426,7 @@ export function allocationWeights(rows) {
  * project exists to avoid, so the verdict is the WORST pairing present and it
  * names which one it is.
  */
-export function coverageOfStacks(atkRows, defRows) {
+export function coverageOfStacks(atkRows, defRows, defTerrain, atkTerrain) {
   const a = (atkRows || []).filter((r) => r.count > 0);
   const d = (defRows || []).filter((r) => r.count > 0);
   if (!a.length || !d.length) {
@@ -431,7 +436,7 @@ export function coverageOfStacks(atkRows, defRows) {
   const pairs = [];
   for (const ar of a) {
     for (const dr of d) {
-      const c = coverageOf(ar.unit, dr.unit);
+      const c = coverageOf(ar.unit, dr.unit, defTerrain, atkTerrain);
       pairs.push({ atk: ar.unit, def: dr.unit, ...c });
     }
   }
@@ -451,7 +456,7 @@ export function coverageOfStacks(atkRows, defRows) {
   };
 }
 
-export function coverageOf(atkUnit, defUnit) {
+export function coverageOf(atkUnit, defUnit, defTerrain, atkTerrain) {
   const a = resolveUnit(atkUnit);
   const d = resolveUnit(defUnit);
 
@@ -467,41 +472,53 @@ export function coverageOf(atkUnit, defUnit) {
         + 'Treat a Balloon result as estimated: three readings, one terrain.',
     };
   }
-  if (a.cls === 'air' && d.cls === 'land') {
-    return {
-      level: 'measured',
-      reason: 'Air attacking ground is the one cross-class pairing anyone has measured: 30 cells, '
-        + 'three fliers against all ten ground units. The attacker\'s stat is flat across every '
-        + 'target and each ground defence value is confirmed by three independent attackers.',
-    };
-  }
-  if (a.code === d.code) {
-    return {
-      level: 'measured',
-      reason: `${a.label} against its own kind is the measured diagonal — a 10 v 10 duel flown four `
-        + 'times with byte-identical readings.',
-    };
-  }
-  if (a.cls === d.cls) {
-    return {
-      level: 'estimated',
-      reason: `${a.label} vs ${d.label} is off-diagonal within ${a.cls}: this exact pairing has never `
-        + 'been submitted. Each side is given its own same-class stat as a stand-in. Attack is KNOWN '
-        + 'to vary by target class (the Bomber is 3.0 against air and 30.0 against ground), so it may '
-        + 'vary by target unit too — this number could be wrong by any factor.',
-    };
-  }
-  if (a.cls === 'land' && d.cls === 'air') {
+
+  // DERIVED, not hand-written. This function used to be a cascade of class
+  // comparisons stating what had and had not been measured, and it went stale
+  // exactly the way the standing-limits list in index.html did: it still
+  // claimed "a ground stack ATTACKING air has never been measured" long after
+  // the class matrix filled every land-vs-air cell, so it withheld results the
+  // engine could compute. The coefficient lookups below ARE the record; asking
+  // them what they have cannot drift from what they have.
+  const atk = attackCoefficient(a, d, defTerrain, atkTerrain);
+  const def = defenceCoefficient(d, a, defTerrain, atkTerrain);
+  const rank = { measured: 0, estimated: 1, unknown: 2 };
+  const worse = rank[atk.level] >= rank[def.level] ? atk : def;
+  const which = worse === atk
+    ? `${a.label} attacking ${d.label}` : `${d.label} defending against ${a.label}`;
+  if (worse.level === 'unknown') {
     return {
       level: 'unknown',
-      reason: 'A ground stack ATTACKING air has never been measured. The record contains ground '
-        + 'DEFENCE against air, which is the other role and does not transfer. No number is offered.',
+      reason: `${which} has never been measured: ${worse.source}. The engine `
+        + 'withholds the numbers rather than inventing them.',
+    };
+  }
+  if (worse.level === 'estimated') {
+    // The warning matters more than the label. A stand-in taken from a
+    // same-class diagonal is not a small error bar: attack is KNOWN to vary by
+    // target class -- a Bomber reads 3.0 against air and 30.0 against ground,
+    // a factor of ten -- so it may vary by target unit too.
+    // Two different reasons a cell can be estimated, and they carry very
+    // different risks, so they say different things.
+    const standIn = /diagonal stat, with no reading/.test(worse.source);
+    return {
+      level: 'estimated',
+      reason: `${which} is a stand-in, not a reading: ${worse.source}.`
+        + (standIn
+          ? ' This exact off-diagonal pairing has never been submitted and no '
+            + 'column covers it. Attack is known to vary by target class (the '
+            + 'Bomber is 3.0 against air and 30.0 against ground), so it may '
+            + 'vary by target unit too — this number could be wrong by any '
+            + 'factor.'
+          : ' The column it comes from rests on a single reading rather than '
+            + 'on two independent ones, so it is a measurement without a '
+            + 'corroboration — see the class_matrix_precision gap.'),
     };
   }
   return {
-    level: 'unknown',
-    reason: `${a.cls} attacking ${d.cls} has never been submitted. No coefficient exists in either `
-      + 'direction, so the engine withholds the numbers rather than inventing them.',
+    level: 'measured',
+    reason: `Both halves of ${a.label} vs ${d.label} are measured — attack from `
+      + `${atk.source}, defence from ${def.source}.`,
   };
 }
 
@@ -509,7 +526,71 @@ export function coverageOf(atkUnit, defUnit) {
  * The attacking side's per-effective-unit output stat against this defender.
  * { value, level, source } — value null means "no reading exists".
  */
-export function attackCoefficient(atkUnit, defUnit) {
+/**
+ * The class a unit FIGHTS AS, which is not always the class it is.
+ *
+ * Two separate things forced this into one function. First, the token spaces
+ * never agreed: UNITS[].cls says 'sea' and CLASS_ATTACK's third column is
+ * called 'naval'. Written out longhand at each site that comparison silently
+ * failed three times -- the embarked filter matched every unit including the
+ * ships, the naval-vs-air special case could never fire, and CLASS_ATTACK's
+ * whole naval column was unreachable, so every land unit attacking a ship used
+ * its own diagonal stat and reported "no reading" for a reading that exists.
+ * Infantry against a battleship came out at 4.0 where the record says 2.0.
+ *
+ * Second, EMBARKATION IS A CLASS CHANGE, not a pair of stat overrides. A
+ * non-naval unit in sea or debark terrain attacks at a flat 1.0, holds a flat
+ * 10 HP whatever it is, AND is hit on the attacker's naval column. Measured
+ * six times for six: cavalry deals 8.0 to embarked infantry and to embarked
+ * fighters alike, against 15.0 on land; light artillery 1.0 against 5.0; a
+ * heavy tank 23.0 against 45.0. Every one lands on the naval column exactly.
+ */
+export function combatClass(unit, terrain) {
+  const u = resolveUnit(unit);
+  if (!u) return null;
+  const own = u.cls === 'sea' ? 'naval' : u.cls;
+  if (own === 'naval') return 'naval';
+  if (EMBARKED_TERRAIN.includes(terrain)) return 'naval';
+  // THE BALLOON FIGHTS AS A LAND UNIT. It is classed 'air' and the server will
+  // only run it in land terrain, and on land it attacks as ground: a balloon
+  // loses 166.67 attacking forty infantry, which is 5.0 x E(40) -- the land
+  // column -- where the air column would have given 13.33.
+  //
+  // This started as an apparent contradiction in CLASS_DEFENCE. A balloon
+  // defends at 10.0 against a fighter or a bomber but its own diagonal reads
+  // 3.0, which is its LAND figure. Three requests said the diagonal is not a
+  // disagreeing air reading: the attacking balloon was never in the air.
+  //
+  // Stated for the ATTACKING side only, which is the side that was measured.
+  // What a balloon counts as when it is the TARGET has not been tested, and it
+  // does not arise: CLASS_ATTACK.bal is 3.0 in all three columns.
+  if (u.code === 'bal' && terrain === 'land') return 'land';
+  return own;
+}
+
+/**
+ * The class an ATTACKER sees its target as. Not always combatClass().
+ *
+ * A surface attacker sees an embarked unit as naval -- six readings for six.
+ * An AIR attacker does not: a fighter deals 98.89 to a hundred infantry on
+ * land and 98.61 to the same hundred at sea, a 0.3% difference where the two
+ * columns are 27% apart. Whatever the fliers use against ground, embarkation
+ * does not move it.
+ *
+ * So the class change is not universal, and writing it as though it were would
+ * put a fighter's naval column against a target the record says it does not
+ * use. The asymmetry is the measurement; this function is where it lives.
+ */
+export function targetClassFor(attacker, target, targetTerrain) {
+  const a = resolveUnit(attacker);
+  const t = resolveUnit(target);
+  if (!a || !t) return null;
+  const own = t.cls === 'sea' ? 'naval' : t.cls;
+  if (a.cls === 'air') return own;
+  return combatClass(t, targetTerrain);
+}
+
+export function attackCoefficient(atkUnit, defUnit, defTerrain, atkTerrain) {
   const a = resolveUnit(atkUnit);
   const d = resolveUnit(defUnit);
   if (!a || !d) return { value: null, level: 'unknown', source: 'unrecognised unit' };
@@ -518,51 +599,77 @@ export function attackCoefficient(atkUnit, defUnit) {
   // the TARGET'S CLASS covers every pairing. This used to fall through to
   // "no reading for air attacking naval" and withhold a number.
   const row = CLASS_ATTACK[a.code];
-  const v = row ? row[d.cls] : undefined;
+  const dCls = targetClassFor(a, d, defTerrain);
+  const aCls = combatClass(a, atkTerrain);
+  const v = row ? row[dCls] : undefined;
   if (v !== undefined) {
-    const sameClass = a.cls === d.cls;
+    const sameClass = aCls === dCls;
+    const embarked = dCls === 'naval' && d.cls !== 'sea';
     return {
       value: v,
-      level: (a.code === 'bal' || a.cls === 'air') ? 'estimated' : 'measured',
-      source: sameClass
-        ? `CLASS_ATTACK (${a.cls} vs ${a.cls}; flat across every target in the class)`
-        : `CLASS_ATTACK (${a.cls} attacking ${d.cls}, measured directly)`,
+      // Corroboration is a property of the RECORD, so it is read from the
+      // record rather than inferred from the attacker's class here. A blanket
+      // "air attackers are estimated" was tried and was wrong both ways at
+      // once: it understated the fliers' thirty-cell land column and their
+      // four-run diagonal, and said nothing about the single-cell land-vs-air
+      // and naval columns that genuinely do rest on one reading each.
+      level: (a.code === 'bal') ? 'estimated'
+        : CLASS_ATTACK_CORROBORATED.some(([x, y]) => x === aCls && y === dCls)
+          ? 'measured' : 'estimated',
+      source: embarked
+        ? `CLASS_ATTACK (${aCls} attacking an EMBARKED ${d.label}, which is hit `
+          + 'on the naval column — measured six ways for six)'
+        : sameClass
+          ? `CLASS_ATTACK (${aCls} vs ${aCls}; flat across every target in the class)`
+          : `CLASS_ATTACK (${aCls} attacking ${dCls}, measured directly)`,
     };
-  }
-  if (a.cls === 'naval' && d.cls === 'air') {
-    return { value: null, level: 'unknown',
-             source: 'the server will not run a naval stack against an air one' };
   }
   if (a.atk === null) {
     return { value: null, level: 'unknown', source: `${a.code} has no measured attack` };
   }
   return { value: a.atk, level: 'estimated',
-           source: `${a.label}'s diagonal stat, with no reading for ${d.cls} targets` };
+           source: `${a.label}'s diagonal stat, with no reading for ${dCls} targets` };
 }
 
 /**
  * The defending side's per-effective-unit output stat against this attacker.
  */
-export function defenceCoefficient(defUnit, atkUnit) {
+export function defenceCoefficient(defUnit, atkUnit, defTerrain, atkTerrain) {
   const d = resolveUnit(defUnit);
   const a = resolveUnit(atkUnit);
   if (!a || !d) return { value: null, level: 'unknown', source: 'unrecognised unit' };
-  if (a.cls === 'air' && d.cls === 'land') {
-    const v = GROUND_DEFENCE_VS_AIR[d.code];
-    if (v === undefined) {
-      return { value: null, level: 'unknown', source: `no ground-defence reading for ${d.code}` };
+  const dCls = targetClassFor(a, d, defTerrain);
+  const aCls = combatClass(a, atkTerrain);
+  // An EMBARKED defender deals a flat 1.0 per effective unit, whatever it is
+  // and whatever is shooting at it -- 40 embarked fighters answer 20 infantry
+  // with exactly 1.0 x E(40) = 33.33. That is a reading, so a pairing that is
+  // otherwise unmeasured stops being unknown the moment the defender puts to
+  // sea.
+  if (dCls === 'naval' && d.cls !== 'sea') {
+    const v = EMBARKED_DEFENCE[aCls];
+    if (v !== undefined) {
+      return { value: v, level: 'measured',
+               source: `an embarked ${d.label} defends at ${v} against `
+                 + `${aCls} attackers (EMBARKED_DEFENCE)` };
     }
-    return { value: v, level: 'measured', source: 'GROUND_DEFENCE_VS_AIR (each value confirmed by three independent attackers)' };
   }
-  if (a.code === d.code) {
-    if (d.def === null) return { value: null, level: 'unknown', source: `${d.code} has no measured defence` };
-    return { value: d.def, level: 'measured', source: 'UNITS.diagonal (same-class 10v10 duel)' };
+  // CLASS_DEFENCE is the whole table now: two attackers of each class against
+  // every defender, every cell agreeing between them. The cascade of special
+  // cases this replaced could only answer same-class pairings and air-attacks-
+  // ground, and returned "no reading" for everything else -- which withheld
+  // the entire battle, not just half of it.
+  const row = CLASS_DEFENCE[d.code];
+  const v = row ? row[aCls] : undefined;
+  if (v !== undefined) {
+    return {
+      value: v,
+      level: 'measured',
+      source: `CLASS_DEFENCE (${d.label} against ${aCls} attackers; two `
+        + 'independent attackers of that class read the same figure)',
+    };
   }
-  if (a.cls === d.cls) {
-    if (d.def === null) return { value: null, level: 'unknown', source: `${d.code} has no measured defence` };
-    return { value: d.def, level: 'estimated', source: `${d.label}'s same-class diagonal stat used as a stand-in for an attacker that was never tested` };
-  }
-  return { value: null, level: 'unknown', source: `no reading for ${d.cls} defending against ${a.cls}` };
+  if (d.def === null) return { value: null, level: 'unknown', source: `${d.code} has no measured defence` };
+  return { value: null, level: 'unknown', source: `no reading for ${dCls} defending against ${aCls}` };
 }
 
 // ---------------------------------------------------------------------------
@@ -641,8 +748,18 @@ function makeSide(cfg, role, derivation, caveats, battle) {
       const digsIn = TRENCH_APPLIES_TO.includes(r.unit && r.unit.code);
       r.trenchPool = digsIn ? tf.pool : 1;
       r.trenchOutput = (digsIn && role === 'defender') ? tf.output : 1;
-      r.perUnitMaxHP = (r.unit && r.unit.maxHP !== null)
-        ? r.unit.maxHP * r.trenchPool * (r.hpBuff || 1) : null;
+      // EMBARKED UNITS HOLD A FLAT 10 HP, read straight off the pools: 20
+      // heavy tanks at sea report 200.0, not 5194.8, and so do 20 infantry,
+      // 20 cavalry, 20 fighters and 20 bombers. The app modelled the flat 1.0
+      // attack and missed this entirely, so every embarked pool it drew was
+      // wrong -- by 26x for a heavy tank. It is also what censored the
+      // naval-vs-air reading: a target stack sized off the unit table's max HP
+      // is six times smaller than intended the moment it puts to sea.
+      const embarkedHP = r.embarked ? EMBARKED_MAXHP : null;
+      r.perUnitMaxHP = embarkedHP !== null
+        ? embarkedHP * r.trenchPool * (r.hpBuff || 1)
+        : ((r.unit && r.unit.maxHP !== null)
+          ? r.unit.maxHP * r.trenchPool * (r.hpBuff || 1) : null);
       r.poolFull = r.perUnitMaxHP === null ? null : r.count * r.perUnitMaxHP;
       r.pool = r.poolFull === null ? null : r.poolFull * (r.hpPct / 100);
       r.hpLost = 0;
@@ -795,7 +912,9 @@ function makeSide(cfg, role, derivation, caveats, battle) {
   // are REPLACED by a flat 1.0 -- not scaled. Infantry (4.0/5.0) and cavalry
   // (15.0/7.5) deal the identical 20 and 10 against the same target, which no
   // scaling of two different stats can produce.
-  const wet = battle && EMBARKED_TERRAIN.includes(battle.terrain);
+  const myTerrain = (role === 'defender' && battle && battle.defenderTerrain)
+    ? battle.defenderTerrain : (battle && battle.terrain);
+  const wet = EMBARKED_TERRAIN.includes(myTerrain);
   if (wet) {
     // AIR units are embarked too, not just land ones: 10 fighters in sea
     // terrain deal exactly 1.0 x E(20) = 20.00, the same flat figure infantry
@@ -809,12 +928,18 @@ function makeSide(cfg, role, derivation, caveats, battle) {
     const embarked = rows.filter((r) => r.unit && r.unit.cls !== 'sea');
     for (const r of embarked) r.embarked = true;
     if (embarked.length) {
-      caveats.push(`${label}: ${embarked.length} land unit row(s) are EMBARKED in `
-        + `${battle.terrain} terrain, which replaces their attack and defence `
-        + 'with a flat 1.0 — an embarked land unit fights exactly as well as a '
-        + 'convoy (measured).');
+      caveats.push(`${label}: ${embarked.length} unit row(s) are EMBARKED in `
+        + `${myTerrain} terrain. Embarkation is a CLASS CHANGE, not a penalty: `
+        + `they attack at a flat 1.0, hold a flat ${EMBARKED_MAXHP} HP each `
+        + 'whatever they are, and are hit on the attacker\'s naval column. A '
+        + 'heavy tank at sea has ten hit points, the same as a rifleman.');
     }
   }
+
+  // Pools AGAIN, because embarkation replaces per-unit max HP with a flat 10
+  // and the flag above is what says which rows it applies to. Computing them
+  // before this point drew a heavy tank's 260 for a stack that holds 10.
+  if (wet) computePools();
 
   const primary = rows.length ? rows[0].unit : resolveUnit(cfg && cfg.unit);
   const n = rows.reduce((t, r) => t + r.count, 0);
@@ -996,11 +1121,31 @@ function runSimulation(config, derivation, caveats) {
   const terrain = (config && typeof config.terrain === 'string')
     ? config.terrain : 'land';
   const distance = Math.max(0, num(config && config.distance, 0));
-  const battle = { terrain, distance };
+  // TERRAIN IS PER SIDE. A battleship fights from the sea against infantry on
+  // land, and the target's terrain is what decides the coefficient column: the
+  // same fighters read 6.0 per effective unit in the air and 40.0 embarked at
+  // sea. One shared field cannot express that pairing. It defaults to the
+  // attacker's, so every existing single-terrain call behaves as before.
+  const defenderTerrain = (config && typeof config.defenderTerrain === 'string')
+    ? config.defenderTerrain : terrain;
+  const battle = { terrain, defenderTerrain, distance };
   const atk = makeSide(config.attacker, 'attacker', derivation, caveats, battle);
   const def = makeSide(config.defender, 'defender', derivation, caveats, battle);
 
-  const matchup = coverageOfStacks(atk.rows, def.rows);
+  // An embarked row's coefficient depends on what it is shooting at, so each
+  // side is told the opposing side's class once. A stack cannot mix classes --
+  // the server refuses ground and air in one stack -- so one class per side is
+  // the whole answer, not a simplification.
+  const defClass = def.rows.length
+    ? targetClassFor(atk.rows[0] && atk.rows[0].unit, def.rows[0].unit,
+                     battle.defenderTerrain) : null;
+  const atkClass = atk.rows.length
+    ? combatClass(atk.rows[0].unit, battle.terrain) : null;
+  for (const r of atk.rows) r.embarkedTargetClass = defClass;
+  for (const r of def.rows) r.embarkedTargetClass = atkClass;
+
+  const matchup = coverageOfStacks(atk.rows, def.rows,
+                                   battle.defenderTerrain, battle.terrain);
   const conflicts = [atk.groupConflict, def.groupConflict].filter(Boolean);
   let level = matchup.level;
   const reasons = [matchup.reason];
@@ -1109,8 +1254,10 @@ function runSimulation(config, derivation, caveats) {
   }
 
   // ---- coefficients --------------------------------------------------------
-  const atkCoef = attackCoefficient(atk.unit, def.unit);
-  const defCoef = defenceCoefficient(def.unit, atk.unit);
+  const atkCoef = attackCoefficient(atk.unit, def.unit,
+                                    battle.defenderTerrain, battle.terrain);
+  const defCoef = defenceCoefficient(def.unit, atk.unit,
+                                     battle.defenderTerrain, battle.terrain);
   const attenuated = !!(atk.unit && def.unit && atk.unit.cls === 'air' && def.unit.cls === 'land');
 
   derivation.push({
@@ -1323,7 +1470,8 @@ function runSimulation(config, derivation, caveats) {
     // infantry and invent one for everything else.
     const defParts = defSuppressed
       ? { total: 0, parts: [] }
-      : stackOutput(def, (u) => defenceCoefficient(u, atk.unit).value, patrolScale);
+      : stackOutput(def, (u) => defenceCoefficient(u, atk.unit, battle.defenderTerrain,
+                                             battle.terrain).value, patrolScale);
     const defOutput = defParts.total === null ? 0 : defParts.total;
     if (def.rows.length > 1 || def.hero) {
       for (const pt of defParts.parts) {
@@ -1489,7 +1637,8 @@ function runSimulation(config, derivation, caveats) {
         }
       }
     } else {
-      const atkParts = stackOutput(atk, (u) => attackCoefficient(u, def.unit).value, 1);
+      const atkParts = stackOutput(atk, (u) => attackCoefficient(u, def.unit, battle.defenderTerrain,
+                                          battle.terrain).value, 1);
       atkOutput = atkParts.total === null ? null : atkParts.total;
       if ((atk.rows.length > 1 || atk.hero) && atkOutput !== null) {
         for (const pt of atkParts.parts) {
@@ -1712,7 +1861,12 @@ function stackOutput(side, coefFor, scale, mulEach) {
     parts.push({ hero: true, coef: hero.atk, mul: heroEff, out: heroOut });
   }
   for (const r of side.rows) {
-    const c = r.embarked ? EMBARKED_COEF : coefFor(r.unit);
+    // An embarked row's own column, not one flat number. EMBARKED_COEF is
+    // the land cell; against air it is 0.5, and using 1.0 there doubled it.
+    const c = r.embarked
+      ? (EMBARKED_ATTACK[r.embarkedTargetClass] === undefined
+        ? EMBARKED_COEF : EMBARKED_ATTACK[r.embarkedTargetClass])
+      : coefFor(r.unit);
     if (c === null || c === undefined) return { total: null, parts: [] };
     const frac = (r.liveFrac === undefined)
       ? r.hpPct / 100 : r.liveFrac * (r.hpPct / 100);
