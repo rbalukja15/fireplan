@@ -582,16 +582,26 @@ check('a fortress against an air attacker still computes, but is downgraded and 
     return r.coverage.level === 'estimated'
       && r.coverage.caveats.some((c) => /land \(infantry\) attacker/.test(c));
   })());
-check('an air attacker wiped to zero survivors withholds its damage instead of guessing a branch',
+// MEASURED now, and the answer is the opposite of the land law: a wiped AIR
+// stack deals nothing, while a wiped LAND stack still deals its full damage.
+// Only reachable through a damaged air stack — ground fire cannot wipe a
+// healthy one, which is why this sat open so long.
+check('a wiped air attacker deals ZERO, not a withheld number',
   (() => {
     const r = simulate({
       attacker: { unit: 'tac', count: 1 },
       defender: { unit: 'ac', count: 50 },
     });
-    return r.attacker.wiped === true && r.defender.hpLost === null
-      && r.coverage.level === 'unknown'
-      && r.coverage.caveats.some((c) => /no survivors/.test(c));
-  })());
+    return r.attacker.wiped === true && r.defender.hpLost === 0;
+  })(), 'measured: 3 bombers at 5% HP are wiped and the defender loses 0.00');
+check('while a wiped LAND attacker still deals full damage',
+  (() => {
+    const r = simulate({
+      attacker: { unit: 'inf', count: 1 },
+      defender: { unit: 'ht', count: 50 },
+    });
+    return r.attacker.wiped === true && r.defender.hpLost > 0;
+  })(), 'the two laws differ, and both are measured');
 check('every derivation entry carries a label, a formula and a value key',
   (() => {
     const r = simulate({
@@ -1550,7 +1560,7 @@ console.log('\n14. coverage of the record itself');
     'stack_order', 'allocation', 'hero_sides', 'multi_round',
     'offdiag', 'trench_gaps', 'hero_output_curves', 'hero_other_terrain',
     'building_damage', 'class_matrix', 'balloon', 'trench_generality',
-    'edges', 'bldg_caps', 'last_edges', 'terrain', 'position', 'naval_matrix', 'air_matrix',
+    'edges', 'bldg_caps', 'last_edges', 'terrain', 'position', 'close_out', 'naval_matrix', 'air_matrix',
     'land_attacks_air', 'air_defends_land', 'sea_vs_land', 'land_vs_sea',
     // Heroes are now modelled and replayed above: the sweeps that measured
     // them are physics the engine reproduces, not declared omissions.

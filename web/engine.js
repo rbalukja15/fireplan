@@ -759,7 +759,10 @@ function makeSide(cfg, role, derivation, caveats, battle) {
   // scaling of two different stats can produce.
   const wet = battle && EMBARKED_TERRAIN.includes(battle.terrain);
   if (wet) {
-    const embarked = rows.filter((r) => r.unit && r.unit.cls === 'land');
+    // AIR units are embarked too, not just land ones: 10 fighters in sea
+    // terrain deal exactly 1.0 x E(20) = 20.00, the same flat figure infantry
+    // and cavalry give. Only a naval unit is at home there.
+    const embarked = rows.filter((r) => r.unit && r.unit.cls !== 'naval');
     for (const r of embarked) r.embarked = true;
     if (embarked.length) {
       caveats.push(`${label}: ${embarked.length} land unit row(s) are EMBARKED in `
@@ -1376,17 +1379,18 @@ function runSimulation(config, derivation, caveats) {
     } else if (attenuated) {
       const nAlive = atk.n - atkDeathsThis;
       if (nAlive <= 0) {
-        level = 'unknown';
-        reasons.push('The air attacker is reduced to zero survivors, and the post-fire law has no '
-          + 'measured branch there.');
-        caveats.push('An air attacker with no survivors: the post-fire output law divides by the '
-          + 'survivor count and nobody has measured this case. Damage dealt is withheld rather than '
-          + 'guessed (a land stack wiped in the round still deals full damage, but that is a '
-          + 'different, measured, code path).');
+        // MEASURED: a wiped air stack deals NOTHING. Three tactical bombers at
+        // 5% HP are wiped by the defending infantry and the defender loses
+        // 0.00 -- which is the opposite of a wiped LAND stack, which still
+        // deals its full damage. Ground fire cannot wipe a healthy air stack
+        // at all, so the case is only reachable through a damaged one.
+        atkOutput = 0;
         derivation.push({
           label: `${tag}Attacker output`,
-          formula: 'Withheld: the air stack has no survivors and the post-fire law is undefined there.',
-          value: null,
+          formula: 'Zero: the air stack has no survivors, and a wiped AIR stack deals '
+            + 'nothing (measured). A wiped LAND stack still deals full damage — the two '
+            + 'are different laws, and this is the air one.',
+          value: 0,
         });
       } else {
         const fAfter = (atk.pool - atkLostThis) / (nAlive * atk.perUnitMaxHP);

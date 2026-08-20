@@ -5539,6 +5539,172 @@ def exp_last_edges(p: Probe) -> None:
                   f"{a.get('died', 0):5.0f} {int(a['lost'] // hp):15}")
 
 
+def exp_close_out(p: Probe) -> None:
+    """The small remaining gaps, each one deliberately re-tried, not assumed.
+
+    naval_vs_air is first and is the reason for the whole experiment: it is
+    recorded as "the server will not run it", which is exactly what
+    ground-attacks-air said before someone tried a different TERRAIN PAIR and
+    it ran perfectly. A refusal under one configuration is not a property of
+    the game.
+    """
+    print("\n  1. naval vs air, under every terrain pair the form allows\n")
+    for at, dt in (("sea", "air"), ("sea", "sea"), ("air", "air"),
+                   ("land", "land"), ("sea", "land"), ("air", "sea")):
+        ov = settings()
+        ov.update(duel(1, "bb", 10, "int", 30, atk_terrain=at, def_terrain=dt))
+        try:
+            p.submit(ov)
+            d = dict(p.last_details)
+            record("close_out", {"probe": "naval_vs_air", "atk_terrain": at,
+                                 "def_terrain": dt, "detail": d},
+                   {k: (v or {}).get("lost") for k, v in d.items()})
+            b = (d.get("B.1.1") or {}).get("lost")
+            print(f"  bb({at}) vs int({dt}): "
+                  + (f"defender lost {b:.2f}  <-- IT RUNS" if b is not None
+                     else "no result rows"))
+        except (BareFormReturned, ValueError) as e:
+            record("close_out", {"probe": "naval_vs_air", "atk_terrain": at,
+                                 "def_terrain": dt, "error": str(e)}, {})
+            print(f"  bb({at}) vs int({dt}): {str(e)[:60]}")
+
+    print("\n  2. an air attacker actually reduced to zero survivors\n")
+    # Ground fire cannot wipe a healthy air stack -- 3 bombers against 113
+    # infantry lose 5.83%. A DAMAGED one can be wiped, which reaches the same
+    # branch of the post-fire law.
+    for hp in ("100%", "10%", "5%", "2%"):
+        ov = settings()
+        ov.update(duel(1, "tac", 3, "inf", 113, atk_terrain="air",
+                       def_terrain="land", atk_hp=hp))
+        try:
+            p.submit(ov)
+        except (BareFormReturned, ValueError) as e:
+            print(f"  tac at {hp:5}: {str(e)[:60]}")
+            continue
+        d = dict(p.last_details)
+        record("close_out", {"probe": "air_wiped", "atk_hp": hp, "detail": d},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        a = d.get("A.1.1") or {}
+        b = d.get("B.1.1") or {}
+        wiped = (a.get("pct") or 0) >= 99.9
+        print(f"  tac at {hp:5}: attacker lost {a.get('lost')} of "
+              f"{a.get('pool')} ({a.get('pct')}%), defender lost "
+              f"{b.get('lost')}" + ("   <-- WIPED" if wiped else ""))
+
+    print("\n  3. does a trench raise an ATTACKER's output?\n")
+    for lvl in (0, 10, 20):
+        ov = settings()
+        ov.update(duel(1, "inf", 10, "inf", 60))
+        ov["A.1.trench"] = str(lvl)
+        try:
+            p.submit(ov, create=("A.1.trench",))
+        except (BareFormReturned, ValueError) as e:
+            print(f"  attacker trench {lvl:>2}: {str(e)[:60]}")
+            continue
+        d = dict(p.last_details)
+        record("close_out", {"probe": "trench_attacking", "level": lvl,
+                             "detail": d},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        a = d.get("A.1.1") or {}
+        b = d.get("B.1.1") or {}
+        print(f"  attacker trench {lvl:>2}: defender lost "
+              f"{b.get('lost')}, attacker pool {a.get('pool')}")
+
+    print("\n  4. the trench level-10 pool multiplier, on a 200-unit stack\n")
+    for n in (50, 200):
+        ov = settings()
+        ov.update(duel(1, "inf", 10, "inf", n))
+        ov["B.1.trench"] = "10"
+        try:
+            p.submit(ov, create=("B.1.trench",))
+        except (BareFormReturned, ValueError) as e:
+            print(f"  n={n}: {str(e)[:60]}")
+            continue
+        d = dict(p.last_details)
+        record("close_out", {"probe": "trench_pool", "def_n": n, "detail": d},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        b = d.get("B.1.1") or {}
+        if not b.get("pool"):
+            continue
+        lo, hi = hp_bounds(b, 1)
+        base = n * MEASURED_UNITS["inf"][0]
+        print(f"  n={n:<4} bracket [{lo / base:.5f}, {hi / base:.5f}]")
+
+    print("\n  5. E(n) combined with m(f) above the knee\n")
+    print(f"  {'n':>4} {'hp%':>5} {'output':>9} {'E(n)xm(f)':>10}")
+    for n in (30, 50):
+        for hp in (100, 50, 25):
+            ov = settings()
+            ov.update(duel(1, "inf", n, "ht", 60, atk_hp=f"{hp}%"))
+            try:
+                p.submit(ov)
+            except (BareFormReturned, ValueError) as e:
+                print(f"  ! n={n} hp={hp}: {e}", file=sys.stderr)
+                continue
+            d = dict(p.last_details)
+            record("close_out", {"probe": "E_with_m", "n": n, "hp_pct": hp,
+                                 "detail": d},
+                   {k: (v or {}).get("lost") for k, v in d.items()})
+            b = (d.get("B.1.1") or {}).get("lost")
+            want = 4.0 * effective_units(n) * (0.05 + 0.95 * hp / 100)
+            print(f"  {n:>4} {hp:>5} "
+                  + (f"{b:9.2f}" if b is not None else f"{'—':>9}")
+                  + f" {want:10.2f}"
+                  + ("" if b is not None and abs(b - want) < 0.05 else "  <-- OFF"))
+
+    print("\n  6. a fortress against air and naval attackers, and with a "
+          "trench\n")
+    for label, a_u, a_t, extra in (
+            ("air attacker", "tac", "air", {}),
+            ("naval attacker", "bb", "sea", {}),
+            ("land attacker + trench 10", "inf", "land", {"B.1.trench": "10"})):
+        for lvl in (0, 5):
+            ov = settings()
+            ov.update(duel(1, a_u, 20, "inf", 20, atk_terrain=a_t,
+                           def_terrain="land"))
+            fields = tuple(extra)
+            ov.update(extra)
+            if lvl:
+                ov.update({"B.1.bldg.1.abb": "fortress",
+                           "B.1.bldg.1.lvl": str(lvl),
+                           "B.1.bldg.1.hp": "100%"})
+                fields = fields + ("B.1.bldg.1.abb", "B.1.bldg.1.lvl",
+                                   "B.1.bldg.1.hp")
+            try:
+                p.submit(ov, create=fields)
+            except (BareFormReturned, ValueError) as e:
+                print(f"  {label:26} fort {lvl}: {str(e)[:44]}")
+                continue
+            d = dict(p.last_details)
+            record("close_out", {"probe": "fortress_scope", "label": label,
+                                 "level": lvl, "detail": d},
+                   {k: (v or {}).get("lost") for k, v in d.items()})
+            b = (d.get("B.1.1") or {}).get("lost")
+            print(f"  {label:26} fort {lvl}: defender lost "
+                  + (f"{b:.2f}" if b is not None else "—"))
+
+    print("\n  7. terrain on AIR and NAVAL stacks\n")
+    for unit, terr in (("int", "sea"), ("int", "debark"), ("bb", "debark"),
+                       ("bb", "sea")):
+        ov = settings()
+        ov.update(duel(1, unit, 10, unit, 20, atk_terrain=terr,
+                       def_terrain=terr))
+        try:
+            p.submit(ov)
+            d = dict(p.last_details)
+            record("close_out", {"probe": "terrain_others", "unit": unit,
+                                 "terrain": terr, "detail": d},
+                   {k: (v or {}).get("lost") for k, v in d.items()})
+            a = (d.get("A.1.1") or {}).get("lost")
+            print(f"  {unit} in {terr:7}: attacker lost "
+                  + (f"{a:.2f}" if a is not None else "—")
+                  + f"   (flat 1.0 would give {effective_units(20):.2f})")
+        except (BareFormReturned, ValueError) as e:
+            record("close_out", {"probe": "terrain_others", "unit": unit,
+                                 "terrain": terr, "error": str(e)}, {})
+            print(f"  {unit} in {terr:7}: {str(e)[:56]}")
+
+
 def exp_variance(p: Probe, samples: int = 60) -> None:
     """Same battle repeatedly with variance ON, to characterise the roll.
 
@@ -5860,6 +6026,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "balloon_trench": exp_balloon_and_trench,
     "class_matrix": exp_class_matrix,
     "last_edges": exp_last_edges,
+    "close_out": exp_close_out,
     "buildings": exp_buildings,
     "trenches": exp_trenches,
     "air_vs_ground": exp_air_vs_ground,
@@ -5876,7 +6043,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
 # it is about to spend on someone else's ad-supported fan site before it starts
 # rather than after. Approximate by design: saturation re-runs add a few.
 REQUEST_ESTIMATE: dict[str, int] = {
-    "unit_stats": 20, "buildings": 14, "patrol": 18, "mixed_stacks": 8, "heroes": 23, "stack_limits": 4, "hero_scaling": 9, "hero_table": 28, "hero_levels": 16, "hero_caps": 30, "stack_ladder": 9, "stack_order": 5, "hero_output": 21, "hero_buff_confirm": 5, "allocation": 9, "hero_full": 24, "hero_hp_cap": 22, "hero_sides": 30, "multi_round": 8, "hero_curves": 110, "offdiag": 8, "trench_gaps": 12, "fortress_edges": 20, "building_damage": 9, "position": 15, "hero_output_curves": 70, "hero_other_terrain": 24, "cross_class": 70, "edges": 35, "balloon_trench": 15, "class_matrix": 51, "last_edges": 20, "trenches": 10, "air_vs_ground": 30,
+    "unit_stats": 20, "buildings": 14, "patrol": 18, "mixed_stacks": 8, "heroes": 23, "stack_limits": 4, "hero_scaling": 9, "hero_table": 28, "hero_levels": 16, "hero_caps": 30, "stack_ladder": 9, "stack_order": 5, "hero_output": 21, "hero_buff_confirm": 5, "allocation": 9, "hero_full": 24, "hero_hp_cap": 22, "hero_sides": 30, "multi_round": 8, "hero_curves": 110, "offdiag": 8, "trench_gaps": 12, "fortress_edges": 20, "building_damage": 9, "position": 15, "hero_output_curves": 70, "hero_other_terrain": 24, "cross_class": 70, "edges": 35, "balloon_trench": 15, "class_matrix": 51, "last_edges": 20, "close_out": 35, "trenches": 10, "air_vs_ground": 30,
     "land_matrix": 100, "size_factor": 33, "hp_scaling": 10,
     "fortress": 6, "terrain": 7, "variance": 60,
 }

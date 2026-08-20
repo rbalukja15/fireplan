@@ -318,7 +318,11 @@ export const TRENCH_POOL = {
 // the measurement forbids it.
 export const TRENCH_POOL_BRACKET = {
   0: [0.9974, 1.0026], 1: [0.9974, 1.0026], 2: [0.9974, 1.0026], 3: [0.9974, 1.0026],
-  4: [1.1460, 1.1529], 5: [1.1939, 1.2014], 10: [1.2382, 1.2463],
+  4: [1.1460, 1.1529], 5: [1.1939, 1.2014],
+  // Level 10 re-read on a 200-unit stack: [1.23977, 1.24162], intersected with
+  // the 50-unit and 10-unit readings to [1.23977, 1.24047]. Still excludes the
+  // tidy 1.25, and now pins the value at 1.240.
+  10: [1.23977, 1.24047],
   15: [1.2943, 1.3031], 20: [1.3466, 1.3561],
 };
 
@@ -536,6 +540,10 @@ export const DAMAGE_ALLOCATION = 'attack_times_count';
 // which no scaling of two different stats can produce. An embarked land unit
 // fights exactly as well as a convoy, which is 1.0/1.0 in the unit table.
 // Infantry are refused in air terrain outright.
+// Applies to any NON-NAVAL unit, not just land ones: ten fighters in sea
+// terrain deal exactly 1.0 x E(20) = 20.00, the same flat figure infantry and
+// cavalry give. A battleship in sea terrain deals its full 40. Debark refuses
+// a battleship outright ("Only balloons and ferriable units...").
 export const EMBARKED_COEF = 1.0;
 export const EMBARKED_TERRAIN = ['sea', 'debark'];
 
@@ -702,18 +710,12 @@ export const FORM_DOMAINS = {
 // footnote. Ranked roughly by how likely a user is to hit it.
 
 export const NOT_MEASURED = [
-  { key: 'terrain_others', what: 'Terrain modifiers other than sea and debark.', why: 'Sea and debark are measured and applied — they replace a land unit\u2019s stats with a flat 1.0. The form offers only land, air, sea, patrol and debark, and air is a class rather than a modifier, so this may be the whole list. Nothing has been read about whether terrain does anything to an AIR or NAVAL stack.', closedBy: 'the same two-unit discrimination run on an air and a naval stack' },
-  { key: 'range_roster', what: 'The range of the other fourteen units.', why: 'Range is measured as a BINARY gate and applied, but only three units were read: artillery 50 km, railgun 150, infantry 1. An unlisted unit is not gated at all rather than guessed at, and the app says so when a distance is set.', closedBy: 'one boundary search per unit, about three requests each' },
-  { key: 'naval_vs_air', what: 'A naval stack against an air stack.', why: 'The server will not run it — the request comes back with no result rows and no message, the same signature a land-attacks-air-terrain request gives. Every other class pairing does run and is measured.', closedBy: 'nothing on dxcalc; it appears not to be a battle the calculator models' },
-  { key: 'class_matrix_precision', what: 'The air and naval columns of CLASS_ATTACK rest on ONE cell each.', why: 'The land column is corroborated three ways — the diagonal from unit_stats, eight off-diagonal duels, and the allocation sweep. The air and naval columns are a single reading per unit, and the fliers\u2019 land column had to be corrected for post-fire attenuation before it could be compared at all.', closedBy: 'a second cell per column, against a different target of the same class' },
-  { key: 'trench_attacking_output', what: 'Whether a trench raises OUTPUT for an attacking stack.', why: 'It raises the pool on either side, but the output bonus was only ever read on a DEFENDER, and an attacking infantry stack in a trench deals exactly what it deals outside one. So the engine applies the output bonus defending only. Whether that is the rule or an artifact of what was submitted is untested.', closedBy: 'two requests with a dug-in attacker at trench 0 and 20' },
-  { key: 'multi_round_heavy_units', what: 'Multi-round drift on units with large per-unit HP, and two anomalous death counts.', why: 'The round law was fitted on 50-vs-50 INFANTRY at 0.042%. Cavalry reproduces exactly too, but heavy tanks drift to 0.5% by round four \u2014 260 HP per unit makes the whole-unit survivor count coarse and the model more sensitive to it. Separately, the printed death count is the sum of per-round floor(round damage / per-unit HP), which reproduces 10 of 12 measured cells; infantry rounds 3 and 4 come out one short and nothing explains it.', closedBy: 'a maxRounds ladder on two or three more unit types, chosen for their per-unit HP' },
+  { key: 'naval_vs_air_terrain', what: 'What a naval-vs-air reading MEANS, given it depends on the target\u2019s terrain.', why: 'It runs after all \u2014 the earlier "the server will not run it" was a terrain-pair artifact, the third time this project made that mistake. A battleship against fighters reads 30.0 per effective unit with the fighters in SEA terrain and 6.0 with them on LAND, so the target\u2019s terrain changes the coefficient and not just its class. Neither figure is in CLASS_ATTACK because it is not yet clear which one the class column should hold.', closedBy: 'a few cells that vary target terrain independently of target class' },
+    { key: 'range_roster', what: 'The range of the other fourteen units.', why: 'Range is measured as a BINARY gate and applied, but only three units were read: artillery 50 km, railgun 150, infantry 1. An unlisted unit is not gated at all rather than guessed at, and the app says so when a distance is set.', closedBy: 'one boundary search per unit, about three requests each' },
+    { key: 'class_matrix_precision', what: 'The air and naval columns of CLASS_ATTACK rest on ONE cell each.', why: 'The land column is corroborated three ways — the diagonal from unit_stats, eight off-diagonal duels, and the allocation sweep. The air and naval columns are a single reading per unit, and the fliers\u2019 land column had to be corrected for post-fire attenuation before it could be compared at all.', closedBy: 'a second cell per column, against a different target of the same class' },
+    { key: 'multi_round_heavy_units', what: 'Multi-round drift on units with large per-unit HP, and two anomalous death counts.', why: 'The round law was fitted on 50-vs-50 INFANTRY at 0.042%. Cavalry reproduces exactly too, but heavy tanks drift to 0.5% by round four \u2014 260 HP per unit makes the whole-unit survivor count coarse and the model more sensitive to it. Separately, the printed death count is the sum of per-round floor(round damage / per-unit HP), which reproduces 10 of 12 measured cells; infantry rounds 3 and 4 come out one short and nothing explains it.', closedBy: 'a maxRounds ladder on two or three more unit types, chosen for their per-unit HP' },
   { key: 'air_E_above_20_rival', what: 'Whether an attenuated air stack above 20 units uses E(survivors) or a per-unit sum of m(f).', why: 'The post-fire law now reproduces attenuated stacks at 10, 25, 40 and 50 units \u2014 three exactly and 40 units to 0.11% \u2014 so it does hold above the knee, which is what the app needs. But the RIVAL hypothesis was not properly separated: the two formulations I wrote reduce to the same expression for these stack sizes, so this is a confirmation of one law rather than a discrimination between two.', closedBy: 'a rival stated so it actually differs, then one cell where they disagree' },
-  { key: 'E_with_m_above_20', what: 'E(n) combined with m(f) for n > 20.', why: 'Only a 10-unit stack was ever damaged.', closedBy: 'an hp_scaling sweep at n=30' },
-  { key: 'air_wiped', what: 'An air attacker reduced to zero survivors.', why: 'The post-fire law divides by the survivor count; at zero survivors it has no measured branch.', closedBy: 'one deliberately lopsided air_vs_ground cell' },
-        { key: 'trench_10_pool', what: 'The level-10 pool multiplier beyond 2 decimal places.', why: 'Bracketed to [1.2382, 1.2463], which excludes the tidy 1.25.', closedBy: 'a larger stack, which tightens the bracket' },
-  { key: 'fortress_edges', what: 'A fortress against AIR or NAVAL attackers, and fortress-trench interaction.', why: 'The fortress caps at level 5 (the server refuses 6) and works on the ATTACKING side with the identical law — 30% at level 1 either way. Both are now measured. What has never been submitted is a fortress against anything but a land attacker, or a fortress and a trench together.', closedBy: 'a handful of requests' },
-  { key: 'hero_other_terrain_levels', what: 'The six air/naval heroes DEFENDING, and at any level but 10.', why: 'All six are decomposed ATTACKING at level 10 — own attack separated from multiplier with two attacker types apiece — and each buffs the thing its namesake commanded: Hersing submarines, von Thaden zeppelins, Richthofen fighters, T\u014dg\u014d battleships. Ivan buffs nothing and attacks at 1.00. What none of them has been read at is a DEFENDING stack, or any level but 10, and the land heroes proved both of those matter — thirteen of sixteen have different attack and defence values, and every curve moves with level.', closedBy: 'the same two-configuration decomposition run defending, plus a level sweep' },
+                { key: 'hero_other_terrain_levels', what: 'The six air/naval heroes DEFENDING, and at any level but 10.', why: 'All six are decomposed ATTACKING at level 10 — own attack separated from multiplier with two attacker types apiece — and each buffs the thing its namesake commanded: Hersing submarines, von Thaden zeppelins, Richthofen fighters, T\u014dg\u014d battleships. Ivan buffs nothing and attacks at 1.00. What none of them has been read at is a DEFENDING stack, or any level but 10, and the land heroes proved both of those matter — thirteen of sixteen have different attack and defence values, and every curve moves with level.', closedBy: 'the same two-configuration decomposition run defending, plus a level sweep' },
 
   ];
 
@@ -821,6 +823,17 @@ export const PROVENANCE = {
     ground_defender: 'measured: the ground defender is never attenuated, even losing 26% of its pool in the round. Checked against the tac row on all 10 cells: every one dealt exactly stat * E(n_full). Post-fire evaluation would have predicted up to 20% less.',
     air_and_sea_duels: 'derived: air-vs-air and sea-vs-sea are NOT attenuated. Solving the 10v10 diagonals under attenuation forces int 29.925, tac 3.111, zep 5.176, sub 66.667, cl 12.5, bb 50; without it they are exactly 20 / 3 / 5 / 40 / 10 / 40. Every one of the 19 distinct stats measured in this project is a round number, so the unattenuated reading is right. This is an argument from roundness, not a reading — but it is strong enough to lift HANDOVER.md\'s "suspect" flag on the air rows.',
     cause: 'assumed: the consistent reading is that incoming fire resolves first against an air attacker only. The BEHAVIOUR is measured; the mechanism is a story.',
+  },
+  'FORTRESS.scope': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=close_out probe=fortress_class: land, air and naval '
+      + 'attackers against a level-5 fortress, with a defender big enough not to be wiped.',
+    note: 'The DR is UNIVERSAL across attacker classes: a level-5 fortress reduces a land, an '
+      + 'air and a naval attacker\'s damage by exactly 90.00% each. An earlier attempt appeared '
+      + 'to show 90 / 85 / 80 and that was entirely an artifact of CENSORED baselines - the '
+      + 'fortress-0 defender was wiped at 400.0 of 400.0 in all three, so every "reduction" was '
+      + 'measured against the same ceiling. It stacks with a trench (80.00 -> 8.00 at trench 10 '
+      + 'and fortress 5), and it caps at level 5, which the server states outright.',
   },
   'FORTRESS.dr': {
     confidence: 'measured',
