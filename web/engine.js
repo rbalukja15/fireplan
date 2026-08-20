@@ -897,9 +897,30 @@ function makeSide(cfg, role, derivation, caveats, battle) {
         : (role === 'attacker' ? known.atkAttacking : known.atkDefending);
       const ownPool = poolCurve
         ? curveAt(poolCurve, lvl, known, 'pool').m : known.pool;
+      // A HERO'S OWN OUTPUT SCALES WITH ITS OWN HP, by the same m(f) every
+      // unit obeys. Every hero reading in this project set the hero to 100%
+      // and never varied it, so the question was never asked. Tōgō contributes
+      // 15.00 at full health, 7.88 at 50% and 2.17 at 10% -- which is
+      // 15.0 x 0.525 and 15.0 x 0.145 to the printed decimal. Lawrence and
+      // Kangal reproduce it exactly too. The BUFF does not scale: Pershing's
+      // constant 12.00 on an infantry stack is the same at 25% as at 100%.
+      const heroPct = Math.max(0, Math.min(100,
+        num(heroCfg.hpPct === undefined ? 100 : heroCfg.hpPct, 100)));
       hero = { code: heroCfg.code, def: known, level: lvl,
-               atk: ownAtk, pool: ownPool, buffs,
+               atk: ownAtk * hpMultiplier(heroPct / 100),
+               atkFull: ownAtk, hpPct: heroPct,
+               pool: ownPool * (heroPct / 100), poolFull: ownPool, buffs,
                buffedRows: hitOut.length, hpHits: hpHits.length };
+      if (heroPct !== 100) {
+        derivation.push({
+          label: `${label} hero at ${heroPct}% HP`,
+          formula: `${known.label} contributes ${round4(ownAtk)} x `
+            + `m(${round4(heroPct / 100)})=${round4(hpMultiplier(heroPct / 100))} = `
+            + `${round4(hero.atk)}. A hero's own output scales with its own HP `
+            + 'exactly as a unit\'s does (measured); its BUFF does not.',
+          value: hero.atk,
+        });
+      }
       if (ownCurve && role === 'attacker') {
         derivation.push({
           label: `${label} hero own attack`,
@@ -952,6 +973,20 @@ function makeSide(cfg, role, derivation, caveats, battle) {
       if (anyInexact) {
         hero.interpolated = true;
         caveats.push(`${label}: ${known.label} — ${anyInexact.note}.`);
+      }
+      // A HERO WHOSE OWN CONTRIBUTION IS NOT A CONSTANT. Only Tōgō-with-
+      // bombardment, and only attacking. Its figure ranges 37.99 to 64.90 over
+      // stack sizes that change nothing for any other hero, and 34 requests
+      // did not find the rule. A band that says so beats a number that is
+      // right at one stack size and 41% high at another.
+      if (known.atkAttackingBand && role === 'attacker') {
+        hero.unstable = known.atkAttackingBand;
+        caveats.push(`${label}: ${known.label}'s own contribution ATTACKING is `
+          + `not a constant — it reads between ${known.atkAttackingBand.lo} and `
+          + `${known.atkAttackingBand.hi} depending on how many units are on `
+          + `each side, and nothing in the record explains why. Plain Tōgō, `
+          + `same hull and pool, is flat at 15.00 across the identical cells. `
+          + `${round4(hero.atk)} is the top of the band. Defending is clean.`);
       }
     } else if (refused) {
       // WRONG TERRAIN, which is a refusal by the server and not a gap in the

@@ -6565,6 +6565,572 @@ def exp_hero_columns_small(p: Probe) -> None:
         {h: {c: round(v, 2) for c, v in r.items()} for h, r in out.items()},
         sort_keys=True))
 
+
+def exp_togo_b_disagreement(p: Probe) -> None:
+    """One hero reads two different own-attack values. Which reading moves?
+
+    Tōgō-with-bombardment at level 10, decomposed off a light-cruiser control
+    stack, reads 64.34 against a battleship and 64.90 against a submarine. Two
+    targets of the same class, where every other hero and every unit in the
+    table is flat within a class. Something in one of the two configurations is
+    not what it looks like.
+
+    The two sweeps differed in more than the target: one sent 30 defenders and
+    the other 200. So the grid crosses TARGET TYPE with TARGET COUNT rather
+    than changing both at once, which is the mistake that produced the
+    ambiguity in the first place. A third naval target goes in as well, because
+    two points cannot show which of them is the odd one.
+
+    Plain Tōgō runs alongside as the control on the control: it shares the
+    hull, the pool and the level cap and differs only in the bombardment, so if
+    the effect follows the bombardment it should be absent from plain Tōgō and
+    present here.
+    """
+    print(f"\n  {'hero':8} {'target':>7} {'count':>6} {'B lost':>9} "
+          f"{'A lost':>9} {'A pct':>7} {'own A':>8}")
+    grid: dict[tuple[str, str, int], float] = {}
+    for hero in ("togo_b", "togo"):
+        for tgt in ("bb", "sub", "cl"):
+            for n in (30, 200):
+                ov = settings()
+                ov.update(duel(1, "cl", 10, tgt, n,
+                               atk_terrain="sea", def_terrain="sea"))
+                ov.update({HERO_ATK_FIELDS[0]: hero, HERO_ATK_FIELDS[1]: "10",
+                           HERO_ATK_FIELDS[2]: "100%"})
+                try:
+                    p.submit(ov, create=HERO_ATK_FIELDS)
+                except (BareFormReturned, ValueError) as e:
+                    print(f"  {hero:8} {tgt:>7} {n:>6}  {e}"[:100])
+                    continue
+                d = dict(p.last_details)
+                b = d.get("B.1.1") or {}
+                a = d.get("A.1.1") or {}
+                record("togo_b_disagreement",
+                       {"hero": hero, "target": tgt, "def_n": n, "atk_n": 10,
+                        "level": 10, "detail": d},
+                       {k: (v or {}).get("lost") for k, v in d.items()})
+                if b.get("lost") is None or (b.get("pct") or 0) >= 99.9:
+                    print(f"  {hero:8} {tgt:>7} {n:>6} {'wiped/none':>9}")
+                    continue
+                own = b["lost"] - 10.0 * effective_units(10)
+                grid[(hero, tgt, n)] = own
+                print(f"  {hero:8} {tgt:>7} {n:>6} {b['lost']:9.2f} "
+                      f"{a.get('lost') or 0:9.2f} {a.get('pct') or 0:7.1f} "
+                      f"{own:8.2f}")
+
+    print()
+    for hero in ("togo_b", "togo"):
+        vals = {k[1:]: v for k, v in grid.items() if k[0] == hero}
+        if not vals:
+            continue
+        by_target = {}
+        by_count = {}
+        for (tgt, n), v in vals.items():
+            by_target.setdefault(tgt, []).append(v)
+            by_count.setdefault(n, []).append(v)
+        spread = max(vals.values()) - min(vals.values())
+        print(f"  {hero}: spread {spread:.3f} over {len(vals)} cells")
+        for tgt, vs in sorted(by_target.items()):
+            print(f"    by target {tgt:>4}: {[round(x, 2) for x in vs]}")
+        for n, vs in sorted(by_count.items()):
+            print(f"    by count {n:>5}: {[round(x, 2) for x in vs]}")
+        if spread < 0.02:
+            print(f"    FLAT — the earlier disagreement was not the target.")
+
+
+def exp_togo_b_shape(p: Probe) -> None:
+    """Tōgō-with-bombardment's contribution is not a constant. What is it?
+
+    The crossed grid ruled out the obvious answer. Plain Tōgō contributes
+    exactly 15.00 in all six cells of target-type x target-count; the
+    bombardment variant ranges 56.92 to 64.90 over the same six, so the effect
+    belongs to this hero and not to the configuration. Target TYPE does not
+    move it -- a battleship and a submarine at the same count read 64.34 and
+    64.32 -- and target COUNT does, which is the wrong shape for anything the
+    rest of the model contains.
+
+    This sweep walks the defender count on one target type, and then the
+    attacker count on one defender, so the two axes are separated instead of
+    inferred from four scattered cells. Plain Tōgō runs at the ends as the
+    control: if the ladder moves for one and not the other, the bombardment is
+    the whole difference.
+    """
+    print(f"\n  {'hero':8} {'atk n':>6} {'def n':>6} {'B lost':>9} "
+          f"{'units':>8} {'hero':>8} {'hero lost':>10}")
+    def cell(hero: str, an: int, dn: int) -> None:
+        ov = settings()
+        ov.update(duel(1, "cl", an, "cl", dn,
+                       atk_terrain="sea", def_terrain="sea"))
+        ov.update({HERO_ATK_FIELDS[0]: hero, HERO_ATK_FIELDS[1]: "10",
+                   HERO_ATK_FIELDS[2]: "100%"})
+        try:
+            p.submit(ov, create=HERO_ATK_FIELDS)
+        except (BareFormReturned, ValueError) as e:
+            print(f"  {hero:8} {an:>6} {dn:>6}  {e}"[:100])
+            return
+        d = dict(p.last_details)
+        b = d.get("B.1.1") or {}
+        h = d.get("A.1.hero") or {}
+        record("togo_b_shape", {"hero": hero, "atk_n": an, "def_n": dn,
+                                "level": 10, "detail": d},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        if b.get("lost") is None or (b.get("pct") or 0) >= 99.9:
+            print(f"  {hero:8} {an:>6} {dn:>6} {'wiped/none':>9}")
+            return
+        units = 10.0 * effective_units(an)
+        print(f"  {hero:8} {an:>6} {dn:>6} {b['lost']:9.2f} {units:8.2f} "
+              f"{b['lost'] - units:8.2f} {h.get('lost') or 0:10.2f}")
+
+    print("\n  defender count, attacker fixed at 10\n")
+    for dn in (10, 20, 30, 50, 100, 200):
+        cell("togo_b", 10, dn)
+    for dn in (10, 200):
+        cell("togo", 10, dn)
+    print("\n  attacker count, defender fixed at 200\n")
+    for an in (5, 20, 40):
+        cell("togo_b", an, 200)
+    cell("togo", 20, 200)
+
+
+def exp_togo_b_kind(p: Probe) -> None:
+    """A different KIND of variable, since both count axes are crossed and flat.
+
+    Tōgō-with-bombardment's contribution moves with stack sizes and nothing in
+    the model moves with stack sizes that way. The name is the remaining clue:
+    a BOMBARDMENT is a ranged attack, and this project has just established
+    that past 5 km a defender does not fire back at all. If the hero's
+    contribution is really a bombardment resolved separately, distance should
+    do something to it that it does not do to plain Tōgō.
+
+    Three axes, one at a time, against a fixed pair that reads 63.91 today:
+    distance, rounds, and the hero's own HP percentage -- which every reading
+    so far has left at 100 and never varied.
+    """
+    base_units = 10.0 * (effective_units(11) - 1)
+
+    def cell(label: str, hero: str, **kw) -> None:
+        ov = settings(rounds=kw.pop("rounds", 1))
+        ov.update(duel(1, "cl", 10, "cl", 200,
+                       atk_terrain="sea", def_terrain="sea"))
+        ov.update({HERO_ATK_FIELDS[0]: hero, HERO_ATK_FIELDS[1]: "10",
+                   HERO_ATK_FIELDS[2]: kw.pop("hero_hp", "100%")})
+        create = HERO_ATK_FIELDS
+        dist = kw.pop("distance", None)
+        if dist is not None:
+            ov["A.1.position"] = "0"
+            ov["B.1.position"] = str(dist)
+            create = create + ("A.1.position", "B.1.position")
+        try:
+            p.submit(ov, create=create)
+        except (BareFormReturned, ValueError) as e:
+            print(f"  {label:24} {hero:8} {'no result':>10}   {e}"[:105])
+            return
+        d = dict(p.last_details)
+        b = d.get("B.1.1") or {}
+        h = d.get("A.1.hero") or {}
+        record("togo_b_kind", {"probe": label, "hero": hero, "detail": d},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        if b.get("lost") is None or (b.get("pct") or 0) >= 99.9:
+            print(f"  {label:24} {hero:8} {'wiped/none':>10}")
+            return
+        print(f"  {label:24} {hero:8} {b['lost']:10.2f} "
+              f"{b['lost'] - base_units:9.2f}   hero pool "
+              f"{h.get('pool')} lost {h.get('lost')}")
+
+    print(f"\n  {'configuration':24} {'hero':8} {'B lost':>10} "
+          f"{'contrib':>9}")
+    print("\n  baseline\n")
+    cell("distance 0", "togo_b")
+    cell("distance 0", "togo")
+    print("\n  distance — past 5 km the defender cannot answer\n")
+    for dist in (4, 6, 20, 40):
+        cell(f"distance {dist}", "togo_b", distance=dist)
+    cell("distance 20", "togo", distance=20)
+    print("\n  rounds\n")
+    for r in (2, 3):
+        cell(f"rounds {r}", "togo_b", rounds=r)
+    print("\n  the hero's own HP, never varied before\n")
+    for hp in ("50%", "10%"):
+        cell(f"hero hp {hp}", "togo_b", hero_hp=hp)
+        cell(f"hero hp {hp}", "togo", hero_hp=hp)
+
+
+def exp_hero_hp_scaling(p: Probe) -> None:
+    """Does a hero's own output scale with its own HP, like a unit's?
+
+    Every hero reading in this project set the hero to 100% and never varied
+    it, so the question was never asked. It has an answer and it is the law
+    already in the model for units:
+
+        Togo at 100%  contributes 15.00
+        Togo at  50%  contributes  7.88   = 15.0 x m(0.50) = 15.0 x 0.525
+        Togo at  10%  contributes  2.17   = 15.0 x m(0.10) = 15.0 x 0.145
+
+    Two decimal places, twice. If that holds for the land heroes too it is a
+    general law and the engine is missing it for all twenty-two -- a hero on a
+    battered stack has been contributing its full value in every result this
+    app has ever produced.
+    """
+    print(f"\n  {'hero':12} {'unit':5} {'hp':>5} {'B lost':>9} "
+          f"{'contrib':>9} {'predicted':>10} {'m(f)':>7}")
+    for hero, unit, coef in (("pershing", "inf", 4.0), ("larab", "inf", 4.0),
+                             ("alvin", "st", 25.0), ("kangal", "ac", 6.0)):
+        base = None
+        for hp in ("100%", "75%", "50%", "25%"):
+            ov = settings()
+            ov.update(duel(1, unit, 10, "inf", 400))
+            ov.update({HERO_ATK_FIELDS[0]: hero, HERO_ATK_FIELDS[1]: "10",
+                       HERO_ATK_FIELDS[2]: hp})
+            try:
+                p.submit(ov, create=HERO_ATK_FIELDS)
+            except (BareFormReturned, ValueError) as e:
+                print(f"  {hero:12} {unit:5} {hp:>5}  {e}"[:100])
+                continue
+            d = dict(p.last_details)
+            b = d.get("B.1.1") or {}
+            h = d.get("A.1.hero") or {}
+            record("hero_hp_scaling", {"hero": hero, "unit": unit,
+                                       "hero_hp": hp, "detail": d},
+                   {k: (v or {}).get("lost") for k, v in d.items()})
+            if b.get("lost") is None or (b.get("pct") or 0) >= 99.9:
+                print(f"  {hero:12} {unit:5} {hp:>5} {'wiped/none':>9}")
+                continue
+            # The hero outranks these coefficients, so it saturates first and
+            # the units take E(11) - E(1) = 10.
+            contrib = b["lost"] - coef * (effective_units(11) - 1)
+            f = int(hp.rstrip("%")) / 100
+            if base is None:
+                base = contrib
+            m = 0.05 + 0.95 * f
+            print(f"  {hero:12} {unit:5} {hp:>5} {b['lost']:9.2f} "
+                  f"{contrib:9.2f} {base * m:10.2f} {m:7.4f}"
+                  + ("   <-- differs" if abs(contrib - base * m) > 0.05 else ""))
+
+
+def exp_land_hero_attacking(p: Probe) -> None:
+    """Re-decompose every land hero ATTACKING, with a control it does not buff.
+
+    HERO_ATK_ATTACKING says Pershing attacks at 62.00. Against ten infantry it
+    contributes 20.00, and that 20.00 decomposes cleanly across an HP ladder
+    into an own attack of 8.00 and a constant 12.00 -- which is exactly
+    40 x 0.30, an infantry buff of 1.30 on units contributing 40. So 62.00 is
+    an own attack and a buff added together, and the app has no infantry buff
+    for Pershing at all. It quotes 102.00 where the server says 60.00.
+
+    That is the conflation this project has already had to undo twice, and the
+    fix is the same both times: read TWO stack types, one the hero might buff
+    and one it cannot. Three go in here -- light artillery and cavalry appear
+    in no measured buff list, and infantry is the type most heroes touch.
+    Where all three agree the excess is the hero's own attack; where infantry
+    disagrees, the difference names the buff.
+    """
+    probes = [("lart", 5.0), ("cav", 15.0), ("inf", 4.0)]
+    print(f"\n  {'hero':12} " + " ".join(f"{u:>9}" for u, _ in probes)
+          + "   reading")
+    out: dict[str, dict[str, float]] = {}
+    for hero in sorted(HERO_ATK_ATTACKING):
+        cells = []
+        row: dict[str, float] = {}
+        for unit, coef in probes:
+            ov = settings()
+            ov.update(duel(1, unit, 10, "inf", 400))
+            ov.update({HERO_ATK_FIELDS[0]: hero, HERO_ATK_FIELDS[1]: "10",
+                       HERO_ATK_FIELDS[2]: "100%"})
+            try:
+                p.submit(ov, create=HERO_ATK_FIELDS)
+            except (BareFormReturned, ValueError) as e:
+                print(f"    ! {hero} {unit}: {e}"[:100], file=sys.stderr)
+                cells.append(f"{'—':>9}")
+                continue
+            d = dict(p.last_details)
+            b = d.get("B.1.1") or {}
+            record("land_hero_attacking",
+                   {"hero": hero, "unit": unit, "level": 10, "atk_n": 10,
+                    "detail": d},
+                   {k: (v or {}).get("lost") for k, v in d.items()})
+            if b.get("lost") is None or (b.get("pct") or 0) >= 99.9:
+                cells.append(f"{'wiped':>9}")
+                continue
+            # Whether the hero saturates first depends on its own value, which
+            # is what is being measured -- so BOTH placements are solved and
+            # the one that gives a consistent answer across the three probes
+            # wins. Below the knee they coincide: E(11) - E(1) = E(10) = 10.
+            excess = b["lost"] - coef * (effective_units(11) - 1)
+            row[unit] = excess
+            cells.append(f"{excess:9.2f}")
+        out[hero] = row
+        vals = [v for u, v in row.items() if u != "inf"]
+        note = ""
+        if len(vals) == 2:
+            if abs(vals[0] - vals[1]) < 0.05:
+                own = vals[0]
+                inf_x = row.get("inf")
+                if inf_x is not None and abs(inf_x - own) > 0.05:
+                    m = 1 + (inf_x - own) / (4.0 * effective_units(10))
+                    note = f"own {own:.2f}, INFANTRY BUFF x{m:.4f}"
+                else:
+                    note = f"own {own:.2f}, no buff on these three"
+            else:
+                note = f"controls DISAGREE {vals} — one of them is buffed too"
+        recorded = HERO_ATK_ATTACKING.get(hero)
+        if note.startswith("own") and recorded is not None:
+            own = float(note.split()[1].rstrip(","))
+            if abs(own - recorded) > 0.05:
+                note += f"  <-- table says {recorded:.2f}"
+        print(f"  {hero:12} " + " ".join(cells) + f"   {note}")
+    print("\n  raw excesses = " + json.dumps(
+        {h: {u: round(v, 2) for u, v in r.items()} for h, r in out.items()},
+        sort_keys=True))
+
+
+# The six land types the lart/cav/inf probe did not cover. Coefficients are the
+# land column of the attack table, which is corroborated three ways.
+LAND_SCREEN_REST = [("ac", 6.0), ("art", 8.0), ("rrg", 20.0),
+                    ("lt", 30.0), ("ht", 45.0), ("st", 25.0)]
+
+
+def exp_land_hero_screen(p: Probe) -> None:
+    """Which land types does each hero buff ATTACKING? Never screened.
+
+    HERO_BUFF_CHANNEL records which SIDE a known buff acts on, and the buffs it
+    knows about were found by a screen run on DEFENDING stacks. A buff that
+    acts only when attacking is invisible to that screen -- it measures zero
+    and gets recorded as absent.
+
+    The air heroes proved that channel has both signs: Richthofen, von Thaden
+    and Hersing all read exactly 1.0000 defending. The three-type probe then
+    found the mirror on land. Pershing buffs infantry AND cavalry at 1.30 with
+    the app holding no buff for it at all, and quoting an own attack of 62.00
+    that is 8.00 plus a buff. Allenby buffs cavalry.
+
+    So this fills the screen out: every land hero against the remaining six
+    land types, with the light-artillery reading from the previous sweep as the
+    unbuffed baseline for each hero.
+    """
+    print(f"\n  {'hero':12} {'own':>6} " + " ".join(f"{u:>7}" for u, _ in
+                                                    LAND_SCREEN_REST))
+    own_by_hero: dict[str, float] = {}
+    for line in open(RESULTS_PATH):
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if r.get("experiment") != "land_hero_attacking":
+            continue
+        m = r.get("meta") or {}
+        if m.get("unit") != "lart":
+            continue
+        b = ((m.get("detail") or {}).get("B.1.1") or {})
+        if b.get("lost") is None:
+            continue
+        own_by_hero[m["hero"]] = b["lost"] - 5.0 * (effective_units(11) - 1)
+
+    found: dict[str, dict[str, float]] = {}
+    for hero in sorted(own_by_hero):
+        own = own_by_hero[hero]
+        cells = []
+        for unit, coef in LAND_SCREEN_REST:
+            ov = settings()
+            ov.update(duel(1, unit, 10, "inf", 400))
+            ov.update({HERO_ATK_FIELDS[0]: hero, HERO_ATK_FIELDS[1]: "10",
+                       HERO_ATK_FIELDS[2]: "100%"})
+            try:
+                p.submit(ov, create=HERO_ATK_FIELDS)
+            except (BareFormReturned, ValueError) as e:
+                print(f"    ! {hero} {unit}: {e}"[:100], file=sys.stderr)
+                cells.append(f"{'—':>7}")
+                continue
+            d = dict(p.last_details)
+            b = d.get("B.1.1") or {}
+            record("land_hero_screen",
+                   {"hero": hero, "unit": unit, "level": 10, "atk_n": 10,
+                    "detail": d},
+                   {k: (v or {}).get("lost") for k, v in d.items()})
+            if b.get("lost") is None or (b.get("pct") or 0) >= 99.9:
+                cells.append(f"{'wiped':>7}")
+                continue
+            excess = b["lost"] - coef * (effective_units(11) - 1)
+            if abs(excess - own) < 0.05:
+                cells.append(f"{'-':>7}")
+            else:
+                m_ = 1 + (excess - own) / (coef * effective_units(10))
+                found.setdefault(hero, {})[unit] = round(m_, 4)
+                cells.append(f"x{m_:6.4f}")
+        print(f"  {hero:12} {own:6.2f} " + " ".join(cells))
+    print("\n  ATTACKING buffs found on the six new types = " + json.dumps(
+        found, sort_keys=True))
+
+
+# The buffs the attacking screen found that the app has no record of, with the
+# type used to read each curve and that type's land coefficient.
+NEW_BUFFS = {
+    "pershing": ("ht", 45.0, 20),
+    "allen":    ("cav", 15.0, 15),
+    "georg":    ("art", 8.0, 20),
+    "marco":    ("lt", 30.0, 10),
+}
+
+
+def _screen_cell(p: Probe, hero: str | None, level: int, unit: str,
+                 side: str) -> float | None:
+    """One reading, hero on whichever side, returning that side's output."""
+    ov = settings()
+    if side == "attack":
+        ov.update(duel(1, unit, 10, "inf", 400))
+        fields = HERO_ATK_FIELDS
+        row = "B.1.1"
+    else:
+        ov.update(duel(1, "inf", 400, unit, 10))
+        fields = HERO_FIELDS
+        row = "A.1.1"
+    create: tuple[str, ...] = ()
+    if hero:
+        ov.update({fields[0]: hero, fields[1]: str(level), fields[2]: "100%"})
+        create = fields
+    try:
+        p.submit(ov, create=create)
+    except (BareFormReturned, ValueError) as e:
+        print(f"    ! {hero or 'none'} {unit} {side}: {e}"[:100], file=sys.stderr)
+        return None
+    d = dict(p.last_details)
+    cell = d.get(row) or {}
+    record("hero_new_buffs", {"hero": hero, "level": level, "unit": unit,
+                              "side": side, "detail": d},
+           {k: (v or {}).get("lost") for k, v in d.items()})
+    if cell.get("lost") is None or (cell.get("pct") or 0) >= 99.9:
+        return None
+    return cell["lost"]
+
+
+def exp_hero_new_buffs(p: Probe) -> None:
+    """The channel and the curve for four buffs the app does not have.
+
+    The attacking screen found five heroes buffing types nobody had recorded,
+    and four of them the app holds no buff for at all: Pershing on infantry,
+    cavalry, armoured cars, light and heavy tanks; Allenby on cavalry; Georg on
+    artillery; Marco on light tanks. Their own attack values are wrong by the
+    same amount, because 62.00 for Pershing is 8.00 plus a buff added together.
+
+    Two things are needed before any of it can go in the table. WHICH SIDE the
+    buff acts on -- a defending screen found none of these, which is evidence
+    it is attack-only but not proof, since that screen may simply not have
+    tried these types. And the CURVE, because every hero curve in this project
+    moves with level and quoting a level-10 figure as a constant is the error
+    that produced this whole sweep.
+    """
+    print("\n  1. the channel: does the buff act on a DEFENDING stack too?\n")
+    print(f"  {'hero':10} {'unit':5} {'base':>9} {'with hero':>10} "
+          f"{'implied M':>10}   verdict")
+    channels: dict[str, str] = {}
+    for hero, (unit, coef, cap) in NEW_BUFFS.items():
+        base = _screen_cell(p, None, 10, unit, "defend")
+        with_ = _screen_cell(p, hero, 10, unit, "defend")
+        if base is None or with_ is None:
+            print(f"  {hero:10} {unit:5} {'unreadable':>9}")
+            continue
+        # The hero's own DEFENDING value is in the table already and is small
+        # for all four, so it sits behind these units and takes E(11)-E(10).
+        own_def = {"pershing": 8.0, "allen": 10.0, "georg": 6.0,
+                   "marco": 15.0}[hero]
+        own_part = own_def * (effective_units(11) - effective_units(10))
+        m = (with_ - own_part) / base if base else float("nan")
+        verdict = "ATTACK-ONLY" if abs(m - 1.0) < 0.01 else f"also defending"
+        channels[hero] = "attack" if abs(m - 1.0) < 0.01 else "both"
+        print(f"  {hero:10} {unit:5} {base:9.2f} {with_:10.2f} {m:10.4f}   "
+              f"{verdict}")
+
+    print("\n  2. is the hero's own attack flat with level?\n")
+    own_curves: dict[str, dict[int, float]] = {}
+    for hero, (unit, coef, cap) in NEW_BUFFS.items():
+        cells = []
+        for lvl in (1, 10, cap):
+            v = _screen_cell(p, hero, lvl, "lart", "attack")
+            if v is None:
+                cells.append(f"{lvl}:—")
+                continue
+            own = v - 5.0 * (effective_units(11) - 1)
+            own_curves.setdefault(hero, {})[lvl] = own
+            cells.append(f"{lvl}:{own:.2f}")
+        vals = list(own_curves.get(hero, {}).values())
+        flat = len(set(round(x, 2) for x in vals)) == 1 if vals else False
+        print(f"  {hero:10} " + " ".join(cells)
+              + ("   FLAT" if flat else "   MOVES WITH LEVEL"))
+
+    print("\n  3. the curve, level by level\n")
+    out: dict[str, dict[int, float]] = {}
+    for hero, (unit, coef, cap) in NEW_BUFFS.items():
+        cells = []
+        for lvl in range(1, cap + 1):
+            v = _screen_cell(p, hero, lvl, unit, "attack")
+            if v is None:
+                cells.append(f"{lvl}:—")
+                continue
+            oc = own_curves.get(hero, {})
+            own = oc.get(lvl, oc.get(10))
+            if own is None:
+                cells.append(f"{lvl}:?")
+                continue
+            m = (v - own) / (coef * effective_units(10))
+            out.setdefault(hero, {})[lvl] = round(m, 4)
+            cells.append(f"{lvl}:{m:.2f}")
+        print(f"  {hero:10} {unit:5} " + " ".join(cells))
+    print("\n  curves = " + json.dumps(out, sort_keys=True))
+    print("  channels = " + json.dumps(channels, sort_keys=True))
+
+
+def exp_hank_sides(p: Probe) -> None:
+    """Does hank's infantry buff differ by side, or is one curve point wrong?
+
+    The table has 1.09 at level 10, from a DEFENDING screen. Attacking reads
+    1.10: ten infantry contribute 40.00, hank's own attack is 5.00, and the
+    server prints 49.00. Either the two sides genuinely differ -- which one
+    hero already does, Tōgō-with-bombardment, at 1.2944 attacking and 1.30
+    defending -- or one of the two readings is a rounding of the other.
+
+    Both sides at every level, since a single point cannot tell a per-side
+    curve from a single bad cell.
+    """
+    print(f"\n  {'lvl':>3} {'attacking':>10} {'M atk':>7} "
+          f"{'defending':>10} {'M def':>7}   same?")
+    for lvl in range(1, 11):
+        vals = {}
+        for side in ("attack", "defend"):
+            ov = settings()
+            if side == "attack":
+                ov.update(duel(1, "inf", 10, "inf", 400))
+                fields, row = HERO_ATK_FIELDS, "B.1.1"
+            else:
+                ov.update(duel(1, "inf", 400, "inf", 10))
+                fields, row = HERO_FIELDS, "A.1.1"
+            ov.update({fields[0]: "hank", fields[1]: str(lvl),
+                       fields[2]: "100%"})
+            try:
+                p.submit(ov, create=fields)
+            except (BareFormReturned, ValueError) as e:
+                print(f"  {lvl:>3}  {side}: {e}"[:90])
+                continue
+            d = dict(p.last_details)
+            c = d.get(row) or {}
+            record("hank_sides", {"level": lvl, "side": side, "detail": d},
+                   {k: (v or {}).get("lost") for k, v in d.items()})
+            if c.get("lost") is None or (c.get("pct") or 0) >= 99.9:
+                continue
+            vals[side] = c["lost"]
+        a = vals.get("attack")
+        dfd = vals.get("defend")
+        # attacking: own 5.0 sits behind infantry's 4.0? No -- 5.0 > 4.0, so the
+        # hero saturates first and the ten units take E(11) - E(1) = 10.
+        m_a = (a - 5.0) / (4.0 * effective_units(10)) if a is not None else None
+        # defending: hank defends at 6.0, above infantry's 5.0, so first again.
+        m_d = (dfd - 6.0) / (5.0 * effective_units(10)) if dfd is not None else None
+        same = (m_a is not None and m_d is not None
+                and abs(m_a - m_d) < 0.002)
+        print(f"  {lvl:>3} {a if a is None else f'{a:.2f}':>10} "
+              f"{m_a if m_a is None else f'{m_a:.4f}':>7} "
+              f"{dfd if dfd is None else f'{dfd:.2f}':>10} "
+              f"{m_d if m_d is None else f'{m_d:.4f}':>7}   "
+              + ("yes" if same else "DIFFER"))
+
 # Every (hero, unit) pair with a measured OUTPUT buff, and the level cap to
 # sweep to. Read with a SINGLE-TYPE stack, which needs no baseline subtraction
 # and cannot be contaminated by another curve.
@@ -7655,6 +8221,14 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "hero_own_curves": exp_hero_own_curves,
     "hero_class_columns": exp_hero_class_columns,
     "hero_columns_small": exp_hero_columns_small,
+    "togo_b_disagreement": exp_togo_b_disagreement,
+    "togo_b_shape": exp_togo_b_shape,
+    "togo_b_kind": exp_togo_b_kind,
+    "hero_hp_scaling": exp_hero_hp_scaling,
+    "land_hero_attacking": exp_land_hero_attacking,
+    "land_hero_screen": exp_land_hero_screen,
+    "hero_new_buffs": exp_hero_new_buffs,
+    "hank_sides": exp_hank_sides,
     "mixed_stacks": exp_mixed_stacks,
     "heroes": exp_heroes,
     "stack_limits": exp_stack_limits,

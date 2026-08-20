@@ -773,11 +773,16 @@ export const HEROES = {
                   buffs: { inf: { channel: 'defence', curve: { 1: 1.10, 2: 1.15, 3: 1.15, 4: 1.16, 5: 1.20, 6: 1.22, 7: 1.24, 8: 1.26, 9: 1.28, 10: 1.30, 11: 1.32, 12: 1.34, 13: 1.36, 14: 1.38, 15: 1.40 } },
                            ac:  { channel: 'defence', curve: { 1: 1.10, 2: 1.15, 3: 1.15, 4: 1.16, 5: 1.20, 6: 1.22, 7: 1.24, 8: 1.26, 9: 1.28, 10: 1.30, 11: 1.32, 12: 1.34, 13: 1.36, 14: 1.38, 15: 1.40 } } },
                   hpBuffs: { ac: { 1: 1.00, 2: 1.00, 3: 1.05, 4: 1.05, 5: 1.09, 6: 1.09, 7: 1.13, 8: 1.13, 9: 1.17, 10: 1.17, 11: 1.21, 12: 1.21, 13: 1.25, 14: 1.25, 15: 1.30 } } },
-  marco:        { label: 'Fiero “Marco” Martello', atkDefending: 15.0, atkAttacking: 24.6,
+  // atkAttacking was 24.6 and is 15.0. The old figure was an own attack and
+  // an ATTACK-ONLY light-tank buff added together, read off a stack the hero
+  // buffs. Same defect in allen, georg and pershing; see HEROES.attackOnly.
+  marco:        { label: 'Fiero “Marco” Martello', atkDefending: 15.0, atkAttacking: 15.0,
                   pool: 60, sits: 'first', maxLevel: 10,
+                  buffs: { lt: { channel: 'attack', curve: { 1: 1.05, 2: 1.08, 3: 1.08, 4: 1.09, 5: 1.10, 6: 1.11, 7: 1.12, 8: 1.13, 9: 1.14, 10: 1.16 } } },
                   hpBuffs: { lt: { 1: 1.00, 2: 1.00, 3: 1.05, 4: 1.06, 5: 1.07, 6: 1.08, 7: 1.09, 8: 1.10, 9: 1.11, 10: 1.12 } } },
-  allen:        { label: 'Viscount Allenby', atkDefending: 10.0, atkAttacking: 29.6,
-                  pool: 50, sits: 'first', maxLevel: 15 },
+  allen:        { label: 'Viscount Allenby', atkDefending: 10.0, atkAttacking: 20.0,
+                  pool: 50, sits: 'first', maxLevel: 15,
+                  buffs: { cav: { channel: 'attack', curve: { 1: 1.10, 2: 1.15, 3: 1.20, 4: 1.20, 5: 1.24, 6: 1.24, 7: 1.27, 8: 1.27, 9: 1.30, 10: 1.32, 11: 1.34, 12: 1.36, 13: 1.38, 14: 1.40, 15: 1.40 } } } },
   larab:        { label: 'Lawrence of Arabia', atkDefending: 10.0, atkAttacking: 45.0,
                   pool: 75, sits: 'first', maxLevel: 20 },
   alvin:        { label: 'Alvin C. York', atkDefending: 8.30, atkAttacking: 25.0,
@@ -786,23 +791,62 @@ export const HEROES = {
                   hpBuffs: { st: { 1: 1.00, 2: 1.05, 3: 1.10, 4: 1.10, 5: 1.14, 6: 1.14, 7: 1.18, 8: 1.18, 9: 1.22, 10: 1.22, 11: 1.26, 12: 1.26, 13: 1.30, 14: 1.30, 15: 1.34, 16: 1.34, 17: 1.38, 18: 1.38, 19: 1.42, 20: 1.42 } } },
   lucien:       { label: 'Lucien Laroche', atkDefending: 8.0, atkAttacking: 8.0,
                   pool: 40, sits: 'first', maxLevel: 15 },
+  // The second unstable hero, and the second "w/" variant. Attacking, its own
+  // contribution reads 37.94 against light artillery, 37.79 against infantry
+  // and 37.49 against cavalry -- a 1.2% spread where plain Lucien is 8.00
+  // flat, and where the table said 8.00 for this one too. Tōgō-with-
+  // bombardment behaves the same way and much more strongly. Both are "with
+  // something" variants and neither is explained, so both report a band.
+  // The second anomalous hero, and the second "w/" variant. On a SIX-TYPE
+  // stack it contributes exactly 8.00 -- the same as plain Lucien, which is
+  // what this table has always said. On a SINGLE-TYPE stack it contributes
+  // 36.44 to 37.94, and the extra is close to a flat 29 whatever the stack's
+  // coefficient is: 29.94 on light artillery whose rows total 50, and 28.44 on
+  // heavy tanks whose rows total 450. That is not a multiplier and not an own
+  // attack, and it vanishes on the mixed stack entirely.
+  //
+  // 8.00 is what goes in the table, because it is the figure the six-type
+  // reading and plain Lucien agree on. The band records the rest, and the
+  // engine says so rather than quoting either end as though it were settled.
+  // Tōgō-with-bombardment is the same family and much stronger.
   lucien_g:     { label: 'Lucien Laroche w/gas', atkDefending: 8.0, atkAttacking: 8.0,
+                  atkAttackingBand: { lo: 8.0, hi: 37.94, measuredAt: 'level 10; 8.00 on a six-type stack, 36.44-37.94 on single-type stacks' },
                   pool: 40, sits: 'first', maxLevel: 15 },
-  pershing:     { label: 'John J. Pershing “Black Jack”', atkDefending: 8.0, atkAttacking: 62.0,
+  // atkAttacking was 62.0 and is 8.0. The old figure was this hero's own
+  // attack plus an ATTACK-ONLY buff, added together because the stack it was
+  // read on is one Pershing buffs. The app quoted 102.00 against ten infantry
+  // where the server prints 60.00. It buffs FIVE types -- infantry, cavalry,
+  // armoured cars, light and heavy tanks -- and none of artillery, railguns or
+  // stormtroopers, all at the same curve, read on heavy tanks and confirmed at
+  // level 10 on all five.
+  pershing:     { label: 'John J. Pershing “Black Jack”', atkDefending: 8.0, atkAttacking: 8.0,
                   pool: 80, sits: 'first', maxLevel: 20,
+                  buffs: { inf: { channel: 'attack', curve: { 1: 1.10, 2: 1.12, 3: 1.14, 4: 1.17, 5: 1.20, 6: 1.22, 7: 1.24, 8: 1.26, 9: 1.28, 10: 1.30, 11: 1.32, 12: 1.34, 13: 1.36, 14: 1.38, 15: 1.40, 16: 1.42, 17: 1.44, 18: 1.46, 19: 1.48, 20: 1.50 } },
+                           cav: { channel: 'attack', curve: { 1: 1.10, 2: 1.12, 3: 1.14, 4: 1.17, 5: 1.20, 6: 1.22, 7: 1.24, 8: 1.26, 9: 1.28, 10: 1.30, 11: 1.32, 12: 1.34, 13: 1.36, 14: 1.38, 15: 1.40, 16: 1.42, 17: 1.44, 18: 1.46, 19: 1.48, 20: 1.50 } },
+                           ac:  { channel: 'attack', curve: { 1: 1.10, 2: 1.12, 3: 1.14, 4: 1.17, 5: 1.20, 6: 1.22, 7: 1.24, 8: 1.26, 9: 1.28, 10: 1.30, 11: 1.32, 12: 1.34, 13: 1.36, 14: 1.38, 15: 1.40, 16: 1.42, 17: 1.44, 18: 1.46, 19: 1.48, 20: 1.50 } },
+                           lt:  { channel: 'attack', curve: { 1: 1.10, 2: 1.12, 3: 1.14, 4: 1.17, 5: 1.20, 6: 1.22, 7: 1.24, 8: 1.26, 9: 1.28, 10: 1.30, 11: 1.32, 12: 1.34, 13: 1.36, 14: 1.38, 15: 1.40, 16: 1.42, 17: 1.44, 18: 1.46, 19: 1.48, 20: 1.50 } },
+                           ht:  { channel: 'attack', curve: { 1: 1.10, 2: 1.12, 3: 1.14, 4: 1.17, 5: 1.20, 6: 1.22, 7: 1.24, 8: 1.26, 9: 1.28, 10: 1.30, 11: 1.32, 12: 1.34, 13: 1.36, 14: 1.38, 15: 1.40, 16: 1.42, 17: 1.44, 18: 1.46, 19: 1.48, 20: 1.50 } } },
                   // The infantry curve DROPS at level 6, from 1.70 to 1.10, and
                   // climbs again. Measured exactly, reproduced at three units as
                   // well as two, and confirmed by an independently derived pool.
                   // No formula fits both sides of that step.
                   hpBuffs: { inf: { 1: 1.00, 2: 1.50, 3: 1.50, 4: 1.70, 5: 1.70, 6: 1.10, 7: 1.10, 8: 1.12, 9: 1.12, 10: 1.14, 11: 1.14, 12: 1.16, 13: 1.16, 14: 1.18, 15: 1.18, 16: 1.20, 17: 1.20, 18: 1.22, 19: 1.22, 20: 1.25 },
                              ht:  { 1: 1.00, 2: 1.00, 3: 1.10, 4: 1.10, 5: 1.15, 6: 1.15, 7: 1.20, 8: 1.20, 9: 1.25, 10: 1.25, 11: 1.30, 12: 1.30, 13: 1.35, 14: 1.35, 15: 1.40, 16: 1.40, 17: 1.45, 18: 1.45, 19: 1.50, 20: 1.50 } } },
-  georg:        { label: 'Georg Bruchmüller', atkDefending: 6.0, atkAttacking: 16.8,
-                  pool: 40, sits: 'first', maxLevel: 20 },
+  georg:        { label: 'Georg Bruchmüller', atkDefending: 6.0, atkAttacking: 12.0,
+                  pool: 40, sits: 'first', maxLevel: 20,
+                  buffs: { art: { channel: 'attack', curve: { 1: 1.15, 2: 1.20, 3: 1.20, 4: 1.22, 5: 1.22, 6: 1.24, 7: 1.26, 8: 1.28, 9: 1.30, 10: 1.30, 11: 1.32, 12: 1.34, 13: 1.36, 14: 1.38, 15: 1.40, 16: 1.42, 17: 1.44, 18: 1.46, 19: 1.48, 20: 1.50 } } } },
   tatiana:      { label: 'Tatiana Minchakievich (Enemy Land)', atkDefending: 6.0, atkAttacking: 45.6,
                   pool: 15, sits: 'first', maxLevel: 20 },
   hank:         { label: 'Henry “Hank” Callahan', atkDefending: 6.0, atkAttacking: 5.0,
                   pool: 40, sits: 'first', maxLevel: 10,
-                  buffs: { inf: { channel: 'both', curve: { 1: 1.00, 2: 1.03, 3: 1.03, 4: 1.05, 5: 1.06, 6: 1.06, 7: 1.07, 8: 1.08, 9: 1.09, 10: 1.09 } } } },
+                  // The two sides agree exactly at levels 1 through 9 and part
+                  // at the cap: 1.10 attacking, 1.09 defending. Read on both
+                  // sides at every level, because one point cannot tell a
+                  // per-side curve from a single bad cell. The curve here came
+                  // from a DEFENDING screen, so the attacking cap was 0.4 low.
+                  buffs: { inf: { channel: 'both',
+                           curve:          { 1: 1.00, 2: 1.03, 3: 1.03, 4: 1.05, 5: 1.06, 6: 1.06, 7: 1.07, 8: 1.08, 9: 1.09, 10: 1.10 },
+                           curveDefending: { 1: 1.00, 2: 1.03, 3: 1.03, 4: 1.05, 5: 1.06, 6: 1.06, 7: 1.07, 8: 1.08, 9: 1.09, 10: 1.09 } } } },
   johan:        { label: 'Johan “Aardvark” Maes', atkDefending: 5.0, atkAttacking: 4.0,
                   pool: 40, sits: 'first', maxLevel: 20 },
   tatiana_home: { label: 'Tatiana Minchakievich (Friendly Land)', atkDefending: 5.0, atkAttacking: 10.0,
@@ -895,15 +939,29 @@ export const HEROES_OTHER_TERRAIN = {
             why: "Can't have Tōgō Heihachirō on land." },
   togo_b: { label: 'Tōgō Heihachirō w/bombardment', terrain: 'sea', maxLevel: 20, sits: 'first',
             atkAttacking: 64.90, atkDefending: 15.0, pool: 120.6,
-            // TWO CONFIGURATIONS DISAGREE BY 0.9% ON THIS HERO AND NOTHING
-            // ELSE. Its own attack at level 10 reads 64.90 against a submarine
-            // and 64.34 against a battleship -- two targets of the SAME class,
-            // where every other hero and every unit in the table is flat
-            // within a class. The twenty-level sweep is the one used here,
-            // because twenty points with a clean linear structure outweigh one
-            // cell, and because the curve has to be self-consistent. The older
-            // cell is still replayed, at a tolerance that names this hero.
-            // The disagreement is in NOT_MEASURED rather than averaged away.
+            // ITS ATTACKING CONTRIBUTION IS NOT A CONSTANT, and 34 requests
+            // did not find what it is. Everything else in this table is flat:
+            // plain Tōgō, which shares the hull, the pool and the level cap
+            // and differs only in the bombardment, contributes exactly 15.00
+            // in every one of the same cells.
+            //
+            //   defender count, attacker 10:  37.99 50.43 56.92 60.80 62.85 63.91
+            //                       at n =       10    20    30    50   100    200
+            //   attacker count, defender 200: 64.90 63.91 61.58 57.47
+            //                       at n =        5    10    20    40
+            //
+            // Ruled out: target TYPE (a battleship and a submarine at the same
+            // count read 64.34 and 64.32); INCOMING DAMAGE (identical at
+            // defender 50, 100 and 200 -- E(n) caps at 35 -- while the
+            // contribution still climbs 60.80, 62.85, 63.91); the hero's own
+            // HP loss (13.80, 13.70 and 13.60 against contributions of 60.80,
+            // 62.85 and 63.91, moving the wrong way); and the hero's share of
+            // the stack's HP (constant down the whole defender ladder).
+            //
+            // So the engine reports a BAND for this hero attacking, and says
+            // so, rather than a single number that is right at one stack size
+            // and 41% high at another. Defending it is clean: 15.00 flat.
+            atkAttackingBand: { lo: 37.99, hi: 64.90, measuredAt: 'level 10, cl control' },
             atkAttackingCurve: { 1: 24.98, 2: 29.97, 3: 29.97, 4: 34.96, 5: 39.95, 6: 44.94, 7: 49.93, 8: 54.92, 9: 59.91, 10: 64.90, 11: 69.89, 12: 74.88, 13: 79.87, 14: 84.86, 15: 89.85, 16: 94.84, 17: 99.83, 18: 104.82, 19: 109.81, 20: 114.80 },
             // TWO CURVES, one per side. Attacking, the battleship buff reads
             // 1.2944 at level 10; defending, the same hero at the same level
@@ -977,7 +1035,7 @@ export const FORM_DOMAINS = {
 export const NOT_MEASURED = [
     { key: 'air_to_air_mechanism', what: 'WHY an air stack is attenuated against surface targets and not against other aircraft.', why: 'The scope is measured hard and modelled. Attacking land or naval, an air stack fires with what survives the round; attacking air it does not \u2014 twenty fighters lose 58% of their pool to two hundred fighters and still deal the full 20.0 x E(20) = 400.00. Embarkation is seen by every attacker including air, which is what the discriminating cell showed: against two hundred EMBARKED fighters the same stack deals 98.61, the naval column attenuated. What no black-box reading can reach is the mechanism \u2014 whether air-to-air resolves simultaneously or whether something else exempts it.', closedBy: 'nothing available. The obvious experiment is an air stack whose target cannot shoot back, and there is no such configuration: every air unit bisects to a range of 5 km and 5 km is exactly where return fire stops, so an aircraft is never out of reach of what it is attacking' },
     { key: 'return_fire_generality', what: 'Whether the 5 km return-fire cut-off is a constant or every unit\u2019s own melee reach.', why: 'Past 5 km a bombarded defender deals exactly zero while still taking the attacker\u2019s full figure. That is measured hard \u2014 lart at 4 and 5 km loses 20.00, at 6, 7 and 8 km loses nothing, and three defenders that could easily shoot back (lart reaching 30, cruiser 40, battleship 75) are all silent at 8 km, as is a mixed inf+lart defender at 6. But every unit in the roster ALSO bisected to a melee attack range of exactly 5, so "the cut-off is the constant 5" and "the cut-off is the defender\u2019s own melee reach" predict the identical number everywhere. The two are indistinguishable in this game and the engine uses the constant.', closedBy: 'nothing available \u2014 it would need a unit whose melee reach is not 5, and there is none' },
-    { key: 'togo_b_disagreement', what: 'Two configurations disagree by about 1% on one hero, T\u014dg\u014d-with-bombardment, and on nothing else in the record.', why: 'Its own attack at level 10 reads 64.90 against a submarine and 64.34 against a battleship \u2014 two targets of the SAME class, where every other hero and every unit in the table is flat within a class. Its battleship multiplier disagrees by about the same 1%. The twenty-level sweep is what the table uses, because twenty points with a clean linear structure outweigh one cell and the curve has to be self-consistent, so three older cells sit about 1% out and are asserted at 1.5% rather than dropped. Whether the difference is the target, the sweep, or something about what \u2018with bombardment\u2019 means is not known.', closedBy: 'the same decomposition run against a third naval target, and against the two originals again, to see which reading moves' },
+    { key: 'togo_b_unstable', what: 'Two heroes\u2019 own contribution is not a constant, and neither is explained. Both are \u201cwith something\u201d variants.', why: 'T\u014dg\u014d-with-bombardment ATTACKING contributes between 37.99 and 64.90 depending on how many units are on each side. Every other hero in both tables is flat, and so is plain T\u014dg\u014d \u2014 same hull, same pool, same level cap, differing only in the bombardment \u2014 which reads exactly 15.00 in the identical cells. Ruled out by two crossed sweeps: target TYPE (a battleship and a submarine at the same count read 64.34 and 64.32), INCOMING DAMAGE (identical at defender 50, 100 and 200 because E(n) caps at 35, while the contribution still climbs 60.80, 62.85, 63.91), the hero\u2019s own HP loss (13.80, 13.70 and 13.60 against contributions of 60.80, 62.85 and 63.91 \u2014 moving the wrong way), and its share of the stack\u2019s HP (constant down the whole defender ladder). The engine reports the band and says so rather than quoting one end of it. Defending is clean at 15.00 flat. LUCIEN LAROCHE W/GAS is the same family and was found the same week: on a six-type stack it contributes 8.00, exactly what plain Lucien does, and on a single-type stack 36.44 to 37.94 \u2014 with the extra close to a flat 29 whatever the stack\u2019s coefficient (29.94 on light artillery totalling 50, 28.44 on heavy tanks totalling 450). Not a multiplier, not an own attack, and absent from the mixed stack entirely. That both anomalies are \u201cw/\u201d variants and nothing else in either table behaves this way is the only pattern on offer.', closedBy: 'a mechanism nobody has proposed yet \u2014 the two obvious axes are both crossed and both flat, so the next step is a different KIND of variable: rounds, distance, or the hero\u2019s own HP percentage set explicitly rather than left at 100' },
 
   ];
 
@@ -1345,6 +1403,38 @@ export const PROVENANCE = {
       + 'by 0.33% at fifty units, or against the raw count instead of the saturated one, which '
       + 'misses by 42.9%. Both are rejected by these four cells, so the discrimination the gap '
       + 'asked for exists -- it was just aimed at the wrong pair.',
+  },
+  'HEROES.hpScaling': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=hero_hp_scaling (16 requests: four heroes at 100, 75, 50 and '
+      + '25 per cent) plus togo_b_kind, which found it.',
+    note: 'A HERO\'S OWN OUTPUT SCALES WITH ITS OWN HP, by the same m(f) = 0.05 + 0.95f every unit '
+      + 'obeys. Every hero reading in this project set the hero to 100% and never varied it, so the '
+      + 'question was never asked and the app applied a hero\'s full contribution however battered '
+      + 'it was. Tōgō contributes 15.00 at full health, 7.88 at 50% and 2.17 at 10% -- which is '
+      + '15.0 x 0.525 and 15.0 x 0.145 to the printed decimal. Lawrence and Kangal reproduce it '
+      + 'exactly. THE BUFF DOES NOT SCALE: Pershing\'s constant 12.00 on an infantry stack is the '
+      + 'same at 25% as at 100%, which is what let the two channels be separated at all -- the '
+      + 'HP ladder is a decomposition, not just a check.',
+  },
+  'HEROES.attackOnly': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiments land_hero_attacking (48 requests, three types per hero), '
+      + 'land_hero_screen (96, the remaining six land types), hero_new_buffs (85: channel, '
+      + 'own-attack flatness and the full curve for each) and hank_sides (20).',
+    note: 'BUFFS THAT ACT ONLY WHEN ATTACKING, which no screen had ever looked for. Every buff in '
+      + 'this table was found on a DEFENDING stack, and a buff that measures zero there is recorded '
+      + 'as absent -- the exact mirror of the defence-only buffs Joffre and Kangal have. Four '
+      + 'heroes carry them: Pershing on infantry, cavalry, armoured cars, light and heavy tanks '
+      + '(not artillery, railguns or stormtroopers); Allenby on cavalry; Georg on artillery; Marco '
+      + 'on light tanks. All four measure exactly 1.0000 on a defending stack. AND THE SAME SWEEP '
+      + 'CORRECTED FOUR OWN-ATTACK VALUES, because an own attack read off a stack the hero buffs is '
+      + 'an own attack and a buff added together: Pershing 62.0 -> 8.0, Allenby 29.6 -> 20.0, Georg '
+      + '16.8 -> 12.0, Marco 24.6 -> 15.0. The app quoted 102.00 against ten infantry with Pershing '
+      + 'where the server prints 60.00. The six-type stack that produced the original 62.0 now '
+      + 'reproduces at 308.00 exactly, from 8.0 plus buffs on the three types it contains. Hank\'s '
+      + 'infantry buff also turned out to differ by side at its cap alone -- 1.10 attacking, 1.09 '
+      + 'defending, with levels 1 to 9 identical on both.',
   },
   'STACK.composition': {
     confidence: 'measured',

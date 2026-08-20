@@ -1157,9 +1157,19 @@ console.log('\n12c. hero output buffs land on unit types, not on the stack');
     heroBuff('joffre_home', 10, 'ht').m === 1.0
     && /buffs inf and ac/.test(heroBuff('joffre_home', 10, 'ht').note),
     heroBuff('joffre_home', 10, 'ht').note);
+  // marco was the exemplar here and is no longer a pure combat hero: the
+  // attacking screen found it buffs light tanks by 1.16, an ATTACK-ONLY buff
+  // that the defending screen could not see. Lawrence still buffs nothing at
+  // all, on either side, across all nine land types.
   check('and a pure combat hero says it raised the stack by its attack alone',
-    heroBuff('marco', 10, 'lt').m === 1.0
-    && /pure combat unit/.test(heroBuff('marco', 10, 'lt').note));
+    heroBuff('larab', 10, 'lt').m === 1.0
+    && /pure combat unit/.test(heroBuff('larab', 10, 'lt').note),
+    heroBuff('larab', 10, 'lt').note);
+  check('while marco, which the attacking screen caught, now reports its buff',
+    heroBuff('marco', 10, 'lt', 'attacker').m === 1.16
+    && heroBuff('marco', 10, 'lt', 'defender').m === 1.0,
+    `${heroBuff('marco', 10, 'lt', 'attacker').m} attacking, `
+    + `${heroBuff('marco', 10, 'lt', 'defender').m} defending`);
 }
 
 console.log('\n12d. the damage split, replayed against every attacker');
@@ -1244,14 +1254,21 @@ console.log('\n12e. heroes on the attacking side');
   check('every attacking-hero reading was replayed', cells >= 20, String(cells));
 
   // The two corrections this sweep forced, stated as behaviour.
-  const atkP = simulate({ attacker: { unit: 'inf', count: 10, hero: { code: 'pershing', level: 10 } },
+  // lart, which no hero in the roster buffs, so the hero's row carries its own
+  // attack and nothing else.
+  const atkP = simulate({ attacker: { unit: 'lart', count: 10, hero: { code: 'larab', level: 10 } },
                           defender: { unit: 'ht', count: 60 } });
   const defP = simulate({ attacker: { unit: 'ht', count: 60 },
-                          defender: { unit: 'inf', count: 10, hero: { code: 'pershing', level: 10 } } });
+                          defender: { unit: 'lart', count: 10, hero: { code: 'larab', level: 10 } } });
   const atkHero = atkP.attacker.rows.find((r) => r.isHero);
   const defHero = defP.defender.rows.find((r) => r.isHero);
-  check('pershing attacks at 62 and defends at 8 — two columns, not one',
-    Math.abs(atkHero.damageDealt - 62) < 1e-6 && Math.abs(defHero.damageDealt - 8) < 1e-6,
+  // This named pershing, whose attacking value was 62.0 and is 8.0 -- the old
+  // figure was its own attack plus an attack-only buff added together, so the
+  // two columns it was demonstrating turn out to be equal for this hero. The
+  // property is real and unchanged; the exemplar had to move to a hero whose
+  // columns actually differ. Lawrence attacks at 45 and defends at 10.
+  check('larab attacks at 45 and defends at 10 — two columns, not one',
+    Math.abs(atkHero.damageDealt - 45) < 1e-6 && Math.abs(defHero.damageDealt - 10) < 1e-6,
     `${atkHero.damageDealt} attacking, ${defHero.damageDealt} defending`);
 }
 
@@ -2468,6 +2485,213 @@ console.log('\n12q. the six air/naval heroes, decomposed on both sides');
 }
 
 // ===========================================================================
+console.log('\n12r. the one hero whose own contribution is not a constant');
+// ===========================================================================
+// Every other hero in both tables adds the same figure whatever the stacks
+// look like. Tōgō-with-bombardment does not, and 34 requests across two
+// crossed sweeps did not find the rule. What IS established is the shape, the
+// bound, and that the effect belongs to this hero rather than to any
+// configuration — so the engine reports a band and names it.
+{
+  const cells = rows.filter((r) => (r.experiment === 'togo_b_disagreement'
+    || r.experiment === 'togo_b_shape') && r.meta.detail);
+  let togoFlat = 0;
+  let tbSeen = 0;
+  let tbLo = Infinity;
+  let tbHi = -Infinity;
+  for (const r of cells) {
+    const b = r.meta.detail['B.1.1'] || {};
+    if (b.lost == null || (b.pct || 0) >= 99.9) continue;
+    const an = r.meta.atk_n;
+    // The hero outranks a cruiser's 10.0, so it saturates FIRST: the units
+    // take E(n+1) - E(1) and the hero takes E(1) = 1.
+    const units = 10.0 * (effectiveUnits(an + 1) - 1);
+    const contribution = b.lost - units;
+    if (r.meta.hero === 'togo') {
+      check(`plain Tōgō contributes 15.00 with ${an} v ${r.meta.def_n}`,
+        Math.abs(contribution - 15.0) < 0.05, contribution.toFixed(2));
+      togoFlat += 1;
+    } else {
+      tbSeen += 1;
+      tbLo = Math.min(tbLo, contribution);
+      tbHi = Math.max(tbHi, contribution);
+    }
+  }
+  check('plain Tōgō is flat across every one of those cells', togoFlat >= 6,
+    String(togoFlat));
+  check('while the bombardment variant spans a wide band', tbSeen >= 14
+    && tbHi - tbLo > 20, `${tbSeen} cells, ${tbLo.toFixed(2)}-${tbHi.toFixed(2)}`);
+  const band = HEROES_OTHER_TERRAIN.togo_b.atkAttackingBand;
+  check('and the declared band contains every measured cell',
+    tbLo >= band.lo - 0.05 && tbHi <= band.hi + 0.05,
+    `measured ${tbLo.toFixed(2)}-${tbHi.toFixed(2)} vs declared ${band.lo}-${band.hi}`);
+  check('the engine says so rather than quoting one end of it',
+    simulate({ terrain: 'sea', defenderTerrain: 'sea',
+      attacker: { rows: [{ unit: 'cl', count: 10 }], hero: { code: 'togo_b', level: 10 } },
+      defender: { rows: [{ unit: 'cl', count: 200 }] } })
+      .coverage.caveats.some((c) => /not a constant/.test(c)));
+  // Two heroes carry one, and both are "with something" variants: Tōgō with
+  // bombardment and Lucien with gas. Nothing else in either table does.
+  check('exactly two heroes carry a band, and both are "w/" variants',
+    Object.entries({ ...HEROES, ...HEROES_OTHER_TERRAIN })
+      .filter(([, h]) => h.atkAttackingBand).map(([c]) => c).sort().join(',')
+      === 'lucien_g,togo_b');
+  check('its DEFENDING side is clean and stays a single number',
+    HEROES_OTHER_TERRAIN.togo_b.atkDefending === 15.0);
+
+  // The three things the sweeps ruled out, asserted from the record so the
+  // explanation cannot quietly come back.
+  const byKey = new Map();
+  for (const r of cells) {
+    if (r.meta.hero !== 'togo_b') continue;
+    const b = r.meta.detail['B.1.1'] || {};
+    if (b.lost == null || (b.pct || 0) >= 99.9) continue;
+    byKey.set(`${r.meta.target || 'cl'}/${r.meta.atk_n}/${r.meta.def_n}`,
+      b.lost - 10.0 * (effectiveUnits(r.meta.atk_n + 1) - 1));
+  }
+  const bb30 = byKey.get('bb/10/30');
+  const sub30 = byKey.get('sub/10/30');
+  check('target TYPE is ruled out — a battleship and a submarine agree',
+    bb30 != null && sub30 != null && Math.abs(bb30 - sub30) < 0.05,
+    `${bb30} vs ${sub30}`);
+  const d50 = byKey.get('cl/10/50');
+  const d200 = byKey.get('cl/10/200');
+  check('incoming damage is ruled out — identical at 50 and 200, E(n) caps at 35',
+    d50 != null && d200 != null && Math.abs(d50 - d200) > 1.0
+    && effectiveUnits(50) === effectiveUnits(200),
+    `${d50} vs ${d200} on the same 350.00 incoming`);
+}
+
+// ===========================================================================
+console.log('\n12s. the land heroes ATTACKING, re-decomposed');
+// ===========================================================================
+// HERO_BUFF_CHANNEL records which SIDE a known buff acts on, and every buff it
+// knew about was found by a screen run on DEFENDING stacks. A buff that acts
+// only when attacking measures zero there and is recorded as absent. The air
+// heroes proved the channel has both signs; this is the mirror on land, and it
+// was hiding four wrong own-attack values as well, because an own attack read
+// off a stack the hero buffs is an own attack plus a buff added together.
+{
+  // A HERO'S OWN OUTPUT SCALES WITH ITS OWN HP, by the same m(f) units obey.
+  // Nothing had ever varied a hero's HP.
+  const hs = rows.filter((r) => r.experiment === 'hero_hp_scaling' && r.meta.detail);
+  let hpCells = 0;
+  for (const r of hs) {
+    const want = (r.meta.detail['B.1.1'] || {}).lost;
+    if (want == null) continue;
+    const pct = Number(String(r.meta.hero_hp).replace('%', ''));
+    const got = simulate({
+      attacker: { rows: [{ unit: r.meta.unit, count: 10 }],
+        hero: { code: r.meta.hero, level: 10, hpPct: pct } },
+      defender: { rows: [{ unit: 'inf', count: 400 }] },
+    });
+    check(`${r.meta.hero} at ${r.meta.hero_hp} HP: ${want}`,
+      Math.abs(got.defender.hpLost - want) < 0.05,
+      `got ${got.defender.hpLost.toFixed(2)}`);
+    hpCells += 1;
+  }
+  check('every hero-HP rung was replayed', hpCells === 16, String(hpCells));
+  check('and a hero at 50% contributes m(0.5) of its output, not all of it',
+    (() => {
+      const full = simulate({ attacker: { rows: [{ unit: 'lart', count: 10 }],
+        hero: { code: 'larab', level: 10 } },
+        defender: { rows: [{ unit: 'inf', count: 400 }] } });
+      const half = simulate({ attacker: { rows: [{ unit: 'lart', count: 10 }],
+        hero: { code: 'larab', level: 10, hpPct: 50 } },
+        defender: { rows: [{ unit: 'inf', count: 400 }] } });
+      const fh = full.attacker.rows.find((x) => x.isHero);
+      const hh = half.attacker.rows.find((x) => x.isHero);
+      return Math.abs(hh.damageDealt - fh.damageDealt * hpMultiplier(0.5)) < 1e-9;
+    })());
+
+  // The three-type probe and the six-type screen, replayed together. lucien_g
+  // is excluded BY NAME and for a stated reason: on a six-type stack it
+  // contributes 8.00, the same as plain Lucien, and on a single-type stack
+  // 36.44 to 37.94, and nothing explains the difference. Its band records both.
+  const la = rows.filter((r) => (r.experiment === 'land_hero_attacking'
+    || r.experiment === 'land_hero_screen') && r.meta.detail);
+  let cells = 0;
+  let skipped = 0;
+  for (const r of la) {
+    const want = (r.meta.detail['B.1.1'] || {}).lost;
+    const pct = (r.meta.detail['B.1.1'] || {}).pct;
+    if (want == null || (pct || 0) >= 99.9) continue;
+    if (r.meta.hero === 'lucien_g') { skipped += 1; continue; }
+    const got = simulate({
+      attacker: { rows: [{ unit: r.meta.unit, count: 10 }],
+        hero: { code: r.meta.hero, level: 10 } },
+      defender: { rows: [{ unit: 'inf', count: 400 }] },
+    });
+    check(`${r.meta.hero} attacking 10 ${r.meta.unit}: ${want}`,
+      Math.abs(got.defender.hpLost - want) < 0.05,
+      `got ${got.defender.hpLost.toFixed(2)}`);
+    cells += 1;
+  }
+  check('the whole attacking screen was replayed', cells >= 130, String(cells));
+  check('and lucien_g was skipped by name, not by silence', skipped >= 9,
+    String(skipped));
+
+  // The four own-attack corrections, stated so they cannot drift back.
+  check('pershing attacks at 8.0, not the 62.0 that was its attack plus a buff',
+    HEROES.pershing.atkAttacking === 8.0);
+  check('and it buffs five types attacking and none defending',
+    Object.keys(HEROES.pershing.buffs).sort().join(',') === 'ac,cav,ht,inf,lt'
+    && Object.values(HEROES.pershing.buffs).every((b) => b.channel === 'attack'));
+  check('allen 29.6 -> 20.0 with a cavalry buff', HEROES.allen.atkAttacking === 20.0
+    && HEROES.allen.buffs.cav.channel === 'attack');
+  check('georg 16.8 -> 12.0 with an artillery buff', HEROES.georg.atkAttacking === 12.0
+    && HEROES.georg.buffs.art.channel === 'attack');
+  check('marco 24.6 -> 15.0 with a light-tank buff', HEROES.marco.atkAttacking === 15.0
+    && HEROES.marco.buffs.lt.channel === 'attack');
+
+  // The reading that pinned all four: a six-type stack that contains three of
+  // pershing's five buffed types.
+  check('the six-type stack that produced 62.0 now reproduces exactly',
+    (() => {
+      const r = simulate({
+        attacker: { rows: [['cav', 2], ['lart', 2], ['art', 2], ['rrg', 2],
+          ['lt', 2], ['ht', 2]].map(([unit, count]) => ({ unit, count })),
+          hero: { code: 'pershing', level: 10 } },
+        defender: { rows: [{ unit: 'inf', count: 400 }] },
+      });
+      return Math.abs(r.defender.hpLost - 308.0) < 0.05;
+    })());
+  // hank, read on BOTH sides at every level. The two agree exactly through
+  // level 9 and part at the cap, which is a per-side curve rather than a bad
+  // cell -- and only a full ladder on both sides could tell those apart.
+  const hk = rows.filter((r) => r.experiment === 'hank_sides' && r.meta.detail);
+  let hkCells = 0;
+  for (const r of hk) {
+    const atk = r.meta.side === 'attack';
+    const want = ((r.meta.detail[atk ? 'B.1.1' : 'A.1.1']) || {}).lost;
+    if (want == null) continue;
+    const got = atk
+      ? simulate({ attacker: { rows: [{ unit: 'inf', count: 10 }],
+          hero: { code: 'hank', level: r.meta.level } },
+          defender: { rows: [{ unit: 'inf', count: 400 }] } })
+      : simulate({ attacker: { rows: [{ unit: 'inf', count: 400 }] },
+          defender: { rows: [{ unit: 'inf', count: 10 }],
+            hero: { code: 'hank', level: r.meta.level } } });
+    const seen = atk ? got.defender.hpLost : got.attacker.hpLost;
+    check(`hank level ${r.meta.level} ${r.meta.side}ing: ${want}`,
+      Math.abs(seen - want) < 0.05, `got ${seen.toFixed(2)}`);
+    hkCells += 1;
+  }
+  check('both hank ladders were replayed', hkCells === 20, String(hkCells));
+  check('and the two sides differ only at the cap',
+    HEROES.hank.buffs.inf.curve[10] === 1.10
+    && HEROES.hank.buffs.inf.curveDefending[10] === 1.09
+    && [1, 2, 3, 4, 5, 6, 7, 8, 9].every((l) =>
+      HEROES.hank.buffs.inf.curve[l] === HEROES.hank.buffs.inf.curveDefending[l]));
+
+  check('the new curves and channels came from measured cells, not from level 10 alone',
+    ['pershing', 'allen', 'georg', 'marco'].every((h) => {
+      const b = Object.values(HEROES[h].buffs)[0];
+      return b.curve && Object.keys(b.curve).length === HEROES[h].maxLevel;
+    }));
+}
+
+// ===========================================================================
 console.log('\n14. coverage of the record itself');
 // ===========================================================================
 {
@@ -2486,6 +2710,8 @@ console.log('\n14. coverage of the record itself');
     'class_matrix_2', 'balloon_columns', 'attenuation_scope', 'multi_round_types',
     'hero_other_defending', 'hero_other_curves', 'hero_own_curves',
     'hero_air_attacking', 'hero_class_columns', 'hero_columns_small',
+    'togo_b_disagreement', 'togo_b_shape', 'togo_b_kind', 'hero_hp_scaling',
+    'land_hero_attacking', 'land_hero_screen', 'hero_new_buffs', 'hank_sides',
     // Heroes are now modelled and replayed above: the sweeps that measured
     // them are physics the engine reproduces, not declared omissions.
     'heroes', 'hero_scaling', 'hero_table', 'hero_levels', 'air_rounds'];
