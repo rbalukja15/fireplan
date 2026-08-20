@@ -850,26 +850,114 @@ export const TARGET_FACTOR_DEFAULT = 1.00;
 // for air attacking ground is the ATTENUATED, post-fire figure. Dividing the
 // excess by the un-attenuated coefficient instead gives Richthofen a bogus
 // x1.07; against the real baseline he is x1.30 like the rest.
-export const HEROES_LAND_REFUSED = {
-  otto:   { label: 'Otto Hersing', maxLevel: 15, terrain: 'sea', atkAttacking: 40.0,
-            buffs: { sub: 1.30 },
+// THE SIX HEROES THE SERVER REFUSES ON LAND. They are not unmodelled any more.
+// Each is decomposed on ITS OWN terrain, attacking and defending, across its
+// whole level range -- own attack separated from multiplier with a control
+// stack of a type the hero does not buff.
+//
+// READ WHERE NOTHING IS ATTENUATED. The attacking figures used to be read
+// against a GROUND target, and air attacking ground is a post-fire law, so
+// those readings confounded the hero's own attack with the attenuation of the
+// whole stack. It showed: the four naval heroes decomposed to 40.00, 15.00,
+// 64.32 and 1.00 and the two air heroes to 16.80 and 10.07 -- round numbers
+// and unround ones, split exactly along the line of which readings were
+// attenuated. Re-read air-against-air, Richthofen's own attack at level 10 is
+// 70.0, not 16.80. A factor of four, hiding in a decimal that looked precise.
+//
+// AND CORRECT FOR THE STACK THE HERO JOINS. A hero is a unit: adding it to a
+// stack of twenty changes what those twenty contribute, because the stack
+// saturates. Subtracting the plain reading gives 39.83, 24.95, 14.83, 9.83,
+// 0.98 -- all just under a round number. Allowing for the shift gives exactly
+// 40, 25, 15, 10, 1.
+//
+// TWO THINGS HERE THAT NO LAND HERO DOES. Richthofen's and Tōgō-with-
+// bombardment's OWN ATTACK moves with level (25 to 125 for Richthofen), where
+// every land hero's is a constant. And Hersing's POOL moves with level, 100 to
+// 200.7, where the land heroes' are flat across every level tested. Both were
+// found by artifacts rather than by looking: subtracting a level-10 own-attack
+// constant at level 1 produced multipliers of 0.775, and a multiplier below
+// one would mean a hero makes its own stack worse.
+// A HERO'S OWN OUTPUT IS NOT ATTENUATED. Air attacking a surface target fires
+// with what survives the round, and the hero does not: von Thaden adds exactly
+// 10.00 to a stack that lost 13.50 HP, to one that lost 168.30, and to one that
+// lost 201.90. Three attenuation factors from 0.98 to 0.74, one constant
+// contribution. So the post-fire law applies to the UNITS and the hero is added
+// on top of the attenuated total.
+export const HEROES_OTHER_TERRAIN = {
+  otto:   { label: 'Otto Hersing', terrain: 'sea', maxLevel: 15, sits: 'first',
+            atkAttacking: 40.0, atkDefending: 40.0,
+            pool: 100, poolCurve: { 1: 100.0, 2: 100.0, 3: 110.0, 4: 120.1, 5: 120.1, 6: 130.3, 7: 135.5, 8: 140.3, 9: 145.5, 10: 150.3, 11: 159.9, 12: 170.8, 13: 179.7, 14: 191.0, 15: 200.7 },
+            buffs: { sub: { channel: 'attack', curve: { 1: 1.05, 2: 1.10, 3: 1.10, 4: 1.15, 5: 1.15, 6: 1.20, 7: 1.20, 8: 1.25, 9: 1.25, 10: 1.30, 11: 1.30, 12: 1.35, 13: 1.35, 14: 1.40, 15: 1.40 } } },
             why: "Can't have Otto Hersing on land." },
-  togo:   { label: 'Tōgō Heihachirō', maxLevel: null, terrain: 'sea', atkAttacking: 15.0,
-            buffs: { bb: 1.30 },
+  togo:   { label: 'Tōgō Heihachirō', terrain: 'sea', maxLevel: 20, sits: 'first',
+            atkAttacking: 15.0, atkDefending: 15.0, pool: 120.6,
+            buffs: { bb: { channel: 'both', curve: { 1: 1.00, 2: 1.00, 3: 1.15, 4: 1.15, 5: 1.20, 6: 1.20, 7: 1.25, 8: 1.25, 9: 1.30, 10: 1.30, 11: 1.34, 12: 1.34, 13: 1.38, 14: 1.38, 15: 1.42, 16: 1.42, 17: 1.46, 18: 1.46, 19: 1.50, 20: 1.50 } } },
             why: "Can't have Tōgō Heihachirō on land." },
-  togo_b: { label: 'Tōgō Heihachirō w/bombardment', maxLevel: null, terrain: 'sea',
-            atkAttacking: 64.32, buffs: { bb: 1.2785 },
+  togo_b: { label: 'Tōgō Heihachirō w/bombardment', terrain: 'sea', maxLevel: 20, sits: 'first',
+            atkAttacking: 64.90, atkDefending: 15.0, pool: 120.6,
+            // TWO CONFIGURATIONS DISAGREE BY 0.9% ON THIS HERO AND NOTHING
+            // ELSE. Its own attack at level 10 reads 64.90 against a submarine
+            // and 64.34 against a battleship -- two targets of the SAME class,
+            // where every other hero and every unit in the table is flat
+            // within a class. The twenty-level sweep is the one used here,
+            // because twenty points with a clean linear structure outweigh one
+            // cell, and because the curve has to be self-consistent. The older
+            // cell is still replayed, at a tolerance that names this hero.
+            // The disagreement is in NOT_MEASURED rather than averaged away.
+            atkAttackingCurve: { 1: 24.98, 2: 29.97, 3: 29.97, 4: 34.96, 5: 39.95, 6: 44.94, 7: 49.93, 8: 54.92, 9: 59.91, 10: 64.90, 11: 69.89, 12: 74.88, 13: 79.87, 14: 84.86, 15: 89.85, 16: 94.84, 17: 99.83, 18: 104.82, 19: 109.81, 20: 114.80 },
+            // TWO CURVES, one per side. Attacking, the battleship buff reads
+            // 1.2944 at level 10; defending, the same hero at the same level
+            // on the same unit reads exactly 1.30 -- identical to plain Tōgō.
+            // No other hero in either table needs this.
+            buffs: { bb: { channel: 'both',
+                     curve: { 1: 0.9989, 2: 0.9983, 3: 1.1483, 4: 1.1478, 5: 1.1972, 6: 1.1966, 7: 1.2461, 8: 1.2455, 9: 1.2949, 10: 1.2944, 11: 1.3337, 12: 1.3332, 13: 1.3726, 14: 1.3720, 15: 1.4115, 16: 1.4109, 17: 1.4504, 18: 1.4498, 19: 1.4892, 20: 1.4886 },
+                     curveDefending: { 1: 1.00, 2: 1.00, 3: 1.15, 4: 1.15, 5: 1.20, 6: 1.20, 7: 1.25, 8: 1.25, 9: 1.30, 10: 1.30, 11: 1.34, 12: 1.34, 13: 1.38, 14: 1.38, 15: 1.42, 16: 1.42, 17: 1.46, 18: 1.46, 19: 1.50, 20: 1.50 } } },
             why: "Can't have Tōgō Heihachirō w/bombardment on land." },
-  ivan:   { label: 'Ivan “Vedmid” Kovalenko', maxLevel: 10, terrain: 'sea', atkAttacking: 1.0,
+  ivan:   { label: 'Ivan “Vedmid” Kovalenko', terrain: 'sea', maxLevel: 10, sits: 'first',
+            atkAttacking: 1.0, atkDefending: 1.0, pool: 10,
             buffs: {},
             why: "Can't have Ivan “Vedmid” Kovalenko on land." },
-  rbaron: { label: 'Manfred Von Richthofen', maxLevel: null, terrain: 'air', atkAttacking: 16.80,
-            buffs: { int: 1.30 },
+  // A HERO HAS TARGET-CLASS COLUMNS TOO, at least this one does. Richthofen
+  // adds 70.00 to a stack shooting at aircraft and 16.85 shooting at infantry
+  // — a factor of four, from the same hero at the same level. That is why the
+  // older figure of 16.80 and the air-vs-air figure of 70.0 are both correct,
+  // and why calling the first an attenuation artifact was wrong: the stack in
+  // that reading was attenuated by 1.6%, which turns 70.0 into 68.9, not 16.85.
+  //
+  // von Thaden has no such column — 10.00 exactly against infantry, a
+  // battleship and a zeppelin — which is the same pattern the unit table has,
+  // where artillery reads 8.0 against land and naval alike and a light tank
+  // reads 30.0 and 15.0.
+  //
+  // The land and naval cells here are measured on an ATTENUATED path and the
+  // hero's presence shifts the stack's own losses slightly, so they carry a
+  // second-order uncertainty the air cell does not. They are recorded as the
+  // raw excess, which is what the server printed.
+  rbaron: { label: 'Manfred Von Richthofen', terrain: 'air', maxLevel: 20, sits: 'first',
+            atkAttacking: 70.0, atkDefending: 25.0, pool: 61.2,
+            // 16.85 and 17.53 are the RAW excesses. The hero also absorbs a
+            // share of the incoming round (weight 0.40), which leaves the
+            // units slightly less damaged and so slightly less attenuated, so
+            // the excess is the hero PLUS a second-order shift. Solving the
+            // post-fire law for the constant that reproduces the readings puts
+            // land at 16.66 -- and it lands BOTH measured cells, a bomber
+            // stack and a fighter stack, to within 0.007. Two independent
+            // readings agreeing on one constant is a decomposition; matching
+            // one of them would have been a fit.
+            atkByTargetClass: { air: 70.0, land: 16.66, naval: 17.34 },
+            atkAttackingCurve: { 1: 25.0, 2: 35.0, 3: 40.0, 4: 40.0, 5: 50.0, 6: 50.0, 7: 60.0, 8: 60.0, 9: 70.0, 10: 70.0, 11: 80.0, 12: 80.0, 13: 90.0, 14: 90.0, 15: 100.0, 16: 100.0, 17: 110.0, 18: 110.0, 19: 120.0, 20: 125.0 },
+            buffs: { int: { channel: 'attack', curve: { 1: 1.00, 2: 1.00, 3: 1.00, 4: 1.15, 5: 1.15, 6: 1.20, 7: 1.20, 8: 1.25, 9: 1.25, 10: 1.30, 11: 1.30, 12: 1.34, 13: 1.34, 14: 1.38, 15: 1.38, 16: 1.42, 17: 1.42, 18: 1.46, 19: 1.46, 20: 1.50 } } },
             why: "Can't have Manfred Von Richthofen on land." },
-  thaden: { label: 'Wilhelm von Thaden', maxLevel: 15, terrain: 'air', atkAttacking: 10.07,
-            buffs: { zep: 1.30 },
+  thaden: { label: 'Wilhelm von Thaden', terrain: 'air', maxLevel: 15, sits: 'first',
+            atkAttacking: 10.0, atkDefending: 10.0, pool: 121.0,
+            atkByTargetClass: { air: 10.0, land: 10.0, naval: 10.0 },
+            buffs: { zep: { channel: 'attack', curve: { 1: 1.00, 2: 1.10, 3: 1.10, 4: 1.15, 5: 1.15, 6: 1.20, 7: 1.20, 8: 1.25, 9: 1.25, 10: 1.30, 11: 1.30, 12: 1.35, 13: 1.35, 14: 1.40, 15: 1.40 } } },
             why: "Can't have Wilhelm von Thaden on land." },
 };
+
+// The old name, kept because it is what the app imported for months. Same
+// object -- these heroes ARE refused on land, that part was never wrong.
+export const HEROES_LAND_REFUSED = HEROES_OTHER_TERRAIN;
 
 export const FORM_DOMAINS = {
   terrain: ['land', 'sea', 'air', 'patrol', 'debark'],
@@ -889,7 +977,7 @@ export const FORM_DOMAINS = {
 export const NOT_MEASURED = [
     { key: 'air_to_air_mechanism', what: 'WHY an air stack is attenuated against surface targets and not against other aircraft.', why: 'The scope is measured hard and modelled. Attacking land or naval, an air stack fires with what survives the round; attacking air it does not \u2014 twenty fighters lose 58% of their pool to two hundred fighters and still deal the full 20.0 x E(20) = 400.00. Embarkation is seen by every attacker including air, which is what the discriminating cell showed: against two hundred EMBARKED fighters the same stack deals 98.61, the naval column attenuated. What no black-box reading can reach is the mechanism \u2014 whether air-to-air resolves simultaneously or whether something else exempts it.', closedBy: 'nothing available. The obvious experiment is an air stack whose target cannot shoot back, and there is no such configuration: every air unit bisects to a range of 5 km and 5 km is exactly where return fire stops, so an aircraft is never out of reach of what it is attacking' },
     { key: 'return_fire_generality', what: 'Whether the 5 km return-fire cut-off is a constant or every unit\u2019s own melee reach.', why: 'Past 5 km a bombarded defender deals exactly zero while still taking the attacker\u2019s full figure. That is measured hard \u2014 lart at 4 and 5 km loses 20.00, at 6, 7 and 8 km loses nothing, and three defenders that could easily shoot back (lart reaching 30, cruiser 40, battleship 75) are all silent at 8 km, as is a mixed inf+lart defender at 6. But every unit in the roster ALSO bisected to a melee attack range of exactly 5, so "the cut-off is the constant 5" and "the cut-off is the defender\u2019s own melee reach" predict the identical number everywhere. The two are indistinguishable in this game and the engine uses the constant.', closedBy: 'nothing available \u2014 it would need a unit whose melee reach is not 5, and there is none' },
-                { key: 'hero_other_terrain_levels', what: 'The six air/naval heroes DEFENDING, and at any level but 10.', why: 'All six are decomposed ATTACKING at level 10 — own attack separated from multiplier with two attacker types apiece — and each buffs the thing its namesake commanded: Hersing submarines, von Thaden zeppelins, Richthofen fighters, T\u014dg\u014d battleships. Ivan buffs nothing and attacks at 1.00. What none of them has been read at is a DEFENDING stack, or any level but 10, and the land heroes proved both of those matter — thirteen of sixteen have different attack and defence values, and every curve moves with level.', closedBy: 'the same two-configuration decomposition run defending, plus a level sweep' },
+    { key: 'togo_b_disagreement', what: 'Two configurations disagree by about 1% on one hero, T\u014dg\u014d-with-bombardment, and on nothing else in the record.', why: 'Its own attack at level 10 reads 64.90 against a submarine and 64.34 against a battleship \u2014 two targets of the SAME class, where every other hero and every unit in the table is flat within a class. Its battleship multiplier disagrees by about the same 1%. The twenty-level sweep is what the table uses, because twenty points with a clean linear structure outweigh one cell and the curve has to be self-consistent, so three older cells sit about 1% out and are asserted at 1.5% rather than dropped. Whether the difference is the target, the sweep, or something about what \u2018with bombardment\u2019 means is not known.', closedBy: 'the same decomposition run against a third naval target, and against the two originals again, to see which reading moves' },
 
   ];
 

@@ -52,6 +52,7 @@ import {
   STACK_GROUP_LABEL,
   HEROES,
   HEROES_LAND_REFUSED,
+  HEROES_OTHER_TERRAIN,
 } from './data.js';
 
 const EPS = 1e-9;
@@ -267,6 +268,17 @@ export function normaliseRows(cfg) {
  * computing a number for an army that cannot be fielded.
  */
 /**
+ * Any hero, from either table. HEROES holds the sixteen that fight on land and
+ * HEROES_OTHER_TERRAIN the six the server refuses there -- but those six are
+ * fully decomposed now, on their own terrain, attacking and defending, across
+ * their level ranges. Splitting the lookup was what kept the engine applying
+ * no hero effect at all on an air or naval stack.
+ */
+export function heroDef(code) {
+  return HEROES[code] || HEROES_OTHER_TERRAIN[code] || null;
+}
+
+/**
  * A hero's stack multiplier at a given level.
  *
  * The measured points are stored verbatim and a level between them is
@@ -276,7 +288,7 @@ export function normaliseRows(cfg) {
  * through that would be inventing nineteen values from eight.
  */
 export function heroBuff(code, level, unitCode, side) {
-  const h = HEROES[code];
+  const h = heroDef(code);
   if (!h) return { m: null, exact: false, note: 'unknown hero' };
   const entry = (h.buffs || {})[unitCode];
   if (!entry) {
@@ -298,7 +310,24 @@ export function heroBuff(code, level, unitCode, side) {
              note: `${h.label}'s buff is DEFENCE-ONLY — measured at exactly `
                + 'zero on an attacking stack, so it does not apply here.' };
   }
-  return curveAt(entry.curve, level, h, 'output');
+  // The mirror, which only the air and naval heroes have. Richthofen, von
+  // Thaden and Hersing all measure exactly 1.0000 on a defending stack of the
+  // type they buff attacking -- so the channel has both signs, and reading one
+  // and assuming the other was never safe.
+  if (side === 'defender' && entry.channel === 'attack') {
+    return { m: 1.0, exact: true,
+             note: `${h.label}'s buff is ATTACK-ONLY — measured at exactly `
+               + '1.0000 on a defending stack, so it does not apply here.' };
+  }
+  // A buff can have a DIFFERENT curve per side, not just a side it applies on.
+  // Tōgō-with-bombardment reads 1.2785 on a battleship it is attacking with
+  // and exactly 1.30 on one it is defending with -- the same hero, the same
+  // level, the same unit. Every other hero measured so far has one curve for
+  // whichever sides it acts on, so this field is optional and `curve` stays
+  // the default.
+  const curve = (side === 'defender' && entry.curveDefending)
+    ? entry.curveDefending : entry.curve;
+  return curveAt(curve, level, h, 'output');
 }
 
 /**
@@ -335,7 +364,7 @@ function curveAt(curve, level, h, what) {
 
 /** A hero's multiplier on one unit type's MAX HP, at this level. */
 export function heroHpBuff(code, level, unitCode) {
-  const h = HEROES[code];
+  const h = heroDef(code);
   if (!h || !h.hpBuffs || !h.hpBuffs[unitCode]) {
     return { m: 1.0, exact: true, note: 'no HP buff measured for this type' };
   }
@@ -794,6 +823,11 @@ function makeSide(cfg, role, derivation, caveats, battle) {
     caveats.push(side_groupConflict);
   }
 
+  // This side's terrain. Declared here because the hero block below needs it:
+  // the six air/naval heroes are gated on terrain rather than on ignorance.
+  const myTerrain = (role === 'defender' && battle && battle.defenderTerrain)
+    ? battle.defenderTerrain : (battle && battle.terrain);
+
   // THE HERO. One per stack (addHero refuses a second). It fights as a single
   // unit at its own attack value, and multiplies what the rest of the stack
   // deals. Where it sits is measured per hero and changes both effective
@@ -801,11 +835,35 @@ function makeSide(cfg, role, derivation, caveats, battle) {
   const heroCfg = cfg && cfg.hero;
   let hero = null;
   if (heroCfg && heroCfg.code) {
-    const known = HEROES[heroCfg.code];
-    const refused = HEROES_LAND_REFUSED[heroCfg.code];
-    if (known) {
+    // Both tables, one lookup. The six air/naval heroes are decomposed now --
+    // own attack, per-level curves, and a buff channel that has BOTH signs --
+    // so there is nothing left to refuse them for. What is still checked is
+    // the TERRAIN: the server will not put Hersing on land, and neither will
+    // this. `refused` now means "wrong terrain for this hero", not "unknown".
+    const known = heroDef(heroCfg.code);
+    const other = HEROES_OTHER_TERRAIN[heroCfg.code];
+    // GATED ON THE STACK, not on the terrain field. A naval hero is refused
+    // because it cannot stand with land units -- "Can't have Otto Hersing on
+    // land" is about the company it keeps. Fighters DEFENDING over land are
+    // still an air stack and Richthofen applies to them, which is exactly how
+    // every air-hero reading was taken: atk_terrain air, def_terrain land.
+    // Gating on terrain instead silently dropped the hero from a hundred
+    // measured cells.
+    const groupsNow = stackGroupsOf(rows);
+    const wrongStack = other && !(groupsNow.length === 1
+      && ((other.terrain === 'air' && groupsNow[0] === 'air')
+        || (other.terrain === 'sea' && groupsNow[0] === 'sea')));
+    const refused = wrongStack ? other : null;
+    if (known && !wrongStack) {
       const lvl = Math.max(1, Math.min(known.maxLevel,
         Math.round(num(heroCfg.level, 1))));
+      // Two things no land hero does, so two things the shape did not carry.
+      // Richthofen's and Tōgō-with-bombardment's OWN ATTACK moves with level
+      // (25 to 125 for Richthofen), and Hersing's POOL does (100 to 200.7).
+      // Every land hero is flat in both, which is why the fields are optional
+      // and the scalar stays the fallback.
+      const ownCurve = known.atkAttackingCurve;
+      const poolCurve = known.poolCurve;
       if (num(heroCfg.level, 1) > known.maxLevel) {
         caveats.push(`${label}: ${known.label} caps at level ${known.maxLevel} — `
           + `the server states so outright and refuses anything higher, even `
@@ -834,10 +892,33 @@ function makeSide(cfg, role, derivation, caveats, battle) {
       }
       for (const h of hpHits) if (!h.b.exact) anyInexact = h.b;
       const hitOut = rows.filter((r) => buffs[r.unit.code].m !== 1);
+      const ownAtk = (role === 'attacker' && ownCurve)
+        ? curveAt(ownCurve, lvl, known, 'own attack').m
+        : (role === 'attacker' ? known.atkAttacking : known.atkDefending);
+      const ownPool = poolCurve
+        ? curveAt(poolCurve, lvl, known, 'pool').m : known.pool;
       hero = { code: heroCfg.code, def: known, level: lvl,
-               atk: role === 'attacker' ? known.atkAttacking : known.atkDefending,
-               pool: known.pool, buffs,
+               atk: ownAtk, pool: ownPool, buffs,
                buffedRows: hitOut.length, hpHits: hpHits.length };
+      if (ownCurve && role === 'attacker') {
+        derivation.push({
+          label: `${label} hero own attack`,
+          formula: `${known.label}'s own attack MOVES WITH LEVEL, which no land `
+            + `hero's does: ${ownCurve[1]} at level 1 and `
+            + `${ownCurve[known.maxLevel]} at ${known.maxLevel}. At level `
+            + `${lvl} it is ${round4(ownAtk)}.`,
+          value: ownAtk,
+        });
+      }
+      if (poolCurve) {
+        derivation.push({
+          label: `${label} hero pool`,
+          formula: `${known.label}'s own HP MOVES WITH LEVEL, which no land `
+            + `hero's does: ${poolCurve[1]} at level 1 and `
+            + `${poolCurve[known.maxLevel]} at ${known.maxLevel}.`,
+          value: ownPool,
+        });
+      }
       if (hitOut.length) {
         derivation.push({
           label: `${label} hero output buff`,
@@ -873,41 +954,14 @@ function makeSide(cfg, role, derivation, caveats, battle) {
         caveats.push(`${label}: ${known.label} — ${anyInexact.note}.`);
       }
     } else if (refused) {
-      // Refused on LAND, but measured on its own terrain. Applied only to an
-      // attacking air or naval stack, because that is the only side and the
-      // only level (10) any of the six was ever read at.
-      const groups = stackGroupsOf(rows);
-      const onOwn = groups.length === 1
-        && ((refused.terrain === 'air' && groups[0] === 'air')
-          || (refused.terrain === 'sea' && groups[0] === 'sea'));
-      if (onOwn && role === 'attacker' && refused.atkAttacking) {
-        const buffs = {};
-        for (const r of rows) {
-          const m = (refused.buffs || {})[r.unit.code] || 1;
-          buffs[r.unit.code] = { m, exact: true,
-            note: m === 1
-              ? `${refused.label} does not buff this unit type (measured)`
-              : `measured at level 10 on an attacking stack` };
-        }
-        const hit = rows.filter((r) => buffs[r.unit.code].m !== 1);
-        hero = { code: heroCfg.code, def: { ...refused, sits: 'first',
-                   maxLevel: refused.maxLevel || 20, pool: null },
-                 level: 10, atk: refused.atkAttacking, pool: null, buffs,
-                 buffedRows: hit.length, hpHits: 0, otherTerrain: true };
-        caveats.push(`${label}: ${refused.label} is applied at its measured `
-          + `ATTACKING value on ${refused.terrain === 'air' ? 'an air' : 'a naval'}`
-          + ` stack. Only level 10 was ever read, and only attacking — the land `
-          + `heroes showed both matter, so treat any other level as unknown. `
-          + `Its own HP pool on this terrain was never read either.`);
-      } else {
-        hero = { code: heroCfg.code, refused };
-        caveats.push(`${label}: ${refused.label} — ${refused.why} `
-          + (refused.terrain
-            ? `It works on ${refused.terrain === 'air' ? 'an AIR' : 'a NAVAL'} `
-              + `stack (measured), but only attacking and only at level 10, so `
-              + `it is not applied here.`
-            : 'No hero effect is applied.'));
-      }
+      // WRONG TERRAIN, which is a refusal by the server and not a gap in the
+      // record. These six are fully decomposed on their own terrain now; what
+      // remains true is that the server will not put Hersing on land.
+      hero = { code: heroCfg.code, refused };
+      caveats.push(`${label}: ${refused.label} — ${refused.why} It is fully `
+        + `measured on ${refused.terrain === 'air' ? 'an AIR' : 'a NAVAL'} `
+        + `stack — attacking and defending, across its whole level range — but `
+        + `this stack is not one, so it is not applied here.`);
     } else {
       caveats.push(`${label}: unrecognised hero "${heroCfg.code}" ignored.`);
     }
@@ -921,8 +975,6 @@ function makeSide(cfg, role, derivation, caveats, battle) {
   // are REPLACED by a flat 1.0 -- not scaled. Infantry (4.0/5.0) and cavalry
   // (15.0/7.5) deal the identical 20 and 10 against the same target, which no
   // scaling of two different stats can produce.
-  const myTerrain = (role === 'defender' && battle && battle.defenderTerrain)
-    ? battle.defenderTerrain : (battle && battle.terrain);
   const wet = EMBARKED_TERRAIN.includes(myTerrain);
   if (wet) {
     // AIR units are embarked too, not just land ones: 10 fighters in sea
@@ -1628,7 +1680,17 @@ function runSimulation(config, derivation, caveats) {
           value: 0,
         });
       } else {
-        const fAfter = (atk.pool - atkLostThis) / (nAlive * atk.perUnitMaxHP);
+        // THE HERO'S HP IS NOT PART OF THE STACK'S ATTENUATION. atk.pool
+        // includes it, because the hero is a target that takes a share of
+        // every round -- but the post-fire fraction is about the UNITS. Using
+        // the combined pool made von Thaden's 121 HP soften the attenuation
+        // and added 53.11 to a bomber stack where the server adds 10.14, which
+        // is the hero's own attack and nothing else.
+        const heroPool = (atk.hero && atk.hero.pool) ? atk.hero.pool : 0;
+        const heroLost = (atk.hero && atk.hero.hpLost) ? atk.hero.hpLost : 0;
+        const unitPool = atk.pool - heroPool;
+        const unitLost = atkLostThis - Math.min(heroLost, atkLostThis);
+        const fAfter = (unitPool - unitLost) / (nAlive * atk.perUnitMaxHP);
         const aliveE = effectiveUnits(nAlive);
         // An air hero fights and buffs on this path too. It was invisible
         // here: the post-fire law is a separate branch that never consulted
@@ -1636,7 +1698,17 @@ function runSimulation(config, derivation, caveats) {
         // terrain they work on.
         const airHeroM = (atk.hero && atk.hero.buffs && atk.unit
           && atk.hero.buffs[atk.unit.code]) ? atk.hero.buffs[atk.unit.code].m : 1;
-        const airHeroAtk = atk.hero && atk.hero.atk ? atk.hero.atk : 0;
+        // A hero's own attack has TARGET-CLASS columns where it was measured
+        // to. Richthofen adds 70.00 to a stack shooting at aircraft and 16.85
+        // shooting at infantry -- the same hero at the same level, a factor of
+        // four. Reading one column and using it for all three is what made the
+        // older 16.80 look like an attenuation artifact of 70.0.
+        const heroCol = atk.hero && atk.hero.def && atk.hero.def.atkByTargetClass;
+        const heroTargetCls = targetClassFor(atk.unit, def.unit, battle.defenderTerrain);
+        const airHeroAtk = atk.hero
+          ? ((heroCol && heroCol[heroTargetCls] !== undefined)
+            ? heroCol[heroTargetCls] : (atk.hero.atk || 0))
+          : 0;
         atkOutput = atkCoef.value * aliveE * hpMultiplier(fAfter) * airHeroM
           + airHeroAtk;
         if (atk.hero) {
@@ -1653,12 +1725,13 @@ function runSimulation(config, derivation, caveats) {
             + 'computed AFTER the round\'s incoming fire (measured: 30 cells, worst residual 0.005 HP)',
           value: atkOutput,
         });
-        if (atk.n > 20) {
-          level = worst(level, 'estimated');
-          caveats.push('Every attenuated air stack ever measured was 10 units, where E(n) = n. '
-            + 'Above 20 units, E(survivors) and a per-unit sum of m(f) disagree and nothing in the '
-            + 'record decides between them.');
-        }
+        // This used to escalate to 'estimated' above 20 units, saying that
+        // E(survivors) and a per-unit sum of m(f) disagree there and nothing
+        // decided between them. They never disagree anywhere: m is affine, so
+        // sum_i m(f_i) = s x m(f) identically. Attenuated stacks at 25, 40 and
+        // 50 units are reproduced to 0.001% by the law as written, and the
+        // rivals that DO differ -- m inside E, or m against the raw count --
+        // miss by 0.33% and 42.9%. See PROVENANCE['HP.affine'].
       }
     } else {
       const atkParts = stackOutput(atk, (u) => attackCoefficient(u, def.unit, battle.defenderTerrain,
@@ -1861,7 +1934,26 @@ function stackOutput(side, coefFor, scale, mulEach) {
   let heroEff = 0;
   let unitScale = 1;
   if (hero) {
-    if (hero.def.sits === 'first') {
+    // WHERE A HERO SITS IS NOT A PROPERTY OF THE HERO. It is the same
+    // strongest-first saturation the units obey, with the hero's own
+    // coefficient as its rank: a hero that out-damages every row saturates
+    // first and takes E(1) = 1, one that does not takes what is left,
+    // E(n+1) - E(n).
+    //
+    // It was declared per hero, and for the sixteen land heroes the declared
+    // value happens to match what the rank gives -- which is why it went
+    // unnoticed. The six air and naval heroes break both ways within the same
+    // sweep: Richthofen at 25.0 defending outranks a bomber's 3.0 and sits
+    // first, while von Thaden at 10.0 sits behind a fighter's 20.0. Declaring
+    // 'first' for both put von Thaden's contribution at 10.00 where the server
+    // prints 9.83, and Tōgō's at 15.00 where it prints 14.75.
+    const strongest = side.rows.reduce((m2, r) => {
+      const c = coefFor(r.unit);
+      return (typeof c === 'number' && c > m2) ? c : m2;
+    }, -Infinity);
+    const heroFirst = hero.atk >= strongest;
+    hero.satFirst = heroFirst;
+    if (heroFirst) {
       heroEff = 1;
       unitScale = n > 0 ? (effectiveUnits(n + 1) - 1) / effectiveUnits(n) : 1;
     } else {

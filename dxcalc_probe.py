@@ -6103,6 +6103,468 @@ def exp_multi_round_types(p: Probe) -> None:
                      if (a.get('pct') or 0) >= 99.9 and (b.get('pct') or 0) >= 99.9
                      else ""))
 
+
+# Level caps for the six, from the server's own refusals recorded in
+# hero_caps. null in the app's table means "no cap found", which is 20.
+HERO_OTHER_MAX_LEVEL: dict[str, int] = {
+    "otto": 15, "togo": 20, "togo_b": 20, "ivan": 10,
+    "rbaron": 20, "thaden": 15,
+}
+
+# The unit each hero buffs, established attacking, plus a control type it does
+# not buff. Decomposition needs both: the control isolates the hero's OWN
+# contribution and the buffed type then yields the multiplier.
+HERO_OTHER_PAIR: dict[str, tuple[str, str]] = {
+    "otto":   ("sub", "cl"),
+    "togo":   ("bb", "cl"),
+    "togo_b": ("bb", "cl"),
+    "ivan":   ("bb", "cl"),
+    "rbaron": ("int", "tac"),
+    "thaden": ("zep", "int"),
+}
+
+
+def _hero_def_reading(p: Probe, hero: str | None, level: int, unit: str,
+                      terr: str) -> float | None:
+    """The DEFENDING stack's output, with the hero sitting on it.
+
+    Read off the ATTACKER's losses. The defending side is not attenuated, so
+    this is one request per cell with nothing to unpick afterwards.
+    """
+    if terr == "air":
+        atk_unit, atk_n, def_terr = "int", 200, "land"
+        atk_terr = "air"
+    else:
+        atk_unit, atk_n, def_terr = "bb", 60, "sea"
+        atk_terr = "sea"
+    if atk_unit == unit:
+        atk_unit = "cl" if terr == "sea" else "tac"
+    ov = settings()
+    ov.update(duel(1, atk_unit, atk_n, unit, 20,
+                   atk_terrain=atk_terr, def_terrain=def_terr))
+    create: tuple[str, ...] = ()
+    if hero:
+        ov.update({HERO_FIELDS[0]: hero, HERO_FIELDS[1]: str(level),
+                   HERO_FIELDS[2]: "100%"})
+        create = HERO_FIELDS
+    try:
+        p.submit(ov, create=create)
+    except (BareFormReturned, ValueError) as e:
+        record("hero_other_defending", {"hero": hero, "level": level,
+                                        "unit": unit, "terrain": terr,
+                                        "error": str(e)}, {})
+        print(f"    ! {hero or 'none'} lvl{level} {unit}: {e}"[:105],
+              file=sys.stderr)
+        return None
+    d = dict(p.last_details)
+    a = d.get("A.1.1") or {}
+    record("hero_other_defending", {"hero": hero, "level": level, "unit": unit,
+                                    "terrain": terr, "atk_unit": atk_unit,
+                                    "atk_n": atk_n, "def_n": 20,
+                                    "detail": d},
+           {k: (v or {}).get("lost") for k, v in d.items()})
+    if a.get("lost") is None or (a.get("pct") or 0) >= 99.9:
+        return None
+    return a["lost"]
+
+
+def exp_hero_other_defending(p: Probe) -> None:
+    """The six air/naval heroes on a DEFENDING stack, and up their level range.
+
+    Every reading of these six put them on the ATTACKING side at level 10. The
+    land heroes make both of those look like assumptions rather than defaults:
+    thirteen of sixteen have a different attack and defence value -- Pershing
+    attacks at 62 and defends at 8 -- and every output curve moves with level.
+    Carrying an attacking figure into a defending battle would be inventing a
+    number, so the app currently applies no hero effect at all on air and naval
+    stacks. That is honest and it is also the last thing on the gap list that
+    more requests can fix.
+
+    Decomposition is the same two-configuration trick used everywhere else: a
+    stack of the type the hero buffs, and a control stack of a type it does
+    not. The control gives the hero's own defence value A, because
+
+        output = coefficient x E(20) x m(1) + A
+
+    with everything but A known; the buffed stack then gives the multiplier M
+    from what is left. Reading a single stack would confound the two, which is
+    the mistake the first attacking sweep made and had to be redone for.
+    """
+    print("\n  1. level 10 defending, decomposed\n")
+    print(f"  {'hero':10} {'terr':5} {'control':>8} {'own A':>8} "
+          f"{'buffed':>9} {'M':>8}")
+    own: dict[str, float] = {}
+    mult: dict[str, float] = {}
+    for hero, terr in HERO_OTHER_TERRAIN.items():
+        buffed, control = HERO_OTHER_PAIR[hero]
+        base_c = _hero_def_reading(p, None, 10, control, terr)
+        with_c = _hero_def_reading(p, hero, 10, control, terr)
+        base_b = _hero_def_reading(p, None, 10, buffed, terr)
+        with_b = _hero_def_reading(p, hero, 10, buffed, terr)
+        if None in (base_c, with_c, base_b, with_b):
+            print(f"  {hero:10} {terr:5} {'unreadable':>8}")
+            continue
+        a_own = with_c - base_c
+        # The buffed stack carries the same A plus the multiplier on the rest.
+        m = (with_b - a_own) / base_b if base_b else float("nan")
+        own[hero] = a_own
+        mult[hero] = m
+        print(f"  {hero:10} {terr:5} {control:>8} {a_own:8.2f} "
+              f"{buffed:>9} {m:8.4f}")
+    print("\n  HERO_ATK_DEFENDING = " + json.dumps(
+        {k: round(v, 2) for k, v in own.items()}, sort_keys=True))
+    print("  buffs (defending)  = " + json.dumps(
+        {k: round(v, 4) for k, v in mult.items()}, sort_keys=True))
+
+    print("\n  2. the output curve, level by level, on the buffed type\n")
+    curves: dict[str, dict[int, float]] = {}
+    for hero, terr in HERO_OTHER_TERRAIN.items():
+        buffed, control = HERO_OTHER_PAIR[hero]
+        cap = HERO_OTHER_MAX_LEVEL.get(hero, 20)
+        base_b = _hero_def_reading(p, None, 1, buffed, terr)
+        if base_b is None:
+            print(f"  {hero}: baseline unreadable, skipped")
+            continue
+        row: dict[int, float] = {}
+        cells = []
+        for lvl in range(1, cap + 1):
+            v = _hero_def_reading(p, hero, lvl, buffed, terr)
+            if v is None:
+                cells.append(f"{lvl}:—")
+                continue
+            # Subtract the hero's own contribution at THIS level, which is not
+            # known yet -- so record the raw figure and let the fit run
+            # offline rather than pretending the split is free.
+            row[lvl] = v
+            cells.append(f"{lvl}:{v:.1f}")
+        curves[hero] = row
+        print(f"  {hero:10} " + " ".join(cells))
+    print("\n  raw defending output by level = " + json.dumps(
+        {h: {str(k): round(v, 2) for k, v in r.items()}
+         for h, r in curves.items()}, sort_keys=True))
+
+
+def exp_hero_air_attacking(p: Probe) -> None:
+    """Richthofen and von Thaden attacking, read where nothing is attenuated.
+
+    Their attacking values were read against a GROUND target, and air attacking
+    ground is a post-fire law -- so the figure on record confounds the hero's
+    own attack with the attenuation of the whole stack. It shows: the four
+    naval heroes decompose to 40.00, 15.00, 64.32 and 1.00, and these two to
+    16.80 and 10.07. Round numbers and unround ones, split exactly along the
+    line of which readings were attenuated.
+
+    Air attacking AIR is not attenuated -- twenty fighters lose 58% of their
+    pool to two hundred fighters and still deal their full figure -- so the
+    same decomposition against an air target has nothing to unpick.
+    """
+    print(f"\n  {'hero':8} {'control':>8} {'base':>9} {'with':>9} "
+          f"{'own A':>8}   recorded")
+    recorded = {"rbaron": 16.80, "thaden": 10.07}
+    for hero, control, buffed in (("rbaron", "tac", "int"),
+                                  ("thaden", "int", "zep")):
+        vals = {}
+        for label, unit in (("control", control), ("buffed", buffed)):
+            for who in (None, hero):
+                ov = settings()
+                ov.update(duel(1, unit, 10, "tac" if unit != "tac" else "int",
+                               200, atk_terrain="air", def_terrain="air"))
+                create: tuple[str, ...] = ()
+                if who:
+                    ov.update({HERO_ATK_FIELDS[0]: who,
+                               HERO_ATK_FIELDS[1]: "10",
+                               HERO_ATK_FIELDS[2]: "100%"})
+                    create = HERO_ATK_FIELDS
+                try:
+                    p.submit(ov, create=create)
+                except (BareFormReturned, ValueError) as e:
+                    print(f"    ! {hero} {label} {unit}: {e}"[:100],
+                          file=sys.stderr)
+                    continue
+                d = dict(p.last_details)
+                b = d.get("B.1.1") or {}
+                record("hero_air_attacking", {"hero": who, "unit": unit,
+                                              "role": label, "level": 10,
+                                              "atk_n": 10, "detail": d},
+                       {k: (v or {}).get("lost") for k, v in d.items()})
+                if b.get("lost") is None or (b.get("pct") or 0) >= 99.9:
+                    continue
+                vals[(label, bool(who))] = b["lost"]
+        base = vals.get(("control", False))
+        with_ = vals.get(("control", True))
+        if base is None or with_ is None:
+            print(f"  {hero:8} {'unreadable':>8}")
+            continue
+        print(f"  {hero:8} {control:>8} {base:9.2f} {with_:9.2f} "
+              f"{with_ - base:8.2f}   {recorded[hero]:8.2f}")
+        bb_, bw = vals.get(("buffed", False)), vals.get(("buffed", True))
+        if bb_ is not None and bw is not None:
+            print(f"           {buffed:>8} {bb_:9.2f} {bw:9.2f} "
+                  f"{'excess':>8} {bw - bb_:8.2f}")
+
+
+def exp_hero_other_curves(p: Probe) -> None:
+    """The attacking output curves for the four air/naval heroes that buff.
+
+    Read on a SINGLE-TYPE stack against a target of the hero's own class, so
+    nothing is attenuated and nothing has to be subtracted but the hero's own
+    attack, which is now known exactly:
+
+        output = coefficient x M x E(10) + A
+
+    Everything but M is known, so one request per level gives the curve
+    directly. The defending curve for Tōgō came out a clean staircase in pairs
+    of levels -- 1.00, 1.15, 1.20, 1.25, 1.30, 1.34, 1.38, 1.42, 1.46, 1.50 --
+    and these are read the same way to see whether the attacking channel moves
+    on the same ladder.
+    """
+    setups = [("rbaron", "int", 20.0, 70.0, 20, "air"),
+              ("thaden", "zep", 5.0, 10.0, 15, "air"),
+              ("otto", "sub", 40.0, 40.0, 15, "sea"),
+              ("togo", "bb", 40.0, 15.0, 20, "sea"),
+              ("togo_b", "bb", 40.0, 64.32, 20, "sea")]
+    out: dict[str, dict[int, float]] = {}
+    for hero, unit, coef, own, cap, terr in setups:
+        target = {"air": "tac", "sea": "cl"}[terr]
+        if unit == target:
+            target = "int" if terr == "air" else "sub"
+        cells = []
+        row: dict[int, float] = {}
+        for lvl in range(1, cap + 1):
+            ov = settings()
+            ov.update(duel(1, unit, 10, target, 200,
+                           atk_terrain=terr, def_terrain=terr))
+            ov.update({HERO_ATK_FIELDS[0]: hero, HERO_ATK_FIELDS[1]: str(lvl),
+                       HERO_ATK_FIELDS[2]: "100%"})
+            try:
+                p.submit(ov, create=HERO_ATK_FIELDS)
+            except (BareFormReturned, ValueError) as e:
+                print(f"    ! {hero} lvl{lvl}: {e}"[:100], file=sys.stderr)
+                cells.append(f"{lvl}:—")
+                continue
+            d = dict(p.last_details)
+            b = d.get("B.1.1") or {}
+            record("hero_other_curves", {"hero": hero, "unit": unit,
+                                         "level": lvl, "atk_n": 10,
+                                         "terrain": terr, "detail": d},
+                   {k: (v or {}).get("lost") for k, v in d.items()})
+            if b.get("lost") is None or (b.get("pct") or 0) >= 99.9:
+                cells.append(f"{lvl}:—")
+                continue
+            m = (b["lost"] - own) / (coef * effective_units(10))
+            row[lvl] = m
+            cells.append(f"{lvl}:{m:.2f}")
+        out[hero] = row
+        print(f"  {hero:8} {unit:5} " + " ".join(cells))
+    print("\n  attacking multipliers by level = " + json.dumps(
+        {h: {str(k): round(v, 4) for k, v in r.items()}
+         for h, r in out.items()}, sort_keys=True))
+
+
+def exp_hero_own_curves(p: Probe) -> None:
+    """Does the hero's OWN attack move with level, as well as its multiplier?
+
+    The attacking curves were computed by subtracting a level-10 own-attack
+    value at every level, and two of the five came out below 1.00 at low levels
+    -- Richthofen 0.775 at level 1, Tōgō w/bombardment 0.90. A multiplier below
+    one would mean a hero makes its own stack worse, which nothing else in the
+    record does. Over-subtracting produces exactly that artifact, so the likely
+    reading is that A itself is smaller at level 1 and the constant was wrong.
+
+    This is the same trap the land-hero curves were re-read to escape: a curve
+    measured by subtracting a baseline is only as good as the baseline, and a
+    baseline measured at one level is not a constant until someone checks.
+
+    The CONTROL type settles it. On a stack the hero does not buff there is no
+    multiplier to confound anything, so the excess IS A, level by level.
+    """
+    setups = [("rbaron", "tac", 3.0, 20, "air"),
+              ("togo_b", "cl", 10.0, 20, "sea"),
+              ("thaden", "int", 20.0, 15, "air"),
+              ("otto", "cl", 10.0, 15, "sea"),
+              ("togo", "cl", 10.0, 20, "sea")]
+    out: dict[str, dict[int, float]] = {}
+    for hero, control, coef, cap, terr in setups:
+        # thaden and otto and togo showed no anomaly, so they are spot-checked
+        # at the ends rather than swept -- and if an end disagrees with the
+        # level-10 value, the whole ladder gets bought.
+        levels = (list(range(1, cap + 1)) if hero in ("rbaron", "togo_b")
+                  else [1, 10, cap])
+        target = {"air": "tac", "sea": "cl"}[terr]
+        if control == target:
+            target = "int" if terr == "air" else "sub"
+        row: dict[int, float] = {}
+        cells = []
+        for lvl in levels:
+            ov = settings()
+            ov.update(duel(1, control, 10, target, 200,
+                           atk_terrain=terr, def_terrain=terr))
+            ov.update({HERO_ATK_FIELDS[0]: hero, HERO_ATK_FIELDS[1]: str(lvl),
+                       HERO_ATK_FIELDS[2]: "100%"})
+            try:
+                p.submit(ov, create=HERO_ATK_FIELDS)
+            except (BareFormReturned, ValueError) as e:
+                print(f"    ! {hero} lvl{lvl}: {e}"[:100], file=sys.stderr)
+                cells.append(f"{lvl}:—")
+                continue
+            d = dict(p.last_details)
+            b = d.get("B.1.1") or {}
+            record("hero_own_curves", {"hero": hero, "control": control,
+                                       "level": lvl, "atk_n": 10,
+                                       "terrain": terr, "detail": d},
+                   {k: (v or {}).get("lost") for k, v in d.items()})
+            if b.get("lost") is None or (b.get("pct") or 0) >= 99.9:
+                cells.append(f"{lvl}:—")
+                continue
+            A = b["lost"] - coef * effective_units(10)
+            row[lvl] = A
+            cells.append(f"{lvl}:{A:.1f}")
+        out[hero] = row
+        flat = (len(set(round(v, 2) for v in row.values())) == 1) if row else False
+        print(f"  {hero:8} {control:5} " + " ".join(cells)
+              + ("   FLAT" if flat else "   MOVES WITH LEVEL"))
+    print("\n  own attack by level = " + json.dumps(
+        {h: {str(k): round(v, 2) for k, v in r.items()}
+         for h, r in out.items()}, sort_keys=True))
+
+
+def exp_hero_class_columns(p: Probe) -> None:
+    """Does a HERO have attack columns by target class, as a unit does?
+
+    Richthofen decomposes to 70.0 against an air target and the older sweep,
+    against a GROUND target, read 16.80. I took the second for an attenuation
+    artifact of the first. Attenuation cannot explain a factor of four: the
+    stack in that reading was attenuated by 1.6%, so 70.0 would have shown as
+    68.9, not 16.85. Both numbers are real and the hero has a target-class
+    column exactly as every unit does.
+
+    Reading it needs a stack big enough that attenuation is negligible rather
+    than corrected, because a correction here would be fitting the law to the
+    thing being measured. A hundred bombers hold 8000 HP and two thousand
+    infantry deal 0.4 x E(50) = 14.0 to them -- 0.175% of the pool -- so the
+    post-fire factor is 0.9983 and the excess IS the hero's own attack.
+    """
+    print(f"\n  {'hero':8} {'control':>8} {'target':>8} {'base':>10} "
+          f"{'with hero':>10} {'own A':>9}")
+    setups = [("rbaron", "tac", 30.0), ("thaden", "int", 5.0)]
+    targets = [("inf", 2000, "land"), ("bb", 400, "naval"), ("tac", 2000, "air")]
+    out: dict[str, dict[str, float]] = {}
+    for hero, control, _coef in setups:
+        for tgt, tn, tcls in targets:
+            if tgt == control:
+                tgt, tn = ("int", 2000)
+            vals = []
+            for who in (None, hero):
+                ov = settings()
+                ov.update(duel(1, control, 100, tgt, tn, atk_terrain="air",
+                               def_terrain="land" if tcls == "land" else
+                               ("sea" if tcls == "naval" else "air")))
+                create: tuple[str, ...] = ()
+                if who:
+                    ov.update({HERO_ATK_FIELDS[0]: who,
+                               HERO_ATK_FIELDS[1]: "10",
+                               HERO_ATK_FIELDS[2]: "100%"})
+                    create = HERO_ATK_FIELDS
+                try:
+                    p.submit(ov, create=create)
+                except (BareFormReturned, ValueError) as e:
+                    print(f"    ! {hero} vs {tgt}: {e}"[:100], file=sys.stderr)
+                    vals.append(None)
+                    continue
+                d = dict(p.last_details)
+                b = d.get("B.1.1") or {}
+                a = d.get("A.1.1") or {}
+                record("hero_class_columns",
+                       {"hero": who, "control": control, "target": tgt,
+                        "target_class": tcls, "atk_n": 100, "def_n": tn,
+                        "detail": d},
+                       {k: (v or {}).get("lost") for k, v in d.items()})
+                vals.append(None if (b.get("lost") is None
+                                     or (b.get("pct") or 0) >= 99.9)
+                            else (b["lost"], (a.get("pct") or 0)))
+            if None in vals:
+                print(f"  {hero:8} {control:>8} {tgt:>8} {'unreadable':>10}")
+                continue
+            (base, _), (with_, atk_pct) = vals
+            out.setdefault(hero, {})[tcls] = with_ - base
+            print(f"  {hero:8} {control:>8} {tgt:>8} {base:10.2f} "
+                  f"{with_:10.2f} {with_ - base:9.2f}"
+                  f"   (attacker lost {atk_pct}%)")
+    print("\n  hero own attack by TARGET class = " + json.dumps(
+        {h: {c: round(v, 2) for c, v in r.items()} for h, r in out.items()},
+        sort_keys=True))
+
+
+def exp_hero_columns_small(p: Probe) -> None:
+    """The hero class columns again, on a stack of TEN.
+
+    The hundred-unit version of this was unreadable and it is worth saying why
+    rather than quietly re-running it. E(n) saturates at 35 by fifty units, so
+    a hero joining a stack of a hundred adds E(101) - E(100) = 0 -- or, if it
+    sits first, adds its own value and takes E(1) away from the units. Either
+    way the reading is a DIFFERENCE of two large numbers that mostly cancel,
+    and it came back saying von Thaden's air attack is 20.0 where a clean
+    ten-unit stack says 10.0. The stack was chosen to make attenuation
+    negligible and it made the decomposition ambiguous instead.
+
+    Ten units is below the knee, where E is linear and adding the hero shifts
+    nothing. Attenuation is then real but READABLE: the attacker's own loss is
+    printed, so the post-fire factor comes out of the same response.
+    """
+    print(f"\n  {'hero':8} {'control':>8} {'target':>7} {'base':>9} "
+          f"{'with':>9} {'raw':>8} {'atk lost':>9} {'corrected':>10}")
+    out: dict[str, dict[str, float]] = {}
+    for hero, control, hp in (("rbaron", "tac", 80.0), ("thaden", "int", 60.0)):
+        for tgt, tn, tcls in (("inf", 400, "land"), ("bb", 60, "naval"),
+                              ("zep", 400, "air")):
+            vals = []
+            for who in (None, hero):
+                ov = settings()
+                ov.update(duel(1, control, 10, tgt, tn, atk_terrain="air",
+                               def_terrain={"land": "land", "naval": "sea",
+                                            "air": "air"}[tcls]))
+                create: tuple[str, ...] = ()
+                if who:
+                    ov.update({HERO_ATK_FIELDS[0]: who,
+                               HERO_ATK_FIELDS[1]: "10",
+                               HERO_ATK_FIELDS[2]: "100%"})
+                    create = HERO_ATK_FIELDS
+                try:
+                    p.submit(ov, create=create)
+                except (BareFormReturned, ValueError) as e:
+                    print(f"    ! {hero} vs {tgt}: {e}"[:100], file=sys.stderr)
+                    vals.append(None)
+                    continue
+                d = dict(p.last_details)
+                b = d.get("B.1.1") or {}
+                a = d.get("A.1.1") or {}
+                record("hero_columns_small",
+                       {"hero": who, "control": control, "target": tgt,
+                        "target_class": tcls, "atk_n": 10, "def_n": tn,
+                        "detail": d},
+                       {k: (v or {}).get("lost") for k, v in d.items()})
+                vals.append(None if (b.get("lost") is None
+                                     or (b.get("pct") or 0) >= 99.9)
+                            else (b["lost"], a.get("lost") or 0.0))
+            if None in vals:
+                print(f"  {hero:8} {control:>8} {tgt:>7} {'unreadable':>9}")
+                continue
+            (base, _), (with_, lost) = vals
+            raw = with_ - base
+            # The post-fire factor this stack fired at, from its own losses.
+            pool = 10 * hp
+            surv = 10 - int(lost // hp)
+            factor = ((effective_units(surv) / effective_units(10))
+                      * (0.05 + 0.95 * min(1.0, (pool - lost) / (surv * hp)))
+                      if surv else 0.0)
+            corrected = raw / factor if factor else float("nan")
+            out.setdefault(hero, {})[tcls] = corrected
+            print(f"  {hero:8} {control:>8} {tgt:>7} {base:9.2f} {with_:9.2f} "
+                  f"{raw:8.2f} {lost:9.2f} {corrected:10.2f}")
+    print("\n  hero own attack by TARGET class (ten-unit stack) = " + json.dumps(
+        {h: {c: round(v, 2) for c, v in r.items()} for h, r in out.items()},
+        sort_keys=True))
+
 # Every (hero, unit) pair with a measured OUTPUT buff, and the level cap to
 # sweep to. Read with a SINGLE-TYPE stack, which needs no baseline subtraction
 # and cannot be contaminated by another curve.
@@ -7187,6 +7649,12 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "balloon_columns": exp_balloon_columns,
     "attenuation_scope": exp_attenuation_scope,
     "multi_round_types": exp_multi_round_types,
+    "hero_other_defending": exp_hero_other_defending,
+    "hero_air_attacking": exp_hero_air_attacking,
+    "hero_other_curves": exp_hero_other_curves,
+    "hero_own_curves": exp_hero_own_curves,
+    "hero_class_columns": exp_hero_class_columns,
+    "hero_columns_small": exp_hero_columns_small,
     "mixed_stacks": exp_mixed_stacks,
     "heroes": exp_heroes,
     "stack_limits": exp_stack_limits,

@@ -759,7 +759,10 @@ function renderHero(side) {
     }
     sel.appendChild(known);
     const bad = document.createElement('optgroup');
-    bad.label = 'Nothing measured on land';
+    // These six are fully modelled now -- attacking and defending, across
+    // their level ranges. What is still true is where they can fight, which is
+    // what the label says.
+    bad.label = 'Air and naval stacks only';
     for (const [code, h] of Object.entries(HEROES_REFUSED)) {
       const o = document.createElement('option');
       o.value = code;
@@ -858,9 +861,27 @@ function renderHero(side) {
     note.className = inexact ? 'field-note is-warn' : 'field-note';
   } else {
     const r = HEROES_REFUSED[cur.code];
-    note.textContent = r ? `${r.why} No effect is applied — nothing about this `
-      + 'hero was measurable against a land stack.' : 'Unrecognised hero.';
-    note.className = 'field-note is-warn';
+    if (r) {
+      const buffed = Object.keys(r.buffs || {});
+      const unit = buffed.length ? (UNITS[buffed[0]] || {}).label || buffed[0] : null;
+      note.textContent = `${r.why} It fights on `
+        + `${r.terrain === 'air' ? 'an AIR' : 'a NAVAL'} stack: `
+        + `${r.atkAttacking} attacking, ${r.atkDefending} defending`
+        + (unit
+          ? `, and multiplies ${unit} output`
+          + (Object.values(r.buffs)[0].channel === 'attack'
+            ? ' when attacking only (measured at exactly 1.0000 defending).'
+            : ' on both sides.')
+          : ', and buffs no unit type (measured).')
+        + (r.atkAttackingCurve
+          ? ' Its own attack MOVES WITH LEVEL, which no land hero\u2019s does.'
+          : '')
+        + (r.poolCurve ? ' So does its own HP pool.' : '');
+      note.className = 'field-note';
+    } else {
+      note.textContent = 'Unrecognised hero.';
+      note.className = 'field-note is-warn';
+    }
   }
 }
 
