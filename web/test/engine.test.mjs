@@ -36,6 +36,7 @@ import { dirname, join } from 'node:path';
 import {
   UNITS, CLASS_ATTACK, TRENCH_POOL, TRENCH_POOL_BRACKET, TRENCH_OUTPUT, PROVENANCE, NOT_MEASURED,
   UNIT_RANGE, MELEE_RANGE, EMBARKED_MAXHP, CLASS_ATTACK_CORROBORATED,
+  BUILDINGS,
   GROUND_DEFENCE_VS_AIR,
   CLASS_DEFENCE, EMBARKED_ATTACK, EMBARKED_DEFENCE,
   MAX_UNIT_ROWS,
@@ -2774,6 +2775,95 @@ console.log('\n12t. every hero has a column per class, on both sides');
 }
 
 // ===========================================================================
+console.log('\n12u. m(f) on both axes, and every building level');
+// ===========================================================================
+// m(f) is in every output term the engine computes and it had been swept on
+// ONE unit type, on ONE side. That is the shape of every defect this project
+// found in the hero model, applied to the most load-bearing law in it.
+{
+  const mf = rows.filter((r) => r.experiment === 'm_f_generality' && r.meta.detail);
+  let cells = 0;
+  const units = new Set();
+  const sides = new Set();
+  for (const r of mf) {
+    const atk = r.meta.side === 'attack';
+    const want = ((r.meta.detail[atk ? 'B.1.1' : 'A.1.1']) || {}).lost;
+    if (want == null) continue;
+    const got = atk
+      ? simulate({ attacker: { rows: [{ unit: r.meta.unit, count: 10, hpPct: r.meta.hp_pct }] },
+          defender: { rows: [{ unit: 'inf', count: 400 }] } })
+      : simulate({ attacker: { rows: [{ unit: 'inf', count: 400 }] },
+          defender: { rows: [{ unit: r.meta.unit, count: 10, hpPct: r.meta.hp_pct }] } });
+    const seen = atk ? got.defender.hpLost : got.attacker.hpLost;
+    // Absolute, not relative: at 10% HP a light artillery row deals 1.45 and
+    // the server prints two decimals, so a relative band is meaningless there.
+    check(`m(f) ${r.meta.unit} ${r.meta.side}ing at ${r.meta.hp_pct}%: ${want}`,
+      Math.abs(seen - want) < 0.006, `got ${seen.toFixed(3)}`);
+    cells += 1;
+    units.add(r.meta.unit);
+    sides.add(r.meta.side);
+  }
+  check('the whole m(f) grid was replayed', cells === 50, String(cells));
+  check('across five unit types and both sides',
+    units.size === 5 && sides.size === 2,
+    `${[...units].join(',')} / ${[...sides].join(',')}`);
+  check('and the 0.05 floor is what makes it falsifiable — 10% HP gives 14.5%',
+    Math.abs(hpMultiplier(0.10) - 0.145) < 1e-12);
+
+  // Buildings: every level of every building, and every cap in the server's
+  // own words.
+  const bl = rows.filter((r) => r.experiment === 'building_levels');
+  let pools = 0;
+  let refusals = 0;
+  for (const r of bl) {
+    const m = r.meta || {};
+    if (m.refused) {
+      const b = BUILDINGS[m.building];
+      check(`the server caps ${m.building} below level ${m.level}`,
+        b && b.maxLevel === m.level - 1,
+        `table says ${b ? b.maxLevel : 'absent'}, server refused ${m.level}`);
+      refusals += 1;
+      continue;
+    }
+    const pool = ((m.detail || {})['B.1.bldg.1'] || {}).pool;
+    if (pool == null) continue;
+    const b = BUILDINGS[m.building];
+    // A building's pool is never printed. It is lost/pct, and pct carries
+    // three significant figures, so every reading is an interval about 0.25%
+    // wide -- 80.2 for a building the table records as 80. Asserting to a
+    // fixed 0.15 was demanding more precision than the page can express.
+    check(`${m.building} level ${m.level} holds ${pool}`,
+      b && Math.abs(b.poolAtLevel[m.level] - pool) / pool < 0.005,
+      `table says ${b ? b.poolAtLevel[m.level] : 'absent'}`);
+    pools += 1;
+  }
+  check('every building level was replayed', pools >= 13, String(pools));
+  check('and every cap came from a refusal, not from silence', refusals >= 7,
+    String(refusals));
+  check('no building is left with an unknown cap',
+    Object.values(BUILDINGS).every((b) => typeof b.maxLevel === 'number'),
+    Object.entries(BUILDINGS).filter(([, b]) => typeof b.maxLevel !== 'number')
+      .map(([c]) => c).join(',') || 'all known');
+  check('the workshop is not linear, so it carries no per-level figure',
+    BUILDINGS.workshop.hpPerLevel === null
+    && BUILDINGS.workshop.poolAtLevel[1] === 5
+    && BUILDINGS.workshop.poolAtLevel[2] === 15
+    && BUILDINGS.workshop.poolAtLevel[3] === 35);
+  check('and the assumed doubling series turned out to be right',
+    BUILDINGS.workshop.poolAtLevel[3] === 35);
+
+  // The three notes that had gone stale, now asserted as closed.
+  check('the trench-gaps note no longer claims 12 levels are missing',
+    !/12 of 21 levels/.test(PROVENANCE['TRENCH.gaps'].note)
+    && PROVENANCE['TRENCH.gaps'].confidence === 'measured');
+  check('the hero-levels note no longer says only the buff varies',
+    /NO LONGER ONLY THE BUFF/.test(PROVENANCE['HEROES.levels'].note));
+  check('and m(f) no longer says the other axes are assumed',
+    !/is assumed\.$/.test(PROVENANCE.m_f.note)
+    && /BOTH AXES ARE MEASURED/.test(PROVENANCE.m_f.note));
+}
+
+// ===========================================================================
 console.log('\n14. coverage of the record itself');
 // ===========================================================================
 {
@@ -2795,6 +2885,7 @@ console.log('\n14. coverage of the record itself');
     'togo_b_disagreement', 'togo_b_shape', 'togo_b_kind', 'hero_hp_scaling',
     'land_hero_attacking', 'land_hero_screen', 'hero_new_buffs', 'hank_sides',
     'land_hero_target_class', 'land_hero_def_class',
+    'm_f_generality', 'building_levels',
     // Heroes are now modelled and replayed above: the sweeps that measured
     // them are physics the engine reproduces, not declared omissions.
     'heroes', 'hero_scaling', 'hero_table', 'hero_levels', 'air_rounds'];

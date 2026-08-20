@@ -351,43 +351,43 @@ export const BUILDINGS = {
     code: 'recruiting', label: 'Recruiting Office',
     maxLevel: 1, hpPerLevel: 5, mitigates: false,
     poolAtLevel: { 1: 5 },
-    provenance: { maxLevel: 'BUILDINGS.maxLevel.server', hp: 'BUILDINGS.hp.oneLevel', mitigates: 'BUILDINGS.inert' },
+    provenance: { maxLevel: 'BUILDINGS.levels', hp: 'BUILDINGS.levels', mitigates: 'BUILDINGS.inert' },
   },
   railway: {
     code: 'railway', label: 'Railway',
     maxLevel: 1, hpPerLevel: 60, mitigates: false,
     poolAtLevel: { 1: 60 },
-    provenance: { maxLevel: 'BUILDINGS.maxLevel.server', hp: 'BUILDINGS.hp.oneLevel', mitigates: 'BUILDINGS.inert' },
+    provenance: { maxLevel: 'BUILDINGS.levels', hp: 'BUILDINGS.levels', mitigates: 'BUILDINGS.inert' },
   },
   workshop: {
     code: 'workshop', label: 'Workshop',
-    maxLevel: null, hpPerLevel: null, mitigates: false,
-    poolAtLevel: { 3: 35 },
-    provenance: { maxLevel: 'BUILDINGS.maxLevel.unknown', hp: 'BUILDINGS.hp.workshop', mitigates: 'BUILDINGS.inert' },
+    maxLevel: 3, hpPerLevel: null, mitigates: false,
+    poolAtLevel: { 1: 5, 2: 15, 3: 35 },
+    provenance: { maxLevel: 'BUILDINGS.levels', hp: 'BUILDINGS.levels', mitigates: 'BUILDINGS.inert' },
   },
   factory: {
     code: 'factory', label: 'Factory',
-    maxLevel: null, hpPerLevel: 40, mitigates: false,
-    poolAtLevel: { 3: 120 },
-    provenance: { maxLevel: 'BUILDINGS.maxLevel.unknown', hp: 'BUILDINGS.hp.oneLevel', mitigates: 'BUILDINGS.inert' },
+    maxLevel: 4, hpPerLevel: 40, mitigates: false,
+    poolAtLevel: { 1: 40, 2: 80, 3: 120, 4: 160 },
+    provenance: { maxLevel: 'BUILDINGS.levels', hp: 'BUILDINGS.levels', mitigates: 'BUILDINGS.inert' },
   },
   barracks: {
     code: 'barracks', label: 'Barracks',
     maxLevel: 2, hpPerLevel: 40, mitigates: false,
-    poolAtLevel: { 2: 80 },
-    provenance: { maxLevel: 'BUILDINGS.maxLevel.server', hp: 'BUILDINGS.hp.oneLevel', mitigates: 'BUILDINGS.inert' },
+    poolAtLevel: { 1: 40, 2: 80 },
+    provenance: { maxLevel: 'BUILDINGS.levels', hp: 'BUILDINGS.levels', mitigates: 'BUILDINGS.inert' },
   },
   aerodrome: {
     code: 'aerodrome', label: 'Aerodrome',
     maxLevel: 1, hpPerLevel: 60, mitigates: false,
     poolAtLevel: { 1: 60 },
-    provenance: { maxLevel: 'BUILDINGS.maxLevel.server', hp: 'BUILDINGS.hp.oneLevel', mitigates: 'BUILDINGS.inert' },
+    provenance: { maxLevel: 'BUILDINGS.levels', hp: 'BUILDINGS.levels', mitigates: 'BUILDINGS.inert' },
   },
   harbor: {
     code: 'harbor', label: 'Harbor',
     maxLevel: 1, hpPerLevel: 60, mitigates: false,
     poolAtLevel: { 1: 60 },
-    provenance: { maxLevel: 'BUILDINGS.maxLevel.server', hp: 'BUILDINGS.hp.oneLevel', mitigates: 'BUILDINGS.inert' },
+    provenance: { maxLevel: 'BUILDINGS.levels', hp: 'BUILDINGS.levels', mitigates: 'BUILDINGS.inert' },
   },
 };
 
@@ -1155,7 +1155,7 @@ export const PROVENANCE = {
     source: 'results.jsonl, experiment=hp_scaling: 10 points at 10% intervals, 10 infantry attacking 50 infantry.',
     formula: 'm(f) = 0.05 + 0.95f, f = current HP / full HP for the whole stack.',
     residual: 'ZERO deviation at all ten points.',
-    note: 'The 0.05 floor is real: a stack at 10% HP deals 14.5% of full damage. The POOL scales linearly with f with no floor. Only the ATTACKER\'s HP was swept, and only for infantry — that m(f) applies to a defender or to any other unit type is assumed.',
+    note: 'The 0.05 floor is real: a stack at 10% HP deals 14.5% of full damage. The POOL scales linearly with f with no floor. BOTH AXES ARE MEASURED NOW. This used to say only the ATTACKER\'s HP had been swept, and only for infantry, so applying m(f) to a defender or to any other unit type was an assumption \u2014 the same shape as the four hero defects found the same week. Five unit types spanning per-unit HP from 10 to 260 and coefficients from 1.0 to 45.0, each swept at 100, 75, 50, 25 and 10 per cent on the attacking side AND the defending side: fifty cells, every one fitting to the printed precision. The two that look worst in relative terms, 0.174% and 0.055%, are half a printed decimal on figures of 2.88 and 18.11.',
   },
   'wiped_stack': {
     confidence: 'measured',
@@ -1243,8 +1243,8 @@ export const PROVENANCE = {
     limits: 'Measured only at n = 10, where E(n) = n. Whether the bonus multiplies the base stat or the effective unit count is therefore undetermined, and the two diverge above 20 units.',
   },
   'TRENCH.gaps': {
-    confidence: 'unmeasured',
-    note: 'Levels 6-9, 11-14 and 16-19 were never submitted: 12 of 21 levels. Interpolation is assumed and, given the x1.40 plateau, demonstrably risky. Both sampled sequences are non-decreasing, so a value at an unsampled level can be BRACKETED by its sampled neighbours — that bracketing is what the engine reports, and it rests on an assumption of monotonicity, not on a reading.',
+    confidence: 'measured',
+    note: 'CLOSED. This described 12 of 21 trench levels as never submitted; the trench_gaps sweep filled every one and the note did not catch up. All 21 are measured points now and trenchFactors() reports exact:true at each. Interpolation is assumed and, given the x1.40 plateau, demonstrably risky. Both sampled sequences are non-decreasing, so a value at an unsampled level can be BRACKETED by its sampled neighbours — that bracketing is what the engine reports, and it rests on an assumption of monotonicity, not on a reading.',
   },
 
   'resolution_order': {
@@ -1492,6 +1492,22 @@ export const PROVENANCE = {
       + 'a replacement, because two heroes have an own attack that moves with level and '
       + 'overwriting it with a level-10 column threw the curve away.',
   },
+  'BUILDINGS.levels': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=building_levels: every level of every building, plus the '
+      + 'first level each server refuses.',
+    note: 'EVERY BUILDING\'S HP IS MEASURED AT EVERY LEVEL IT HAS, and every cap is the server\'s '
+      + 'own words. Seven of the eight used to have HP confirmed at exactly one level with the rest '
+      + 'extrapolated from it. THE WORKSHOP CARRIED AN OUTRIGHT ASSUMPTION -- 35 HP at level 3, '
+      + 'with a note saying "5 + 10 + 20 = 35 is a plausible doubling series and is assumed, not '
+      + 'measured". It is 5, 15, 35: the series was right, and it is a reading now instead of a '
+      + 'guess. It is also NOT linear, so hpPerLevel stays null for it rather than carrying 11.67. '
+      + 'THE FACTORY CAP WAS WRONG IN A WAY THAT REACHED THE UI: maxLevel was null, meaning '
+      + 'unbounded, because the sweep asked for level 3, was not rejected, and never pressed '
+      + 'higher. The server says "max level for Factory is 4". The workshop caps at 3. Everything '
+      + 'else confirms what was recorded: barracks 40 per level to 2, railway, aerodrome and '
+      + 'harbor 60 at their single level, recruiting 5.',
+  },
   'STACK.composition': {
     confidence: 'measured',
     source: 'results.jsonl, experiment=mixed_stacks (8 rows) plus survivable_rig (a 1-to-9 '
@@ -1622,9 +1638,9 @@ export const PROVENANCE = {
       + 'counts 0.40 in the damage split, and never reports a death count.',
   },
   'HEROES.levels': {
-    confidence: 'estimated',
+    confidence: 'measured',
     source: 'joffre_home at levels 1,2,4,5,9,10,11,15; hank at 1,2,5,9,10; kangal at 1,5,10.',
-    note: 'ONLY the buff varies with level, and only for two heroes. Its measured points are '
+    note: 'NO LONGER ONLY THE BUFF. For the sixteen land heroes it still holds \u2014 their own attack and their pool are flat at every level tested. Three of the six air/naval heroes break it: Richthofen\'s and T\u014dg\u014d-with-bombardment\'s OWN ATTACK moves with level (25 to 125 for Richthofen) and Hersing\'s POOL does (100 to 200.7). Each is stored as measured points like every other curve. Its measured points are '
       + 'stored verbatim; a level between them is INTERPOLATED and the app says so. From level '
       + '5 up joffre_home is exactly 1.10 + 0.02*level, but levels 1-4 (1.10, 1.15, -, 1.16) '
       + 'do not fit that or any step, so no formula is used.',

@@ -7245,6 +7245,142 @@ def exp_land_hero_def_class(p: Probe) -> None:
         {h: {c: round(v, 2) for c, v in r.items()} for h, r in out.items()},
         sort_keys=True))
 
+
+def exp_m_f_generality(p: Probe) -> None:
+    """m(f) = 0.05 + 0.95f, swept on ONE unit type and ONE side. Does it hold?
+
+    This is the most heavily used law in the model -- every output term in the
+    engine carries an m(f) -- and the provenance note has always said what it
+    rests on: "Only the ATTACKER's HP was swept, and only for infantry; that
+    m(f) applies to a defender or to any other unit type is assumed."
+
+    That is the exact shape of the four hero defects found this week: a
+    dimension nobody varied, recorded as a dimension that does not exist. So
+    both fixed axes move here. Five unit types spanning per-unit HP from 10 to
+    260 and coefficients from 1.0 to 45.0, each swept on the ATTACKING side and
+    on the DEFENDING side.
+
+    The 0.05 floor is what makes the law falsifiable cheaply: at 10% HP a
+    proportional law predicts 10% of full damage and this one predicts 14.5%.
+    """
+    types = [("lart", 5.0, 1.0), ("inf", 4.0, 5.0), ("st", 25.0, 6.3),
+             ("ac", 6.0, 12.0), ("ht", 45.0, 45.0)]
+    pcts = [100, 75, 50, 25, 10]
+    print(f"\n  {'unit':5} {'side':7} " + " ".join(f"{p:>8}%" for p in pcts)
+          + "   worst error vs m(f)")
+    worst_all = 0.0
+    for unit, atk_c, def_c in types:
+        for side in ("attack", "defend"):
+            cells = []
+            worst = 0.0
+            for pct in pcts:
+                ov = settings()
+                if side == "attack":
+                    ov.update(duel(1, unit, 10, "inf", 400,
+                                   atk_hp=f"{pct}%"))
+                    row, coef = "B.1.1", atk_c
+                else:
+                    ov.update(duel(1, "inf", 400, unit, 10,
+                                   def_hp=f"{pct}%"))
+                    row, coef = "A.1.1", def_c
+                try:
+                    p.submit(ov)
+                except (BareFormReturned, ValueError) as e:
+                    print(f"    ! {unit} {side} {pct}%: {e}"[:100],
+                          file=sys.stderr)
+                    cells.append(f"{'—':>9}")
+                    continue
+                d = dict(p.last_details)
+                c = d.get(row) or {}
+                record("m_f_generality",
+                       {"unit": unit, "side": side, "hp_pct": pct,
+                        "detail": d},
+                       {k: (v or {}).get("lost") for k, v in d.items()})
+                if c.get("lost") is None or (c.get("pct") or 0) >= 99.9:
+                    cells.append(f"{'wiped':>9}")
+                    continue
+                want = coef * effective_units(10) * (0.05 + 0.95 * pct / 100)
+                err = abs(c["lost"] - want) / max(want, 1.0) * 100
+                worst = max(worst, err)
+                cells.append(f"{c['lost']:9.2f}")
+            worst_all = max(worst_all, worst)
+            print(f"  {unit:5} {side:7} " + " ".join(cells)
+                  + f"   {worst:.3f}%"
+                  + ("" if worst < 0.05 else "   <-- DOES NOT FIT"))
+    print(f"\n  Worst error across every cell: {worst_all:.3f}%")
+    if worst_all < 0.05:
+        print("  m(f) = 0.05 + 0.95f holds for every unit type tested and on "
+              "BOTH sides.\n  The two axes the note said were assumed are now "
+              "measured.")
+
+
+def exp_building_levels(p: Probe) -> None:
+    """Building HP per level, and the two max levels nobody ever probed.
+
+    Seven of the eight buildings have HP confirmed at exactly ONE level, and
+    the app extrapolates from it. The workshop is worse than that: its table
+    entry is 35 HP at level 3 with the comment that "5 + 10 + 20 = 35 is a
+    plausible doubling series and is assumed, not measured". An assumed
+    quantity sitting in a constants file is the thing this project exists to
+    avoid.
+
+    The factory and workshop also carry maxLevel: null, because the sweep asked
+    for level 3, was not rejected, and never probed higher -- so "unknown" here
+    means "nobody pressed the button", not "the server would not say". It
+    states its caps outright when asked.
+
+    One request per level, reading the building's own result row, which prints
+    its pool directly.
+    """
+    abb, lvl, hp = "B.1.bldg.1.abb", "B.1.bldg.1.lvl", "B.1.bldg.1.hp"
+    print(f"\n  {'building':12} {'lvl':>4} {'pool':>9}   note")
+    found: dict[str, dict[int, float]] = {}
+    caps: dict[str, int] = {}
+    for bldg in ("workshop", "factory", "barracks", "railway", "aerodrome",
+                 "harbor", "recruiting"):
+        for level in range(1, 7):
+            ov = settings()
+            ov.update(duel(1, "inf", 30, "inf", 30))
+            ov.update({abb: bldg, lvl: str(level), hp: "100%"})
+            try:
+                p.submit(ov, create=(abb, lvl, hp))
+            except BareFormReturned as e:
+                # The server states its own cap. That IS the reading.
+                if e.oops:
+                    caps.setdefault(bldg, level - 1)
+                    print(f"  {bldg:12} {level:>4} {'refused':>9}   "
+                          f"{' | '.join(e.oops[:1])}"[:104])
+                    record("building_levels", {"building": bldg, "level": level,
+                                               "refused": e.oops[:1]}, {})
+                    break
+                print(f"  {bldg:12} {level:>4} {'no rows':>9}")
+                break
+            except ValueError as e:
+                print(f"  {bldg:12} {level:>4} {'error':>9}   {e}"[:104])
+                break
+            d = dict(p.last_details)
+            row = d.get("B.1.bldg.1") or {}
+            record("building_levels", {"building": bldg, "level": level,
+                                       "detail": d},
+                   {k: (v or {}).get("lost") for k, v in d.items()})
+            pool = row.get("pool")
+            if pool is None:
+                print(f"  {bldg:12} {level:>4} {'—':>9}   no building row")
+                continue
+            found.setdefault(bldg, {})[level] = pool
+            print(f"  {bldg:12} {level:>4} {pool:9.1f}")
+    print("\n  pool by level = " + json.dumps(
+        {b: {str(k): v for k, v in r.items()} for b, r in found.items()},
+        sort_keys=True))
+    print("  caps stated by the server = " + json.dumps(caps, sort_keys=True))
+    for b, r in sorted(found.items()):
+        if len(r) < 2:
+            continue
+        lv = sorted(r)
+        per = [round(r[l] / l, 3) for l in lv]
+        linear = max(per) - min(per) < 0.05
+        print(f"  {b}: {'LINEAR at ' + str(per[0]) + ' per level' if linear else 'NOT linear — ' + str(per)}")
+
 # Every (hero, unit) pair with a measured OUTPUT buff, and the level cap to
 # sweep to. Read with a SINGLE-TYPE stack, which needs no baseline subtraction
 # and cannot be contaminated by another curve.
@@ -8345,6 +8481,8 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "hank_sides": exp_hank_sides,
     "land_hero_target_class": exp_land_hero_target_class,
     "land_hero_def_class": exp_land_hero_def_class,
+    "m_f_generality": exp_m_f_generality,
+    "building_levels": exp_building_levels,
     "mixed_stacks": exp_mixed_stacks,
     "heroes": exp_heroes,
     "stack_limits": exp_stack_limits,
