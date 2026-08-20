@@ -48,6 +48,46 @@ What that session established, in one place:
   0.25, 0.5 and 0.75 all deliver one whole strike — while patrol genuinely
   does; whole rounds repeat in both.
 
+### 2026-08-20, third stretch: auditing by the session's own question
+
+The gap list said three, all unclosable. Auditing the PROVENANCE table instead
+— asking each entry which axes it held fixed while measuring — turned up a
+great deal more, in three kinds.
+
+**Laws measured on one axis.** `m(f)`, which is in every output term the
+engine computes, had been swept on the ATTACKER only and on INFANTRY only; its
+own note said so. Fifty cells across five unit types and both sides: it holds
+everywhere. `E(n)`, the other law in every output term, listed four ranges as
+untested and interpolated — with the knee at 20 and the cap at 50 both inside
+them. All 22 rungs submitted, worst error 0.0032%.
+
+**Assumptions and absences in the constants file.** The workshop's HP carried
+a note reading "5 + 10 + 20 = 35 is a plausible doubling series and is assumed,
+not measured" — it is 5, 15, 35, so the guess was right and is now a reading.
+The factory's `maxLevel` was `null`, meaning unbounded, because the original
+sweep asked for level 3, was not rejected, and never pressed higher; the server
+says 4 the moment anyone asks. And nine units had no building-damage figure at
+all, because that sweep only ever flew land attackers — convoys and submarines
+deal exactly zero, and the heavy tank's censored floor of 8.82 is really 9.00.
+
+**Physics the app computed and never showed.** Patrol was the last estimated
+number, and its band was an artifact: the 0.360–0.427 fit used the survivor
+rule the rounds ladder overturned. Refitted, the law is SYMMETRIC — both sides
+fire with what survives a fraction c ≈ 0.377 of their own losses, solved as a
+fixed point — and the app modelled half of it, telling a patrolling stack it
+would lose 160.00 where the server prints 110.46. The variance band was worse:
+the engine has computed ±10% per side since it was measured and `app.js` never
+read it, so every figure on screen was a variance-off value presented alone.
+
+Six stale provenance notes were corrected along the way, which is the same
+defect this document already records four times. There is now a guard for the
+class rather than the instances: the suite refuses a note that calls something
+unpinned beside a bracket that pins it, a live note that calls a building cap
+unknown while every cap is a number, and any note marked `measured` that
+describes its own subject as assumed without marking it closed. It was verified
+by breaking it in both directions — a guard nobody has watched fail is not a
+guard.
+
 ### 2026-08-20, second half: the hole under the hero model
 
 Chasing Tōgō-with-bombardment's 1% disagreement — the last item on the gap list
@@ -393,6 +433,22 @@ the same file, the share link, had been dropping terrain, distance and the hero
 for as long as those existed, so "Copy link" handed out a link to a different
 battle. Both are now asserted in the suite: the wiring list by name, and the
 link by round-tripping a battle that uses every field through a reload.
+
+**A nineteenth, and the one that generalises the other eighteen: AUDIT THE
+PROVENANCE, NOT THE GAP LIST.** The declared gap list said three, all
+unclosable, and it was accurate. The PROVENANCE table beside it held a law
+swept on one axis, an outright assumption, a cap recorded as unbounded because
+nobody pressed the button, nine units with no reading at all, an estimated band
+that was an artifact of a superseded rule, and six notes contradicting the data
+next to them. None of that was in the gap list, because a gap list records what
+someone thought to write down.
+
+The mechanical version: for every constant, ask which axes were held fixed
+while measuring it, and whether any note beside it still describes a state the
+data has moved past. That question found every defect in this stretch, and it
+is the same question §0's tenth and seventeenth lessons ask about fits and
+about single numbers — applied to the record as a whole rather than to one
+value at a time.
 
 **A tenth, of a different kind: a law can fit everything you have and still be
 wrong, if the scope of the fit was narrower than the claim.** "The stack
