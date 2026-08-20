@@ -545,48 +545,57 @@ export function coverageOf(atkUnit, defUnit, defTerrain, atkTerrain) {
  * fighters alike, against 15.0 on land; light artillery 1.0 against 5.0; a
  * heavy tank 23.0 against 45.0. Every one lands on the naval column exactly.
  */
+/**
+ * The class a unit is, before anything about the battle is taken into account.
+ * Normalises UNITS[].cls 'sea' onto CLASS_ATTACK's column name 'naval', and
+ * folds in the one unit whose class label does not describe how it fights.
+ */
+function ownClass(u, terrain) {
+  const c = u.cls === 'sea' ? 'naval' : u.cls;
+  if (c === 'naval') return 'naval';
+  // THE BALLOON IS A LAND UNIT ON LAND, in every role. It is classed 'air' and
+  // land terrain is the only terrain the server will run it in.
+  //   attacking  a balloon loses 166.67 against forty infantry, which is
+  //              5.0 x E(40) -- infantry's LAND defence, not their 0.4 air one
+  //   as a target  twenty infantry deal 80.00 to ten balloons, which is
+  //              4.0 x E(20) -- infantry's LAND attack column
+  //   both at once  ten balloons against ten balloons, 30.00 each way, which
+  //              is 3.0 x E(10) -- the balloon's own land column
+  // Writing this on the attacking side only made a balloon duel come out at
+  // 200.00 against a measured 60.00, because the attacker then read its air
+  // column against a target it was standing next to on the ground.
+  if (u.code === 'bal' && terrain === 'land') return 'land';
+  return c;
+}
+
 export function combatClass(unit, terrain) {
   const u = resolveUnit(unit);
   if (!u) return null;
-  const own = u.cls === 'sea' ? 'naval' : u.cls;
+  const own = ownClass(u, terrain);
   if (own === 'naval') return 'naval';
   if (EMBARKED_TERRAIN.includes(terrain)) return 'naval';
-  // THE BALLOON FIGHTS AS A LAND UNIT. It is classed 'air' and the server will
-  // only run it in land terrain, and on land it attacks as ground: a balloon
-  // loses 166.67 attacking forty infantry, which is 5.0 x E(40) -- the land
-  // column -- where the air column would have given 13.33.
-  //
-  // This started as an apparent contradiction in CLASS_DEFENCE. A balloon
-  // defends at 10.0 against a fighter or a bomber but its own diagonal reads
-  // 3.0, which is its LAND figure. Three requests said the diagonal is not a
-  // disagreeing air reading: the attacking balloon was never in the air.
-  //
-  // Stated for the ATTACKING side only, which is the side that was measured.
-  // What a balloon counts as when it is the TARGET has not been tested, and it
-  // does not arise: CLASS_ATTACK.bal is 3.0 in all three columns.
-  if (u.code === 'bal' && terrain === 'land') return 'land';
   return own;
 }
 
 /**
- * The class an ATTACKER sees its target as. Not always combatClass().
+ * The class an ATTACKER sees its target as. The same for everyone.
  *
- * A surface attacker sees an embarked unit as naval -- six readings for six.
- * An AIR attacker does not: a fighter deals 98.89 to a hundred infantry on
- * land and 98.61 to the same hundred at sea, a 0.3% difference where the two
- * columns are 27% apart. Whatever the fliers use against ground, embarkation
- * does not move it.
+ * This function briefly carried an exemption saying an AIR attacker is blind
+ * to embarkation, on the strength of a fighter dealing 98.89 to a hundred
+ * infantry on land and 98.61 to the same hundred at sea. The two columns it
+ * was meant to distinguish are int.land = 5.0 and int.naval = 5.0. They are
+ * the same number, so that pair of readings could not have discriminated
+ * anything, and reading "no difference" as "blind to the difference" invented
+ * an asymmetry out of a test with no power.
  *
- * So the class change is not universal, and writing it as though it were would
- * put a fighter's naval column against a target the record says it does not
- * use. The asymmetry is the measurement; this function is where it lives.
+ * The cell that does discriminate is an air stack against EMBARKED FIGHTERS,
+ * where the columns are 20.0 and 5.0. Twenty fighters deal 98.61 to two
+ * hundred embarked fighters, which is 5.0 x E(20) x m(0.98542) -- the naval
+ * column, attenuated. Everyone sees embarkation, and the rule is uniform.
  */
 export function targetClassFor(attacker, target, targetTerrain) {
-  const a = resolveUnit(attacker);
   const t = resolveUnit(target);
-  if (!a || !t) return null;
-  const own = t.cls === 'sea' ? 'naval' : t.cls;
-  if (a.cls === 'air') return own;
+  if (!resolveUnit(attacker) || !t) return null;
   return combatClass(t, targetTerrain);
 }
 
@@ -1258,7 +1267,22 @@ function runSimulation(config, derivation, caveats) {
                                     battle.defenderTerrain, battle.terrain);
   const defCoef = defenceCoefficient(def.unit, atk.unit,
                                      battle.defenderTerrain, battle.terrain);
-  const attenuated = !!(atk.unit && def.unit && atk.unit.cls === 'air' && def.unit.cls === 'land');
+  // ATTENUATION IS AGAINST SURFACE TARGETS, land and naval alike -- not land
+  // only. A fighter attacking a cruiser deals 65.51 where an unattenuated
+  // stack would deal 100.00, and running the post-fire law over both naval
+  // targets recovers a single coefficient to four decimals. Air against AIR is
+  // NOT attenuated: 20 fighters deal exactly 20.0 x E(20) to bombers while
+  // losing 8.75% of their pool, and the attenuated figure would be 18.29.
+  //
+  // The Balloon is excluded, as it is in patrolMode() for the same reason: on
+  // land it is a land unit, and nothing on land is attenuated. It was excluded
+  // there and not here, so a balloon attacking two hundred infantry came out
+  // at 33.86 against a measured 60.00.
+  const atkSurface = atk.unit && def.unit
+    && (combatClass(def.unit, battle.defenderTerrain) === 'land'
+      || combatClass(def.unit, battle.defenderTerrain) === 'naval');
+  const attenuated = !!(atkSurface && atk.unit.cls === 'air'
+    && atk.unit.code !== 'bal');
 
   derivation.push({
     label: 'Attacker stat (per effective unit)',

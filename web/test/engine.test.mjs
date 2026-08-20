@@ -46,7 +46,7 @@ import {
   heroHpBuff,
   allocationWeights,
   effectiveUnits, hpMultiplier, fortressDR, trenchFactors, coverageOf, simulate,
-  combatClass, attackCoefficient,
+  combatClass, attackCoefficient, targetClassFor,
 } from '../engine.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -533,10 +533,29 @@ console.log('\n10. honesty — simulate() never throws, and never overstates wha
   // assertion that matters is unchanged in spirit: a pairing is measured only
   // where the record corroborates both halves, and the count is pinned so it
   // cannot drift upward quietly.
-  check(`in a clean 1-round duel exactly 148 of ${codes.length ** 2} pairings are 'measured'`,
-    seen.measured === 148, JSON.stringify(seen));
+  // 46 -> 148 -> 256, as the record filled in. 46 was 16 diagonals plus three
+  // fliers against ten ground units, everything else unknown for want of a
+  // DEFENCE coefficient. CLASS_DEFENCE took it to 148 with nothing unknown.
+  // The second-target sweep then corroborated every column of CLASS_ATTACK,
+  // which is what moves a cell from estimated to measured, and took it to 256.
+  // The count is pinned so it cannot drift upward quietly.
+  check(`in a clean 1-round duel exactly 256 of ${codes.length ** 2} pairings are 'measured'`,
+    seen.measured === 256, JSON.stringify(seen));
   check('and no pairing is unknown any more, because both tables are complete',
     seen.unknown === 0, JSON.stringify(seen));
+  check('every one of the 33 that are not measured involves the Balloon',
+    (() => {
+      const notMeasured = [];
+      for (const a of codes) {
+        for (const d of codes) {
+          const r = simulate({ attacker: { unit: a, count: 10 },
+            defender: { unit: d, count: 10 }, rounds: 1 });
+          if (r.coverage.level !== 'measured') notMeasured.push(`${a}v${d}`);
+        }
+      }
+      return notMeasured.length === 33 && notMeasured.every((s) => s.includes('bal'));
+    })(),
+    'the Balloon is three readings in one terrain, which is the only terrain it runs in');
   check('land attacking air is measured now, and numbered',
     (() => {
       const r = simulate({ attacker: { unit: 'inf', count: 20 }, defender: { unit: 'int', count: 40 } });
@@ -544,10 +563,16 @@ console.log('\n10. honesty — simulate() never throws, and never overstates wha
       return Math.abs(r.defender.hpLost - 6.0) < 0.05
         && Math.abs(r.attacker.hpLost - 166.67) < 0.05;
     })());
-  check('and it is only estimated because the ATTACK cell rests on one reading',
+  // This check used to demand that infantry-vs-fighter be 'estimated', because
+  // the air column rested on one reading. A second target was sent for every
+  // column and 25 of 26 came back identical, so it is measured now and the
+  // assertion is inverted rather than deleted: the thing being tested is that
+  // the label tracks the record, in whichever direction the record moves.
+  check('and it is measured now that a second target corroborated the column',
     (() => {
       const r = simulate({ attacker: { unit: 'inf', count: 20 }, defender: { unit: 'int', count: 40 } });
-      return r.coverage.level === 'estimated' && /stand-in/.test(r.coverage.reason);
+      return r.coverage.level === 'measured'
+        && CLASS_ATTACK_CORROBORATED.some(([x, y]) => x === 'land' && y === 'air');
     })());
   // These two used to assert 'estimated'. They were right when the engine had
   // no way to know that a coefficient is flat across targets WITHIN a class --
@@ -570,12 +595,19 @@ console.log('\n10. honesty — simulate() never throws, and never overstates wha
       const r = simulate({ attacker: { unit: 'bal', count: 10 }, defender: { unit: 'sub', count: 10 } });
       return r.coverage.level !== 'measured';
     })());
-  check('and a single-reading column says so rather than claiming corroboration',
+  // The single-reading branch is unreachable at the moment, and that is a fact
+  // about the record rather than dead code: every one of the nine class pairs
+  // is corroborated. Asserting the coverage explicitly is what keeps the
+  // branch honest — remove a pair from the list and this fails immediately.
+  check('every one of the nine class pairs is corroborated by a second reading',
     (() => {
-      const r = simulate({ attacker: { unit: 'inf', count: 20 }, defender: { unit: 'int', count: 40 } });
-      return /single reading/.test(r.coverage.reason)
-        && /class_matrix_precision/.test(r.coverage.reason);
-    })());
+      const classes = ['land', 'air', 'naval'];
+      return classes.every((a) => classes.every((d) =>
+        CLASS_ATTACK_CORROBORATED.some(([x, y]) => x === a && y === d)));
+    })(), JSON.stringify(CLASS_ATTACK_CORROBORATED));
+  check('so no pairing is downgraded for resting on one cell',
+    !simulate({ attacker: { unit: 'inf', count: 20 }, defender: { unit: 'int', count: 40 } })
+      .coverage.reason.includes('single reading'));
 }
 check('multi-round downgrades a measured matchup to \'estimated\' and says every reading used 1 round',
   (() => {
@@ -868,17 +900,21 @@ console.log('\n12. composite stacks — replayed against the four measured mixtu
     + mixedPair.coverage.pairs.map((p) => p.level).join('/'));
   // And a mixture that DOES contain a weaker cell still reports the weaker one
   // and counts it, which is the half of the behaviour the example carried.
+  // A mixture that DOES contain a weaker cell must report the weaker one and
+  // count it. The Balloon is the only unit left that supplies one, which is
+  // itself worth stating: everything else in the roster is corroborated on
+  // both halves now.
   const crossPair = simulate({
-    attacker: { rows: [{ unit: 'inf', count: 10 }, { unit: 'art', count: 40 }] },
+    attacker: { rows: [{ unit: 'int', count: 10 }, { unit: 'bal', count: 40 }] },
     defender: { rows: [{ unit: 'int', count: 30 }, { unit: 'tac', count: 10 }] },
   });
-  check('a mixture containing an uncorroborated cell reports it, and counts it',
+  check('a mixture containing a weaker cell reports it, and counts it',
     crossPair.coverage.level === 'estimated'
     && /of 4 unit pairings in this battle are not measured/.test(crossPair.coverage.reason),
     crossPair.coverage.reason.slice(0, 90));
   check('and every pairing in it was judged, not just the first',
     crossPair.coverage.pairs.length === 4
-    && crossPair.coverage.pairs.every((p) => p.level === 'estimated'),
+    && crossPair.coverage.pairs.filter((p) => p.level === 'measured').length === 2,
     crossPair.coverage.pairs.map((p) => p.level).join('/'));
   check('the pairing cross-product is exposed for inspection',
     Array.isArray(mixedPair.coverage.pairs) && mixedPair.coverage.pairs.length === 4);
@@ -1898,7 +1934,7 @@ console.log('\n12k. embarkation — a class change, replayed in all three of its
     && combatClass('int', 'sea') === 'naval' && combatClass('bb', 'land') === 'naval');
   check('and the naval column is reachable at last — infantry deal 2.0 to a ship',
     attackCoefficient('inf', 'bb').value === 2.0
-    && attackCoefficient('inf', 'bb').level === 'estimated',
+    && attackCoefficient('inf', 'bb').level === 'measured',
     JSON.stringify(attackCoefficient('inf', 'bb')));
 }
 
@@ -2027,6 +2063,135 @@ console.log('\n12l. the defence matrix — 102 requests, replayed in full');
 }
 
 // ===========================================================================
+console.log('\n12m. the second target for every column');
+// ===========================================================================
+// Every air and naval cell of CLASS_ATTACK rested on a single reading, and the
+// shape that justified quoting them -- flat across targets within a class --
+// was measured on the LAND column and inherited by the other two. A second
+// target was sent for each: a bomber where the first sweep used a fighter, a
+// cruiser where it used a battleship.
+{
+  const cm = rows.filter((r) => r.experiment === 'class_matrix_2'
+    && r.meta && r.meta.detail);
+  let cells = 0;
+  let corroborated = 0;
+  for (const r of cm) {
+    const want = (r.meta.detail['B.1.1'] || {}).lost;
+    const pct = (r.meta.detail['B.1.1'] || {}).pct;
+    if (want === null || want === undefined || (pct || 0) >= 99.9) continue;
+    const t = r.meta.terrain || ['land', 'land'];
+    const got = simulate({
+      attacker: { rows: [{ unit: r.meta.unit, count: r.meta.atk_n }] },
+      defender: { rows: [{ unit: r.meta.target, count: r.meta.def_n }] },
+      terrain: t[0], defenderTerrain: t[1],
+    });
+    // The engine has to reproduce the SECOND target from the SAME coefficient
+    // it uses for the first. For the fliers that means reproducing an
+    // attenuated figure, which no arithmetic done in the probe could check --
+    // the correction depends on the defender's own return fire and differs
+    // between the two targets.
+    check(`${r.meta.unit} vs ${r.meta.target} (2nd ${r.meta.target_class} target): ${want}`,
+      got.defender.hpLost !== null
+      && Math.abs(got.defender.hpLost - want) / Math.max(1, want) < 0.01,
+      `got ${got.defender.hpLost === null ? 'withheld' : got.defender.hpLost.toFixed(2)}`);
+    cells += 1;
+    if (Math.abs(got.defender.hpLost - want) / Math.max(1, want) < 0.01) corroborated += 1;
+  }
+  check('a second target was replayed for every readable column', cells >= 25, String(cells));
+  check('and the engine reproduces all of them from one coefficient each',
+    corroborated === cells, `${corroborated}/${cells}`);
+
+  // The balloon's own row, which was one land reading copied across three
+  // columns. Against air it is 10.0, not the 3.0 that was sitting there.
+  const bc = rows.filter((r) => r.experiment === 'balloon_columns' && r.meta.detail);
+  let bal = 0;
+  for (const r of bc) {
+    const want = (r.meta.detail['B.1.1'] || {}).lost;
+    const pct = (r.meta.detail['B.1.1'] || {}).pct;
+    if (want === null || want === undefined || (pct || 0) >= 99.9) continue;
+    const t = r.meta.terrain;
+    const got = simulate({
+      attacker: { rows: [{ unit: 'bal', count: r.meta.atk_n }] },
+      defender: { rows: [{ unit: r.meta.target, count: r.meta.def_n }] },
+      terrain: t[0], defenderTerrain: t[1],
+    });
+    check(`a balloon vs ${r.meta.target}: ${want}`,
+      Math.abs(got.defender.hpLost - want) < 0.05,
+      `got ${got.defender.hpLost === null ? 'withheld' : got.defender.hpLost.toFixed(2)}`);
+    bal += 1;
+  }
+  check('all five balloon column readings were replayed', bal === 5, String(bal));
+  check('the balloon air column is 10.0, not the 3.0 that was assumed',
+    CLASS_ATTACK.bal.air === 10.0, String(CLASS_ATTACK.bal.air));
+  check('and its land and naval columns are each confirmed by two targets',
+    CLASS_ATTACK.bal.land === 3.0 && CLASS_ATTACK.bal.naval === 3.0);
+
+  // A balloon on land is a land unit in EVERY role, which is one rule and was
+  // very nearly written as two.
+  check('a balloon is a land unit attacking, as a target, and against itself',
+    combatClass('bal', 'land') === 'land'
+    && targetClassFor('inf', 'bal', 'land') === 'land'
+    && targetClassFor('bal', 'bal', 'land') === 'land');
+  check('twenty infantry deal their LAND column to ten balloons',
+    (() => {
+      const r = simulate({ attacker: { rows: [{ unit: 'inf', count: 20 }] },
+        defender: { rows: [{ unit: 'bal', count: 10 }] } });
+      return Math.abs(r.defender.hpLost - 80.0) < 0.05;   // 4.0 x E(20)
+    })());
+}
+
+// ===========================================================================
+console.log('\n12n. attenuation scope, and a test that had no power');
+// ===========================================================================
+{
+  const as = rows.filter((r) => r.experiment === 'attenuation_scope' && r.meta.detail);
+  let cells = 0;
+  for (const r of as) {
+    const want = (r.meta.detail['B.1.1'] || {}).lost;
+    const wantAtk = (r.meta.detail['A.1.1'] || {}).lost;
+    if (want === null || want === undefined) continue;
+    const got = simulate({
+      attacker: { rows: [{ unit: 'int', count: 20 }] },
+      defender: { rows: [{ unit: 'int', count: r.meta.def_n }] },
+      terrain: 'air', defenderTerrain: r.meta.target_terrain,
+    });
+    check(`20 fighters vs 200 fighters in ${r.meta.target_terrain}: ${want}`,
+      Math.abs(got.defender.hpLost - want) < 0.05,
+      `got ${got.defender.hpLost === null ? 'withheld' : got.defender.hpLost.toFixed(2)}`);
+    check(`  and the attacker loses ${wantAtk}`,
+      Math.abs(got.attacker.hpLost - wantAtk) < 0.05,
+      `got ${got.attacker.hpLost.toFixed(2)}`);
+    cells += 1;
+  }
+  check('both attenuation-scope cells were replayed', cells === 2, String(cells));
+
+  // Air against air is NOT attenuated, and the reading is emphatic: the
+  // attacking stack loses 58% of its pool and still deals its full figure.
+  const airAir = simulate({
+    attacker: { rows: [{ unit: 'int', count: 20 }] },
+    defender: { rows: [{ unit: 'int', count: 200 }] },
+    terrain: 'air', defenderTerrain: 'air',
+  });
+  check('an air stack losing 58% of its pool still deals full damage to aircraft',
+    Math.abs(airAir.defender.hpLost - 400.0) < 0.05
+    && airAir.attacker.hpLost > 0.5 * airAir.attacker.pool,
+    `${airAir.defender.hpLost} dealt, ${airAir.attacker.hpLost} lost of ${airAir.attacker.pool}`);
+
+  // The exemption that was nearly written into the model. It was proposed on
+  // a pair of readings whose two candidate columns hold the same number, so it
+  // could not have distinguished anything.
+  check('the readings that suggested an air exemption had no power to show one',
+    CLASS_ATTACK.int.land === CLASS_ATTACK.int.naval,
+    `int.land ${CLASS_ATTACK.int.land} vs int.naval ${CLASS_ATTACK.int.naval}`);
+  check('the cell that DOES discriminate has columns four times apart',
+    CLASS_ATTACK.int.air === 20.0 && CLASS_ATTACK.int.naval === 5.0);
+  check('and embarkation is seen by every attacker, air included',
+    targetClassFor('int', 'int', 'sea') === 'naval'
+    && targetClassFor('inf', 'int', 'sea') === 'naval'
+    && targetClassFor('int', 'int', 'air') === 'air');
+}
+
+// ===========================================================================
 console.log('\n14. coverage of the record itself');
 // ===========================================================================
 {
@@ -2042,6 +2207,7 @@ console.log('\n14. coverage of the record itself');
     'range_roster', 'return_fire', 'mixed_range',
     'target_terrain', 'embarked_hp', 'embarked_class',
     'defence_matrix', 'balloon_class', 'naval_air_column', 'embarked_convoy',
+    'class_matrix_2', 'balloon_columns', 'attenuation_scope',
     // Heroes are now modelled and replayed above: the sweeps that measured
     // them are physics the engine reproduces, not declared omissions.
     'heroes', 'hero_scaling', 'hero_table', 'hero_levels', 'air_rounds'];

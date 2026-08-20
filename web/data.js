@@ -248,14 +248,25 @@ export const BUILDING_DAMAGE_PER_EFFECTIVE_UNIT = {
 //   air  x air    the diagonal, flown four times.
 //   naval x naval the diagonal, flown four times.
 //
-// Everything else in the matrix is ONE cell from the class sweep. One cell is
-// a reading, not a corroboration, so those are reported as estimated and named
-// in the class_matrix_precision gap. A blanket "air attackers are estimated"
-// was tried instead and was wrong in both directions at once: it understated
-// the fliers' thirty-cell land column and the four-run air diagonal, and it
-// said nothing about the single-cell land-vs-air and naval columns.
+// Every OTHER cell used to rest on a single reading from the class sweep, and
+// a single reading is not a corroboration. A second target was then sent for
+// every air and naval column -- a bomber where the first sweep used a fighter,
+// a cruiser where it used a battleship -- and 25 of the 26 readable cells came
+// back identical to four decimal places. So the whole matrix is corroborated
+// now and every pair is listed here.
+//
+// The twenty-sixth is why the sweep was worth 37 requests. The BALLOON read
+// 10.0 against a bomber where its row said 3.0: that row was one land reading
+// copied across three columns on the assumption the row was flat. It is not.
+//
+// A blanket "air attackers are estimated" was tried before any of this and was
+// wrong in both directions at once: it understated the fliers' thirty-cell
+// land column and their four-run diagonal, and said nothing at all about the
+// single-cell columns that genuinely did rest on one reading each.
 export const CLASS_ATTACK_CORROBORATED = [
-  ['land', 'land'], ['air', 'land'], ['air', 'air'], ['naval', 'naval'],
+  ['land', 'land'], ['land', 'air'], ['land', 'naval'],
+  ['air', 'land'], ['air', 'air'], ['air', 'naval'],
+  ['naval', 'land'], ['naval', 'air'], ['naval', 'naval'],
 ];
 
 export const CLASS_ATTACK = {
@@ -269,13 +280,34 @@ export const CLASS_ATTACK = {
   ht:   { land: 45.0, air: 4.0,  naval: 23.0 },
   convoy: { land: 1.0, air: 0.5, naval: 0.5 },
   st:   { land: 25.0, air: 4.0,  naval: 3.0 },
-  bal:  { land: 3.0,  air: 3.0,  naval: 3.0 },
+  // The balloon's row used to read 3.0 in all three columns. Only the land
+  // figure was ever measured -- ten balloons deal 30.00 to twenty infantry and
+  // 30.00 to twenty heavy tanks -- and the other two were filled by assuming
+  // the row was flat, which is precisely what a single cell cannot tell you.
+  // Against air it is 10.0, read from a fighter and a bomber which agreed, and
+  // that is more than triple the number it replaced. Land and naval are
+  // confirmed at 3.0 by two targets each.
+  bal:  { land: 3.0,  air: 10.0, naval: 3.0 },
   // The land column for fliers comes from AIR_ATTACK_VS_GROUND, which was
   // fitted over THIRTY cells; the single corrected cells here read 5.01,
   // 30.03 and 5.00, so they agree, and the better-measured figure wins.
-  int:  { land: 5.0,  air: 20.0, naval: 3.6 },
-  tac:  { land: 30.0, air: 3.0,  naval: 23.64 },
-  zep:  { land: 5.0,  air: 5.0,  naval: 4.4 },
+  // The fliers' naval column read 3.6 / 23.64 / 4.4 until a second target was
+  // sent. Those were the raw per-effective-unit figures against a battleship,
+  // and air attacking a SURFACE target is a post-fire law -- the stack fires
+  // with what survives the round, not with what it started with. Applying the
+  // law the engine already implements, both targets agree to four decimals:
+  //
+  //     int   vs bb 4.9998   vs cl 4.9997
+  //     tac   vs bb 30.0003  vs cl 29.9999
+  //     zep   vs bb 4.9998   vs cl 4.9998
+  //
+  // and each lands exactly on that flier's LAND column. An air unit deals the
+  // same to a ship as to a tank; only the attenuation differed, and mistaking
+  // attenuation for a coefficient is what produced three numbers that looked
+  // like measurements and were arithmetic.
+  int:  { land: 5.0,  air: 20.0, naval: 5.0 },
+  tac:  { land: 30.0, air: 3.0,  naval: 30.0 },
+  zep:  { land: 5.0,  air: 5.0,  naval: 5.0 },
   // The air column for the ships was blank because a naval stack against an
   // air one was recorded as something the server refuses. It does not: sea/air
   // aborts the batch and sea/land runs, which is the fourth time a terrain
@@ -855,9 +887,8 @@ export const FORM_DOMAINS = {
 // footnote. Ranked roughly by how likely a user is to hit it.
 
 export const NOT_MEASURED = [
-  { key: 'embarked_target_class', what: 'What a unit COUNTS AS when it is embarked and something shoots at it \u2014 for an air attacker.', why: 'Embarkation is a class change for surface attackers, measured six ways for six: cavalry, light artillery and a heavy tank all hit an embarked target on their naval column. An AIR attacker does not see it that way \u2014 a fighter deals 98.89 to a hundred infantry on land and 98.61 to the same hundred at sea, a 0.3% difference where the two columns are 27% apart. So the rule is asymmetric, and the engine encodes the asymmetry as measured. What is NOT measured is why, or whether some third attacker class would split it further.', closedBy: 'the same crossing run from a zeppelin and a bomber, which would say whether it is air attackers in general or the fighter specifically' },
+    { key: 'air_to_air_mechanism', what: 'WHY an air stack is attenuated against surface targets and not against other aircraft.', why: 'The scope is measured hard and modelled. Attacking land or naval, an air stack fires with what survives the round; attacking air it does not \u2014 twenty fighters lose 58% of their pool to two hundred fighters and still deal the full 20.0 x E(20) = 400.00. Embarkation is seen by every attacker including air, which is what the discriminating cell showed: against two hundred EMBARKED fighters the same stack deals 98.61, the naval column attenuated. What no black-box reading can reach is the mechanism \u2014 whether air-to-air resolves simultaneously or whether something else exempts it.', closedBy: 'nothing available. The obvious experiment is an air stack whose target cannot shoot back, and there is no such configuration: every air unit bisects to a range of 5 km and 5 km is exactly where return fire stops, so an aircraft is never out of reach of what it is attacking' },
     { key: 'return_fire_generality', what: 'Whether the 5 km return-fire cut-off is a constant or every unit\u2019s own melee reach.', why: 'Past 5 km a bombarded defender deals exactly zero while still taking the attacker\u2019s full figure. That is measured hard \u2014 lart at 4 and 5 km loses 20.00, at 6, 7 and 8 km loses nothing, and three defenders that could easily shoot back (lart reaching 30, cruiser 40, battleship 75) are all silent at 8 km, as is a mixed inf+lart defender at 6. But every unit in the roster ALSO bisected to a melee attack range of exactly 5, so "the cut-off is the constant 5" and "the cut-off is the defender\u2019s own melee reach" predict the identical number everywhere. The two are indistinguishable in this game and the engine uses the constant.', closedBy: 'nothing available \u2014 it would need a unit whose melee reach is not 5, and there is none' },
-    { key: 'class_matrix_precision', what: 'The air and naval columns of CLASS_ATTACK rest on ONE cell each.', why: 'The land column is corroborated three ways — the diagonal from unit_stats, eight off-diagonal duels, and the allocation sweep. The air and naval columns are a single reading per unit, and the fliers\u2019 land column had to be corrected for post-fire attenuation before it could be compared at all.', closedBy: 'a second cell per column, against a different target of the same class' },
     { key: 'multi_round_heavy_units', what: 'Multi-round drift on units with large per-unit HP, and two anomalous death counts.', why: 'The round law was fitted on 50-vs-50 INFANTRY at 0.042%. Cavalry reproduces exactly too, but heavy tanks drift to 0.5% by round four \u2014 260 HP per unit makes the whole-unit survivor count coarse and the model more sensitive to it. Separately, the printed death count is the sum of per-round floor(round damage / per-unit HP), which reproduces 10 of 12 measured cells; infantry rounds 3 and 4 come out one short and nothing explains it.', closedBy: 'a maxRounds ladder on two or three more unit types, chosen for their per-unit HP' },
   { key: 'air_E_above_20_rival', what: 'Whether an attenuated air stack above 20 units uses E(survivors) or a per-unit sum of m(f).', why: 'The post-fire law now reproduces attenuated stacks at 10, 25, 40 and 50 units \u2014 three exactly and 40 units to 0.11% \u2014 so it does hold above the knee, which is what the app needs. But the RIVAL hypothesis was not properly separated: the two formulations I wrote reduce to the same expression for these stack sizes, so this is a confirmation of one law rather than a discrimination between two.', closedBy: 'a rival stated so it actually differs, then one cell where they disagree' },
                 { key: 'hero_other_terrain_levels', what: 'The six air/naval heroes DEFENDING, and at any level but 10.', why: 'All six are decomposed ATTACKING at level 10 — own attack separated from multiplier with two attacker types apiece — and each buffs the thing its namesake commanded: Hersing submarines, von Thaden zeppelins, Richthofen fighters, T\u014dg\u014d battleships. Ivan buffs nothing and attacks at 1.00. What none of them has been read at is a DEFENDING stack, or any level but 10, and the land heroes proved both of those matter — thirteen of sixteen have different attack and defence values, and every curve moves with level.', closedBy: 'the same two-configuration decomposition run defending, plus a level sweep' },
@@ -1157,6 +1188,39 @@ export const PROVENANCE = {
       + 'law looks like from the inside. AND THE COST OF NOT KNOWING IT: the naval-vs-air cell '
       + 'stood for a week as \'30.0 per effective unit\'. It was a 100% wipe against a pool six '
       + 'times smaller than the unit table implies. Sized properly it reads 40.0.',
+  },
+  'CLASS_ATTACK.corroboration': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=class_matrix_2 (32 requests: a second target for every air '
+      + 'and naval column) and balloon_columns (5).',
+    note: 'EVERY COLUMN NOW HAS TWO INDEPENDENT TARGETS. The matrix\'s shape -- a coefficient flat '
+      + 'across targets WITHIN a class -- was measured on the land column and inherited by the '
+      + 'other two, which had one cell apiece. A bomber was sent where the first sweep used a '
+      + 'fighter and a cruiser where it used a battleship: 25 of the 26 readable cells came back '
+      + 'identical to four decimal places. TWO CORRECTIONS CAME OUT OF THE TWENTY-SIXTH AND ITS '
+      + 'NEIGHBOURS. The Balloon\'s row was one land reading copied across three columns on the '
+      + 'assumption the row was flat; against air it is 10.0, not 3.0. And the fliers\' naval '
+      + 'column read 3.6 / 23.64 / 4.4, which were raw figures against a battleship with the '
+      + 'post-fire law never applied -- corrected, both targets agree on 5.0 / 30.0 / 5.0, each '
+      + 'exactly that flier\'s land column. Mistaking attenuation for a coefficient is what '
+      + 'produced three numbers that looked like measurements and were arithmetic.',
+  },
+  'ATTENUATION.scope': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=attenuation_scope (2 requests) plus every air cell in '
+      + 'class_matrix, class_matrix_2 and air_vs_ground.',
+    note: 'AN AIR STACK IS ATTENUATED AGAINST SURFACE TARGETS, land and naval alike, and NOT '
+      + 'against other aircraft. The air-to-air reading is emphatic rather than marginal: twenty '
+      + 'fighters lose 58% of their pool to two hundred fighters and still deal the full 20.0 x '
+      + 'E(20) = 400.00, where the attenuated figure would be 167.33. THE CORRECTION WORTH '
+      + 'RECORDING: an exemption saying air attackers are blind to embarkation was nearly written '
+      + 'into the model, on the strength of a fighter dealing 98.89 to infantry on land and 98.61 '
+      + 'to the same infantry at sea. The two columns that pair was meant to distinguish are '
+      + 'int.land = 5.0 and int.naval = 5.0 -- the same number, so the test had no power and "no '
+      + 'difference" was read as "blind to the difference". The cell that discriminates is an air '
+      + 'stack against EMBARKED FIGHTERS, where the columns are 20.0 and 5.0: it deals 98.61, '
+      + 'which is 5.0 x E(20) x m(0.98542), the naval column attenuated. Everyone sees '
+      + 'embarkation. The rule is uniform and the exemption was an artifact.',
   },
   'STACK.composition': {
     confidence: 'measured',

@@ -5844,6 +5844,210 @@ def exp_embarked_is_convoy(p: Probe) -> None:
         print(f"  {tgt:10} {tterr:8} {per:14.4f} {1.0:9.1f} {convoy_c:7.1f}"
               f"  {verdict}")
 
+
+# The class sweep read one target per class: CLASS_REP. These are the SECOND,
+# a different unit of the same class, so a column that rests on one reading
+# gets an independent one to agree or disagree with.
+CLASS_REP_2 = {"land": ("ht", 60), "air": ("tac", 60), "naval": ("cl", 40)}
+
+
+def exp_class_matrix_2(p: Probe) -> None:
+    """A second target for every column, because one cell is not a corroboration.
+
+    CLASS_ATTACK's shape -- a coefficient flat across targets WITHIN a class,
+    changing between classes -- was established on the land column, which has
+    three independent sources. The air and naval columns were then filled one
+    cell apiece and inherited the shape by assumption. That assumption is doing
+    real work: it is why the engine will quote a figure for a bomber against a
+    cruiser having only ever seen a bomber against a battleship.
+
+    The defence sweep did this properly and it paid: reading two attackers per
+    class turned a guess from four cells into a law with 102 confirmations, and
+    it caught the balloon looking like a non-flat column when it was not. This
+    is the same discipline applied to the attacking side.
+
+    Attenuation is NOT corrected here. Air attacking anything is a post-fire
+    law and the correction depends on the defender's own return fire, which
+    differs between the two targets -- so a hand-correction would be comparing
+    two different adjustments and calling the difference physics. Both cells go
+    on the record raw, and the engine, which already implements the law and is
+    tested against it, has to reproduce both from ONE coefficient. That is a
+    stronger check than any arithmetic done here.
+    """
+    cls_of = {u: c for c, us in UNIT_CLASSES.items() for u in us}
+    print(f"\n  {'unit':8} {'class':6} " + " ".join(f"{c:>12}" for c in
+                                                    ("vs air", "vs naval")))
+    for unit in ROSTER_ORDER:
+        acls = cls_of.get(unit)
+        if not acls:
+            continue
+        cells = []
+        for tcls in ("air", "naval"):
+            tgt, n = CLASS_REP_2[tcls]
+            if tgt == unit:
+                cells.append(f"{'(self)':>12}")
+                continue
+            terr = TERRAIN_PAIR[(acls, tcls)]
+            # sea/air aborts the batch. The air column is read on land
+            # everywhere else in this table, so a naval attacker reads it
+            # there too and the two halves stay comparable.
+            if acls == "naval" and tcls == "air":
+                terr = ("sea", "land")
+            if unit == "bal":
+                terr = ("land", "land")
+            ov = settings()
+            ov.update(duel(1, unit, 20, tgt, n,
+                           atk_terrain=terr[0], def_terrain=terr[1]))
+            try:
+                p.submit(ov)
+            except (BareFormReturned, ValueError) as e:
+                cells.append(f"{'refused':>12}")
+                record("class_matrix_2", {"unit": unit, "target": tgt,
+                                          "target_class": tcls,
+                                          "refused": True}, {})
+                print(f"    ! {unit} vs {tgt}: {e}"[:105], file=sys.stderr)
+                continue
+            d = dict(p.last_details)
+            b = d.get("B.1.1") or {}
+            record("class_matrix_2", {"unit": unit, "target": tgt,
+                                      "target_class": tcls, "atk_n": 20,
+                                      "def_n": n, "terrain": list(terr),
+                                      "detail": d},
+                   {k: (v or {}).get("lost") for k, v in d.items()})
+            if b.get("lost") is None:
+                cells.append(f"{'—':>12}")
+            elif (b.get("pct") or 0) >= 99.9:
+                cells.append(f"{'WIPED':>12}")
+            else:
+                cells.append(f"{b['lost'] / effective_units(20):12.4f}")
+        print(f"  {unit:8} {acls:6} " + " ".join(cells))
+    print("\n  Raw per-effective-unit figures. Air attackers are attenuated, so "
+          "these are NOT\n  directly comparable to CLASS_ATTACK for the fliers "
+          "— the engine replay is the test.")
+
+
+def exp_balloon_columns(p: Probe) -> None:
+    """The balloon's own attack row, which was three copies of one reading.
+
+    CLASS_ATTACK.bal is 3.0 against land, air and naval alike. Only the land
+    figure was ever measured -- ten balloons deal 30.00 to twenty infantry and
+    30.00 to twenty heavy tanks -- and the other two were filled by assuming
+    the row was flat, which is the one thing a single cell cannot tell you.
+
+    The second-target sweep read 10.0 against a bomber. That is not a small
+    correction to 3.0, it is more than triple, and it is also exactly what the
+    balloon DEFENDS at against air. So the row needs its own reading in each
+    column rather than a shape borrowed from the units around it.
+    """
+    print(f"\n  {'target':8} {'class':6} {'terrain':10} {'per eff. unit':>14}")
+    probes = [("inf", "land", ("land", "land")),
+              ("int", "air", ("land", "land")),
+              ("tac", "air", ("land", "land")),
+              ("bb", "naval", ("land", "sea")),
+              ("cl", "naval", ("land", "sea"))]
+    seen: dict[str, list[float]] = {}
+    for tgt, tcls, terr in probes:
+        n = {"inf": 200, "int": 60, "tac": 60, "bb": 20, "cl": 40}[tgt]
+        ov = settings()
+        ov.update(duel(1, "bal", 20, tgt, n,
+                       atk_terrain=terr[0], def_terrain=terr[1]))
+        try:
+            p.submit(ov)
+        except (BareFormReturned, ValueError) as e:
+            print(f"  {tgt:8} {tcls:6} {'/'.join(terr):10} {'refused':>14}  "
+                  f"{e}"[:110])
+            record("balloon_columns", {"target": tgt, "target_class": tcls,
+                                       "refused": True}, {})
+            continue
+        d = dict(p.last_details)
+        b = d.get("B.1.1") or {}
+        record("balloon_columns", {"target": tgt, "target_class": tcls,
+                                   "atk_n": 20, "def_n": n,
+                                   "terrain": list(terr), "detail": d},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        if b.get("lost") is None or (b.get("pct") or 0) >= 99.9:
+            print(f"  {tgt:8} {tcls:6} {'/'.join(terr):10} "
+                  f"{'wiped/none':>14}  discarded")
+            continue
+        per = b["lost"] / effective_units(20)
+        seen.setdefault(tcls, []).append(per)
+        print(f"  {tgt:8} {tcls:6} {'/'.join(terr):10} {per:14.4f}")
+    print()
+    row = {}
+    for tcls, vals in seen.items():
+        if len(vals) > 1 and max(vals) - min(vals) > 0.02 * max(vals):
+            print(f"  ! bal vs {tcls}: two targets disagree {vals} — the "
+                  f"column is not flat")
+            continue
+        row[tcls] = sum(vals) / len(vals)
+    print("  CLASS_ATTACK.bal = " + json.dumps(
+        {k: round(v, 4) for k, v in row.items()}, sort_keys=True))
+    if abs(row.get("air", 0) - 3.0) > 0.05:
+        print(f"\n  The 3.0 in the air column was never measured. It reads "
+              f"{row.get('air'):.1f}.")
+
+
+def exp_attenuation_scope(p: Probe) -> None:
+    """Which class does attenuation follow -- the target's own, or its terrain's?
+
+    An air stack fires with what survives the round against a LAND or NAVAL
+    target and with its full strength against an AIR one. Both halves are
+    measured. The engine then has to decide what an air stack attacking
+    EMBARKED FIGHTERS does, and the two rules it already holds disagree:
+
+      the coefficient   comes from the target's OWN class, because an air
+                        attacker is blind to embarkation (98.89 on land vs
+                        98.61 at sea, where the columns are 27% apart)
+      attenuation       is keyed on the target being a surface unit, and an
+                        embarked fighter IS a surface unit for everyone else
+
+    So the same target is 'air' for one rule and 'naval' for the other. That is
+    either a real asymmetry or a seam in the model, and one request tells them
+    apart: 20 fighters against 200 embarked fighters deal 20.0 x E(20) = 400.00
+    unattenuated, and about 380 attenuated.
+
+    The experiment this gap originally called for -- an air stack bombarding a
+    target that cannot shoot back -- cannot be run. Every air unit in the
+    roster bisects to a range of 5 km, and 5 km is exactly where return fire
+    stops. There is no distance at which an aircraft attacks and is not
+    attacked, so 'simultaneous' and 'the target shot first' cannot be separated
+    that way at all.
+    """
+    print(f"\n  {'target':16} {'lost':>9} {'unattenuated':>13} "
+          f"{'attenuated':>11}  verdict")
+    for label, tterr, n in (("fighters in air", "air", 200),
+                            ("fighters at sea", "sea", 200)):
+        ov = settings()
+        ov.update(duel(1, "int", 20, "int", n,
+                       atk_terrain="air", def_terrain=tterr))
+        try:
+            p.submit(ov)
+        except (BareFormReturned, ValueError) as e:
+            print(f"  {label:16} {'refused':>9}  {e}"[:100])
+            continue
+        d = dict(p.last_details)
+        a = d.get("A.1.1") or {}
+        b = d.get("B.1.1") or {}
+        record("attenuation_scope", {"target_terrain": tterr, "def_n": n,
+                                     "detail": d},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        if b.get("lost") is None or (b.get("pct") or 0) >= 99.9:
+            print(f"  {label:16} {'wiped/none':>9}  discarded")
+            continue
+        plain = 20.0 * effective_units(20)
+        # The post-fire law, with the attacker's own losses from this reading.
+        lost = a.get("lost") or 0.0
+        hp = 60.0
+        surv = 20 - int(lost // hp)
+        rem = 20 * hp - lost
+        att = (20.0 * effective_units(surv)
+               * (0.05 + 0.95 * min(1.0, rem / (surv * hp)))) if surv else 0.0
+        near = lambda x: abs(b["lost"] - x) < 0.02 * max(x, 1.0)
+        verdict = ("UNATTENUATED" if near(plain) else
+                   "ATTENUATED" if near(att) else "NEITHER")
+        print(f"  {label:16} {b['lost']:9.2f} {plain:13.2f} {att:11.2f}  "
+              f"{verdict}  (attacker lost {lost})")
+
 # Every (hero, unit) pair with a measured OUTPUT buff, and the level cap to
 # sweep to. Read with a SINGLE-TYPE stack, which needs no baseline subtraction
 # and cannot be contaminated by another curve.
@@ -6924,6 +7128,9 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "defence_gaps": exp_defence_gaps,
     "balloon_class": exp_balloon_class,
     "embarked_is_convoy": exp_embarked_is_convoy,
+    "class_matrix_2": exp_class_matrix_2,
+    "balloon_columns": exp_balloon_columns,
+    "attenuation_scope": exp_attenuation_scope,
     "mixed_stacks": exp_mixed_stacks,
     "heroes": exp_heroes,
     "stack_limits": exp_stack_limits,
