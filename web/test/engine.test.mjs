@@ -1402,6 +1402,73 @@ console.log('\n12k. multi-round across three unit sizes, and attenuation scope')
   }
 }
 
+console.log('\n12l. terrain, range and the variance band, now computed');
+{
+  // Sea and debark replace a LAND unit's stats with a flat 1.0. Infantry and
+  // cavalry must come out IDENTICAL, which is the whole reason it cannot be a
+  // multiplier.
+  for (const r of rows) {
+    const m = r.meta || {};
+    if (r.experiment !== 'terrain' || m.error || !m.detail) continue;
+    if (!['sea', 'debark', 'land'].includes(m.terrain)) continue;
+    const a = (m.detail['A.1.1'] || {}).lost;
+    const b = (m.detail['B.1.1'] || {}).lost;
+    if (a == null || b == null) continue;
+    const res = simulate({
+      terrain: m.terrain,
+      attacker: { unit: m.unit || 'inf', count: 10, hpPct: 100 },
+      defender: { unit: m.unit || 'inf', count: 20, hpPct: 100 },
+      rounds: 1,
+    });
+    check(`${m.unit || 'inf'} in ${m.terrain}: ${res.attacker.hpLost.toFixed(2)}`
+      + ` / ${res.defender.hpLost.toFixed(2)} vs measured ${a} / ${b}`,
+      Math.abs(res.attacker.hpLost - a) <= 0.05
+      && Math.abs(res.defender.hpLost - b) <= 0.05,
+      `${(res.attacker.hpLost - a).toFixed(2)} / ${(res.defender.hpLost - b).toFixed(2)}`);
+  }
+  const seaInf = simulate({ terrain: 'sea', attacker: { unit: 'inf', count: 10 },
+    defender: { unit: 'inf', count: 20 }, rounds: 1 });
+  const seaCav = simulate({ terrain: 'sea', attacker: { unit: 'cav', count: 10 },
+    defender: { unit: 'cav', count: 20 }, rounds: 1 });
+  check('embarked infantry and cavalry deal the IDENTICAL figure',
+    Math.abs(seaInf.attacker.hpLost - seaCav.attacker.hpLost) < 1e-9
+    && Math.abs(seaInf.defender.hpLost - seaCav.defender.hpLost) < 1e-9,
+    'no scaling of two different stats can do that');
+
+  // Range: a binary gate, replayed against the measured boundaries.
+  for (const r of rows) {
+    const m = r.meta || {};
+    if (r.experiment !== 'position' || !m.unit) continue;
+    const res = simulate({
+      distance: m.distance,
+      attacker: { unit: m.unit, count: 20, hpPct: 100 },
+      defender: { unit: 'inf', count: 20, hpPct: 100 },
+      rounds: 1,
+    });
+    if (m.out_of_range) {
+      check(`${m.unit} at ${m.distance} km: no battle`,
+        res.defender.hpLost === 0,
+        `engine dealt ${res.defender.hpLost}`);
+    } else {
+      const obs = ((m.detail || {})['B.1.1'] || {}).lost;
+      if (obs == null) continue;
+      check(`${m.unit} at ${m.distance} km: ${res.defender.hpLost.toFixed(2)} vs ${obs}`,
+        Math.abs(res.defender.hpLost - obs) <= 0.05);
+    }
+  }
+
+  // The variance band is the full +/-10% whatever the stack size, because the
+  // roll is ONE per side per round.
+  for (const n of [5, 50, 200]) {
+    const res = simulate({ attacker: { unit: 'inf', count: n },
+      defender: { unit: 'inf', count: 20 }, rounds: 1 });
+    check(`a ${n}-unit stack still carries the full band`,
+      Math.abs(res.attacker.hpLostBand[0] / res.attacker.hpLost - 0.90) < 1e-9
+      && Math.abs(res.attacker.hpLostBand[1] / res.attacker.hpLost - 1.10) < 1e-9,
+      'one roll per side, so size does not average it away');
+  }
+}
+
 console.log('\n13. heroes — replayed against every measured reading');
 // ===========================================================================
 // A hero is a unit plus a buff, and the app now models it. Replayed here
@@ -1483,7 +1550,7 @@ console.log('\n14. coverage of the record itself');
     'stack_order', 'allocation', 'hero_sides', 'multi_round',
     'offdiag', 'trench_gaps', 'hero_output_curves', 'hero_other_terrain',
     'building_damage', 'class_matrix', 'balloon', 'trench_generality',
-    'edges', 'bldg_caps', 'last_edges', 'naval_matrix', 'air_matrix',
+    'edges', 'bldg_caps', 'last_edges', 'terrain', 'position', 'naval_matrix', 'air_matrix',
     'land_attacks_air', 'air_defends_land', 'sea_vs_land', 'land_vs_sea',
     // Heroes are now modelled and replayed above: the sweeps that measured
     // them are physics the engine reproduces, not declared omissions.
@@ -1530,8 +1597,7 @@ console.log('\n14. coverage of the record itself');
   //     FORTRESS_MAX_LEVEL) but not yet computed by simulate(), so there is
   //     nothing to replay them against. Each is named in NOT_MEASURED.
   const declaredNonReplay = ['stack_limits', 'hero_caps', 'hero_targets',
-    'hero_hp_cap', 'hero_curves', 'variance', 'terrain', 'position',
-    'fortress_edges'];
+    'hero_hp_cap', 'hero_curves', 'variance', 'fortress_edges'];
   void declaredNonReplay;
   check('every unreplayed experiment is one the engine declares and explains',
     notReplayed.every((e) => declaredNonReplay.includes(e)),

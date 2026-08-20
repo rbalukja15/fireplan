@@ -269,6 +269,8 @@ const DEFAULT_STATE = () => ({
   defender: { rows: [newRow()], trench: 0, buildings: [], hero: null },
   rounds: 1,
   mode: 'strike',
+  terrain: 'land',
+  distance: 0,
 });
 
 let state = DEFAULT_STATE();
@@ -384,6 +386,11 @@ function boot() {
   $('builders').addEventListener('change', onCommit);
   $('rounds').addEventListener('input', onInput);
   $('rounds').addEventListener('change', onCommit);
+  for (const id of ['terrain', 'distance']) {
+    if (!$(id)) continue;
+    $(id).addEventListener('input', onInput);
+    $(id).addEventListener('change', onCommit);
+  }
   $('mode').addEventListener('change', onInput);
 
 
@@ -944,6 +951,8 @@ function writeStateToDom() {
     $(key + '-trench').value = String(state[key].trench);
   }
   $('rounds').value = String(state.rounds);
+  if ($('terrain')) $('terrain').value = state.terrain;
+  if ($('distance')) $('distance').value = String(state.distance);
   $('mode').value = state.mode === 'patrol' ? 'patrol' : 'strike';
   renderBuildings('attacker');
   renderBuildings('defender');
@@ -965,6 +974,14 @@ function readDomToState() {
   const r = Number($('rounds').value);
   state.rounds = Number.isFinite(r) && r > 0 ? r : 1;
   state.mode = $('mode').value === 'patrol' ? 'patrol' : 'strike';
+  if ($('terrain')) {
+    state.terrain = ['land', 'sea', 'debark'].includes($('terrain').value)
+      ? $('terrain').value : 'land';
+  }
+  if ($('distance')) {
+    const dkm = Number($('distance').value);
+    state.distance = Number.isFinite(dkm) && dkm > 0 ? Math.round(dkm) : 0;
+  }
 }
 
 function onInput() {
@@ -1018,6 +1035,8 @@ function currentConfig() {
     defender: cloneSide(state.defender),
     rounds: state.rounds,
     mode: state.mode,
+    terrain: state.terrain,
+    distance: state.distance,
   };
 }
 

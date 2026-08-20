@@ -48,6 +48,34 @@ What that session established, in one place:
   0.25, 0.5 and 0.75 all deliver one whole strike — while patrol genuinely
   does; whole rounds repeat in both.
 
+### 2026-08-19, third stretch: closing the list
+
+NOT_MEASURED went from 26 gaps to **12**, and two of those twelve are things
+these sweeps OPENED rather than left undone.
+
+| closed | how |
+|---|---|
+| the whole attack matrix | a unit's coefficient is flat across targets within a class and changes only between classes — 17 x 3, not 17 x 17 |
+| ground attacking air | it works in LAND terrain; every earlier attempt used an air-terrain defender, which aborts the batch with no error |
+| the Balloon | maxHP 20, attack 3.0, defence 3.0 — same cause, four requests |
+| naval and air off-diagonals | each reproduces its own diagonal exactly |
+| E(n) at every sampled gap | 21, 23, 26, 28, 31, 35, 38, 42, 44, 46, 48, 49 all exact; 120 and 200 saturate at 35 |
+| m(f) generality | applies to defenders and to non-infantry, exactly |
+| attenuation scope | post-fire is air-attacking-land and NOTHING else |
+| the multi-round death rule | sum of per-round floors, not floor of the cumulative |
+| trench scope | **infantry only** — the app was inflating dug-in tanks by 75% of output |
+| terrain, range, variance | all three measured AND now computed, with controls in the UI |
+| building damage | eight of nine land types; the heavy tank is censored, not unknown |
+| building caps | workshop 3, factory 4, barracks 2, four at 1, fortress 5 |
+
+**Three corrections to my own claims, all from widening a measurement I had
+taken too narrowly.** The multi-round law was quoted at 0.042% — measured on
+infantry alone; heavy tanks drift to 0.5%. Richthofen came out x1.07 because I
+divided by the un-attenuated baseline on a path that is evaluated post-fire.
+And each air/naval hero's own attack was first taken as the smallest of the
+readings that isolate it rather than the midpoint. **Every one of them was
+caught by a replay, not by re-reading the code.**
+
 ### 2026-08-19, second half: everything else
 
 Sixteen sweeps, ~450 requests. What was open at the start of it and is now

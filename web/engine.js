@@ -31,6 +31,10 @@ import {
   BUILDING_DAMAGE_PER_EFFECTIVE_UNIT,
   BUILDING_DAMAGE_FLOOR,
   TRENCH_APPLIES_TO,
+  EMBARKED_COEF,
+  EMBARKED_TERRAIN,
+  UNIT_RANGE,
+  VARIANCE_BAND,
   FORTRESS,
   PATROL,
   ROSTER_ORDER,
@@ -563,7 +567,7 @@ function num(v, fallback) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function makeSide(cfg, role, derivation, caveats) {
+function makeSide(cfg, role, derivation, caveats, battle) {
   let side_groupConflict = null;
   let side_hero = null;
   const label = role === 'attacker' ? 'Attacker' : 'Defender';
@@ -749,6 +753,22 @@ function makeSide(cfg, role, derivation, caveats) {
   // Re-run now that any HP buff is known.
   computePools();
 
+  // EMBARKED. In sea or debark terrain a LAND unit's own attack and defence
+  // are REPLACED by a flat 1.0 -- not scaled. Infantry (4.0/5.0) and cavalry
+  // (15.0/7.5) deal the identical 20 and 10 against the same target, which no
+  // scaling of two different stats can produce.
+  const wet = battle && EMBARKED_TERRAIN.includes(battle.terrain);
+  if (wet) {
+    const embarked = rows.filter((r) => r.unit && r.unit.cls === 'land');
+    for (const r of embarked) r.embarked = true;
+    if (embarked.length) {
+      caveats.push(`${label}: ${embarked.length} land unit row(s) are EMBARKED in `
+        + `${battle.terrain} terrain, which replaces their attack and defence `
+        + 'with a flat 1.0 — an embarked land unit fights exactly as well as a '
+        + 'convoy (measured).');
+    }
+  }
+
   const primary = rows.length ? rows[0].unit : resolveUnit(cfg && cfg.unit);
   const n = rows.reduce((t, r) => t + r.count, 0);
   const anyPoolUnknown = rows.some((r) => r.pool === null);
@@ -925,8 +945,13 @@ function emptySideResult() {
 }
 
 function runSimulation(config, derivation, caveats) {
-  const atk = makeSide(config.attacker, 'attacker', derivation, caveats);
-  const def = makeSide(config.defender, 'defender', derivation, caveats);
+  // Terrain and distance are properties of the BATTLE, not of a side.
+  const terrain = (config && typeof config.terrain === 'string')
+    ? config.terrain : 'land';
+  const distance = Math.max(0, num(config && config.distance, 0));
+  const battle = { terrain, distance };
+  const atk = makeSide(config.attacker, 'attacker', derivation, caveats, battle);
+  const def = makeSide(config.defender, 'defender', derivation, caveats, battle);
 
   const matchup = coverageOfStacks(atk.rows, def.rows);
   const conflicts = [atk.groupConflict, def.groupConflict].filter(Boolean);
@@ -1168,7 +1193,34 @@ function runSimulation(config, derivation, caveats) {
   // the per-round rate is flat across a 0.25/0.5/0.75/1 ladder). Everything
   // else iterates whole rounds. Looping a fractional count would run zero
   // times and silently return no damage at all.
-  const loopRounds = patrol.applies ? 1 : rounds;
+  // RANGE IS A BINARY GATE. Inside range the figure is identical to zero
+  // distance; outside it the server returns no result rows at all — there is
+  // no battle. Only three ranges are on record, so an unlisted unit is not
+  // gated rather than guessed at.
+  let outOfRange = false;
+  const atkRange = UNIT_RANGE[atk.unit && atk.unit.code];
+  if (atkRange !== undefined && battle.distance > atkRange) {
+    caveats.push(`${atk.unit.label} reaches ${atkRange} km and the target is at `
+      + `${battle.distance}. Out of range is not a weaker battle — the server `
+      + 'returns no result at all, so there is nothing to compute.');
+    derivation.push({
+      label: 'Out of range',
+      formula: `${battle.distance} km exceeds ${atk.unit.label}'s ${atkRange} km. `
+        + 'No battle takes place (measured: artillery fires at 50 and not at 51, '
+        + 'the railgun at 150 and not at 151).',
+      value: null,
+    });
+    outOfRange = true;
+  }
+  if (atkRange === undefined && battle.distance > 0) {
+    caveats.push(`No range is on record for ${atk.unit.label} — only artillery `
+      + '(50 km), the railgun (150) and infantry (1) were read — so the distance '
+      + 'is ignored rather than guessed at.');
+  }
+
+  // Zero rounds when out of range: both sides take nothing, through the same
+  // return path as any other battle rather than a second exit.
+  const loopRounds = outOfRange ? 0 : (patrol.applies ? 1 : rounds);
   const patrolScale = patrol.applies ? rounds : 1;
   for (let r = 1; r <= loopRounds; r += 1) {
     const tag = loopRounds > 1 ? `R${r} ` : '';
@@ -1593,7 +1645,7 @@ function stackOutput(side, coefFor, scale, mulEach) {
     parts.push({ hero: true, coef: hero.atk, mul: heroEff, out: heroOut });
   }
   for (const r of side.rows) {
-    const c = coefFor(r.unit);
+    const c = r.embarked ? EMBARKED_COEF : coefFor(r.unit);
     if (c === null || c === undefined) return { total: null, parts: [] };
     const frac = (r.liveFrac === undefined)
       ? r.hpPct / 100 : r.liveFrac * (r.hpPct / 100);
@@ -1744,10 +1796,19 @@ function sideResult(side, withheld) {
     damageDealt: side.withheldDealt ? null : r.damageDealt,
     saturated: Math.abs(r.effective - r.count) > 0.01,
   })));
+  // The variance band. simulateVariance rolls ONE uniform +/-10% per side per
+  // round, not per unit -- 60 samples give sd 5.285 where a single roll
+  // predicts 5.774 and a per-unit roll 1.291. So the whole stack moves
+  // together and a big stack cannot average its luck away: the band is the
+  // full +/-10%, whatever the stack size.
+  const band = (v) => (v === null || v === undefined
+    ? null : [v * VARIANCE_BAND.lo, v * VARIANCE_BAND.hi]);
   return {
     rows: rowsOut,
     pool: poolStart,
     hpLost: lossUnknown ? null : side.hpLost,
+    hpLostBand: lossUnknown ? null : band(side.hpLost),
+    damageDealtBand: side.withheldDealt ? null : band(side.damageDealt),
     pctLost: lossUnknown ? null : (poolStart ? (side.hpLost / poolStart) * 100 : 0),
     deaths: lossUnknown ? null : side.deaths,
     unitsLeft: lossUnknown ? null : Math.max(0, side.n0 - side.deaths),
