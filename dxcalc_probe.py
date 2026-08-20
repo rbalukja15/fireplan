@@ -5421,6 +5421,124 @@ def exp_class_matrix(p: Probe) -> None:
           f"reading that failed — every refusal is recorded with its message.")
 
 
+def exp_last_edges(p: Probe) -> None:
+    """The remaining named gaps, each one or two requests.
+
+    air_E_above_20   every attenuated air stack ever measured was 10 units,
+                     where E(n) = n, so E(survivors) and a per-unit sum of
+                     m(f) are indistinguishable. They diverge above 20.
+    air_wiped        the post-fire law divides by the survivor count and has
+                     no measured branch at zero survivors.
+    attenuation      whether post-fire evaluation applies to sea, and to air
+                     DEFENDING rather than attacking.
+    death rule       the printed death count in a multi-round battle does not
+                     follow floor(cumulative loss / per-unit HP). Varying the
+                     per-unit HP over-determines it.
+    """
+    print("\n  1. an attenuated air stack ABOVE 20 units\n")
+    print(f"  {'n':>4} {'atk lost':>9} {'def lost':>9} {'E(surv)':>9} "
+          f"{'post-fire':>10} {'per-unit sum':>13}")
+    for n in (10, 25, 40, 50):
+        ov = settings()
+        ov.update(duel(1, "tac", n, "inf", 57, atk_terrain="air",
+                       def_terrain="land"))
+        try:
+            p.submit(ov)
+        except (BareFormReturned, ValueError) as e:
+            print(f"  {n:>4} {str(e)[:56]}")
+            continue
+        d = dict(p.last_details)
+        record("last_edges", {"probe": "air_E_above_20", "n": n, "detail": d},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        a = d.get("A.1.1") or {}
+        b = d.get("B.1.1") or {}
+        if a.get("lost") is None or b.get("lost") is None:
+            continue
+        alive = n - int(a.get("died", 0))
+        f_after = ((a["pool"] - a["lost"]) / (alive * MEASURED_UNITS["tac"][0])
+                   if alive else 0)
+        post = 30.0 * effective_units(alive) * (0.05 + 0.95 * min(1, f_after))
+        # The rival: every surviving unit contributes m(its own fraction),
+        # which equals the post-fire law only while E(n) = n.
+        per_unit = 30.0 * min(alive, effective_units(n)) * (0.05 + 0.95 * min(1, f_after))
+        print(f"  {n:>4} {a['lost']:9.2f} {b['lost']:9.2f} "
+              f"{effective_units(alive):9.3f} {post:10.2f} {per_unit:13.2f}")
+
+    print("\n  2. an air attacker wiped to ZERO survivors\n")
+    ov = settings()
+    ov.update(duel(1, "tac", 3, "inf", 113, atk_terrain="air",
+                   def_terrain="land"))
+    try:
+        p.submit(ov)
+        d = dict(p.last_details)
+        record("last_edges", {"probe": "air_wiped", "detail": d},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        a = d.get("A.1.1") or {}
+        b = d.get("B.1.1") or {}
+        print(f"  3 tac vs 113 inf: attacker lost {a.get('lost')} of "
+              f"{a.get('pool')} ({a.get('pct')}%), defender lost "
+              f"{b.get('lost')}")
+        if (a.get("pct") or 0) >= 99.9 and b.get("lost") is not None:
+            print(f"  A WIPED air stack still deals {b['lost']:.2f}. The "
+                  f"post-fire law divides by the survivor\n  count, so at zero "
+                  f"survivors it is undefined — but the server answers anyway, "
+                  f"and\n  this is what it answers.")
+    except (BareFormReturned, ValueError) as e:
+        print(f"  refused: {str(e)[:70]}")
+
+    print("\n  3. is post-fire evaluation air-only?\n")
+    print(f"  {'pairing':22} {'atk lost':>9} {'def lost':>9} {'raw stat':>9} "
+          f"{'corrected':>10}")
+    for label, a_u, a_n, a_t, d_u, d_n, d_t in (
+            ("sea attacks sea", "bb", 10, "sea", "cl", 30, "sea"),
+            ("air attacks air", "tac", 10, "air", "int", 30, "air"),
+            ("land attacks land", "inf", 10, "land", "ht", 30, "land")):
+        ov = settings()
+        ov.update(duel(1, a_u, a_n, d_u, d_n, atk_terrain=a_t,
+                       def_terrain=d_t))
+        try:
+            p.submit(ov)
+        except (BareFormReturned, ValueError) as e:
+            print(f"  {label:22} {str(e)[:50]}")
+            continue
+        d = dict(p.last_details)
+        record("last_edges", {"probe": "attenuation_scope", "label": label,
+                              "detail": d},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        a = d.get("A.1.1") or {}
+        b = d.get("B.1.1") or {}
+        if b.get("lost") is None or not a.get("pool"):
+            continue
+        raw = b["lost"] / effective_units(a_n)
+        frac = (a.get("lost") or 0) / a["pool"]
+        corr = raw / (1 - frac) if frac < 0.999 else float("nan")
+        print(f"  {label:22} {a.get('lost', 0):9.2f} {b['lost']:9.2f} "
+              f"{raw:9.2f} {corr:10.2f}")
+
+    print("\n  4. the multi-round death rule, with the per-unit HP varied\n")
+    print(f"  {'unit':5} {'HP/unit':>8} {'rounds':>7} {'lost':>9} "
+          f"{'died':>5} {'floor(lost/hp)':>15}")
+    for unit in ("inf", "cav", "ht"):
+        for rounds in (1, 2, 3, 4):
+            ov = settings(rounds=rounds)
+            ov.update(duel(1, unit, 50, unit, 50))
+            try:
+                p.submit(ov)
+            except (BareFormReturned, ValueError) as e:
+                print(f"  ! {unit} r{rounds}: {e}", file=sys.stderr)
+                continue
+            d = dict(p.last_details)
+            record("last_edges", {"probe": "death_rule", "unit": unit,
+                                  "rounds": rounds, "detail": d},
+                   {k: (v or {}).get("lost") for k, v in d.items()})
+            a = d.get("A.1.1") or {}
+            if a.get("lost") is None:
+                continue
+            hp = MEASURED_UNITS[unit][0]
+            print(f"  {unit:5} {hp:8.1f} {rounds:>7} {a['lost']:9.2f} "
+                  f"{a.get('died', 0):5.0f} {int(a['lost'] // hp):15}")
+
+
 def exp_variance(p: Probe, samples: int = 60) -> None:
     """Same battle repeatedly with variance ON, to characterise the roll.
 
@@ -5741,6 +5859,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "edges": exp_edges,
     "balloon_trench": exp_balloon_and_trench,
     "class_matrix": exp_class_matrix,
+    "last_edges": exp_last_edges,
     "buildings": exp_buildings,
     "trenches": exp_trenches,
     "air_vs_ground": exp_air_vs_ground,
@@ -5757,7 +5876,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
 # it is about to spend on someone else's ad-supported fan site before it starts
 # rather than after. Approximate by design: saturation re-runs add a few.
 REQUEST_ESTIMATE: dict[str, int] = {
-    "unit_stats": 20, "buildings": 14, "patrol": 18, "mixed_stacks": 8, "heroes": 23, "stack_limits": 4, "hero_scaling": 9, "hero_table": 28, "hero_levels": 16, "hero_caps": 30, "stack_ladder": 9, "stack_order": 5, "hero_output": 21, "hero_buff_confirm": 5, "allocation": 9, "hero_full": 24, "hero_hp_cap": 22, "hero_sides": 30, "multi_round": 8, "hero_curves": 110, "offdiag": 8, "trench_gaps": 12, "fortress_edges": 20, "building_damage": 9, "position": 15, "hero_output_curves": 70, "hero_other_terrain": 24, "cross_class": 70, "edges": 35, "balloon_trench": 15, "class_matrix": 51, "trenches": 10, "air_vs_ground": 30,
+    "unit_stats": 20, "buildings": 14, "patrol": 18, "mixed_stacks": 8, "heroes": 23, "stack_limits": 4, "hero_scaling": 9, "hero_table": 28, "hero_levels": 16, "hero_caps": 30, "stack_ladder": 9, "stack_order": 5, "hero_output": 21, "hero_buff_confirm": 5, "allocation": 9, "hero_full": 24, "hero_hp_cap": 22, "hero_sides": 30, "multi_round": 8, "hero_curves": 110, "offdiag": 8, "trench_gaps": 12, "fortress_edges": 20, "building_damage": 9, "position": 15, "hero_output_curves": 70, "hero_other_terrain": 24, "cross_class": 70, "edges": 35, "balloon_trench": 15, "class_matrix": 51, "last_edges": 20, "trenches": 10, "air_vs_ground": 30,
     "land_matrix": 100, "size_factor": 33, "hp_scaling": 10,
     "fortress": 6, "terrain": 7, "variance": 60,
 }
