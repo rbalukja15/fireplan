@@ -48,6 +48,37 @@ What that session established, in one place:
   0.25, 0.5 and 0.75 all deliver one whole strike — while patrol genuinely
   does; whole rounds repeat in both.
 
+### 2026-08-20, second half: the hole under the hero model
+
+Chasing Tōgō-with-bombardment's 1% disagreement — the last item on the gap list
+that more requests could touch — turned up four separate defects in the hero
+model, all of them the same mistake in different clothes: a dimension nobody
+had varied, recorded as a dimension that does not exist.
+
+**A hero's output scales with its own HP**, by the same m(f) every unit obeys.
+Every hero reading ever taken set it to 100%. The buff does NOT scale, and that
+asymmetry is what separated the two channels at last.
+
+**Buffs can be attack-only.** Every buff in the table was found on a defending
+stack, where an attack-only buff measures zero and is written down as absent.
+Pershing buffs five unit types, Allenby cavalry, Georg artillery, Marco light
+tanks — none of it in the app.
+
+**Four own-attack values were sums**, because an own attack read off a stack
+the hero buffs is an own attack plus a buff. Pershing 62.0 → 8.0. The app
+quoted 102.00 against ten infantry where the server prints 60.00.
+
+**Every hero has a column per target class, on both sides — all twenty-two.**
+Every land-hero reading fired at infantry. Lawrence contributes 45.0 attacking
+land and 4.5 attacking air. The land column equals the old scalar exactly in
+every case, which is why nothing ever looked wrong.
+
+And two in the app rather than the rig: the defender-terrain control was
+rendered and read but never given an event listener, so it looked functional
+and changed nothing; and the share link had been dropping terrain, distance and
+the hero for as long as those existed, so "Copy link" handed out a link to a
+different battle. Both are asserted in the suite now.
+
 ### 2026-08-20: the last of the closeable gaps
 
 Twelve gaps at the start of the day, three at the end, and the three that
@@ -319,6 +350,49 @@ way a hand-written constant does.** `coverageOf()` is derived from the
 coefficient lookups now, and the limits list is rendered from `NOT_MEASURED`,
 so neither can disagree with the record. When a test fails because the record
 grew, update the assertion in the same commit and say so — do not widen it.
+
+**A seventeenth, and it is the twelfth lesson wearing a different hat: THE
+SHAPE OF YOUR DATA IS NOT THE SHAPE OF THE GAME.** Chasing one hero's 1%
+disagreement opened a hole under the entire hero model, and every part of it
+was the same mistake — a dimension nobody had varied, read as a dimension that
+does not exist.
+
+- *A hero's HP was set to 100% in every reading ever taken*, so "does a hero's
+  output scale with its own HP?" was never asked. It does, by the same m(f)
+  every unit obeys. The app applied a hero's full contribution however battered
+  it was. The BUFF does not scale, and that asymmetry is what finally separated
+  the two channels — the HP ladder turned out to be a decomposition, not a
+  check.
+- *Every buff was found on a DEFENDING stack*, so buffs that act only when
+  attacking measured zero and were recorded as absent. Four land heroes carry
+  them. It is the exact mirror of the defence-only buffs Joffre and Kangal
+  have, and of the attack-only buffs the air heroes had turned up a day
+  earlier — the third time this project has read one sign of a channel and
+  assumed the other.
+- *Four own-attack values were sums.* An own attack read off a stack the hero
+  buffs is an own attack plus a buff. Pershing 62.0 → 8.0; the app quoted
+  102.00 against ten infantry where the server prints 60.00.
+- *Every land-hero reading fired at INFANTRY*, so "one own-attack value per
+  side" was the shape of the only configuration anyone had sent. All sixteen
+  have a column per target class on both sides, and Lawrence's differ by a
+  factor of ten. The land column equals the old scalar exactly in every case,
+  which is precisely why nothing looked wrong.
+
+The general form: **before writing down a constant, list the axes you held
+fixed while measuring it.** Every one of those four was a fixed axis reported
+as a property. §0's tenth lesson says to ask which inputs actually varied
+before generalising a fit; this says to ask it before recording a single
+number, which is the more common case and the easier one to miss.
+
+**An eighteenth, about the app rather than the rig: a control that exists but
+is not listened to fails completely silently.** The defender-terrain select was
+added to the markup, rendered, read into state — and left out of the literal
+list of ids that get event listeners. It looked entirely functional and changed
+nothing; the figure on screen was simply always the default. Its neighbour in
+the same file, the share link, had been dropping terrain, distance and the hero
+for as long as those existed, so "Copy link" handed out a link to a different
+battle. Both are now asserted in the suite: the wiring list by name, and the
+link by round-tripping a battle that uses every field through a reload.
 
 **A tenth, of a different kind: a law can fit everything you have and still be
 wrong, if the scope of the fit was narrower than the claim.** "The stack
