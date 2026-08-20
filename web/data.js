@@ -1570,6 +1570,21 @@ export const PROVENANCE = {
       + 'the same factor the unit damage uses they are 1.0045, 5.9995 and 30.0102, which is how a '
       + 'derived correction announces that it is right.',
   },
+  'VARIANCE.band': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=variance: 60 samples with simulateVariance on, against the '
+      + 'deterministic figure for the same battle.',
+    note: 'ONE UNIFORM ROLL PER SIDE PER ROUND, not per unit. 60 samples give a standard deviation '
+      + 'of 5.285 where a single whole-stack roll predicts 5.774 and a per-unit roll would predict '
+      + '1.291 — so the whole stack moves together and a big stack cannot average its luck away. '
+      + 'Observed range [0.9025, 1.0992] of the variance-off figure. THE ENGINE HAS ALWAYS '
+      + 'COMPUTED THIS BAND AND THE PAGE NEVER SHOWED IT: every figure on screen was the '
+      + 'variance-off value, presented alone, which invites a reader to treat a coin-flip as a '
+      + 'prediction. A ±10% swing is the difference between an attack working and not. It is '
+      + 'rendered under the lead figure now. The band is NOT replayed cell by cell — a '
+      + 'deterministic engine cannot reproduce a roll — so what the suite asserts is that the '
+      + 'band exists, straddles the figure, and is the full ±10% at every stack size.',
+  },
   'STACK.composition': {
     confidence: 'measured',
     source: 'results.jsonl, experiment=mixed_stacks (8 rows) plus survivable_rig (a 1-to-9 '

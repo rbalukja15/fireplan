@@ -3353,6 +3353,52 @@ console.log('\n17. provenance notes cannot contradict the data beside them');
 }
 
 // ===========================================================================
+console.log('\n18. the variance band, which the page never showed');
+// ===========================================================================
+// The engine has always computed it and app.js never rendered it, so every
+// figure on screen was the variance-off value presented alone. The game rolls
+// one uniform ±10% per side per round — ONE roll for the whole stack — and a
+// ±10% swing is the difference between an attack working and not.
+{
+  const r = simulate({
+    attacker: { rows: [{ unit: 'inf', count: 30 }] },
+    defender: { rows: [{ unit: 'cav', count: 20 }] },
+  });
+  for (const [who, side] of [['attacker', r.attacker], ['defender', r.defender]]) {
+    check(`${who} carries a variance band`,
+      Array.isArray(side.hpLostBand) && side.hpLostBand.length === 2,
+      JSON.stringify(side.hpLostBand));
+    check(`  and it straddles the figure at exactly ±10%`,
+      Math.abs(side.hpLostBand[0] - side.hpLost * 0.9) < 1e-9
+      && Math.abs(side.hpLostBand[1] - side.hpLost * 1.1) < 1e-9);
+  }
+  // ONE roll per side, so the band does NOT narrow as the stack grows. A
+  // per-unit roll would; that is the hypothesis the 60 samples ruled out.
+  const wide = simulate({
+    attacker: { rows: [{ unit: 'inf', count: 200 }] },
+    defender: { rows: [{ unit: 'cav', count: 200 }] },
+  });
+  check('the band is the full ±10% however big the stack is',
+    Math.abs(wide.attacker.hpLostBand[1] / wide.attacker.hpLost - 1.1) < 1e-9,
+    'a per-unit roll would narrow it — 60 samples say it does not');
+  check('and a withheld figure carries no band rather than a band around null',
+    simulate({ attacker: { unit: 'bal', count: 10 }, defender: { unit: 'sub', count: 10 } })
+      .defender.hpLostBand === null
+    || simulate({ attacker: { unit: 'bal', count: 10 }, defender: { unit: 'sub', count: 10 } })
+      .defender.hpLost !== null);
+
+  // And the page renders it, which is the half that was missing.
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const app = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  check('both score panels have a slot for the band',
+    /id="sb-a-band"/.test(html) && /id="sb-d-band"/.test(html));
+  check('and app.js fills it from hpLostBand',
+    /s\.hpLostBand/.test(app) && /with variance on/.test(app));
+  check('the band is styled to sit under the figure, not compete with it',
+    /\.figure-band/.test(readFileSync(new URL('../styles.css', import.meta.url), 'utf8')));
+}
+
+// ===========================================================================
 console.log('');
 if (unreproduced.length) {
   console.log('MEASUREMENTS THE ENGINE COULD NOT REPRODUCE:');

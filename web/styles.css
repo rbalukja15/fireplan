@@ -550,6 +550,11 @@ input:hover, select:hover { border-color: var(--muted); }
 .figure-small { font-size: .92rem; font-weight: 500; color: var(--ink-2); }
 .figure-sub { font-size: .8rem; color: var(--muted); font-variant-numeric: tabular-nums; margin-top: 4px; }
 .figure-none { color: var(--muted); font-weight: 400; }
+/* The variance band. Lighter than the figure it qualifies, because it is a
+   range around that figure and not a competing number — but present, because
+   the game rolls +/-10% per side per round and the lead figure is the
+   variance-off value. */
+.figure-band { font-size: .74rem; opacity: .8; margin-top: 2px; }
 
 /* Numbers that are not measured must never look as solid as ones that are. */
 .result[data-level="estimated"] .figure-lead,

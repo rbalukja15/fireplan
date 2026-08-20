@@ -1346,6 +1346,18 @@ function renderSide(prefix, side, cfg) {
 
   const s = side || {};
   setFig($(`sb-${prefix}-hplost`), fmt(s.hpLost));
+  // THE VARIANCE BAND, which the engine has always computed and this page has
+  // never shown. The game rolls one uniform +/-10% per side per round — ONE
+  // roll for the whole stack, so a big stack cannot average its luck away —
+  // and the figure above is the variance-off value. Showing it alone invites
+  // the reader to treat a coin-flip as a prediction.
+  const bandEl = $(`sb-${prefix}-band`);
+  if (bandEl) {
+    const b = s.hpLostBand;
+    bandEl.textContent = (Array.isArray(b) && b[0] !== null)
+      ? `${fmt(b[0])}–${fmt(b[1])} with variance on`
+      : '';
+  }
   setFig($(`sb-${prefix}-deaths`), fmtInt(s.deaths));
   setFig($(`sb-${prefix}-dealt`), fmt(s.damageDealt));
   setFig($(`sb-${prefix}-pool`), fmt(s.pool));
