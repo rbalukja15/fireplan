@@ -93,7 +93,18 @@
         <option value="sea">Sea</option>
         <option value="debark">Debark</option>
       </select>
-      <p class="field-note" id="terrain-note">Sea and debark replace a land unit&rsquo;s attack and defence with a flat 1.0.</p>
+      <p class="field-note" id="terrain-note">Embarkation is a <strong>class change</strong>: a non-naval unit in sea or debark attacks and defends on a flat column (1.0, or 0.5 against air), holds a flat 10&nbsp;HP whatever it is, and is hit on the attacker&rsquo;s naval column.</p>
+    </div>
+    <div class="field field-terrain">
+      <label for="def-terrain">Defender&rsquo;s terrain</label>
+      <select id="def-terrain" name="def-terrain" aria-describedby="def-terrain-note">
+        <option value="">Same as attacker</option>
+        <option value="land">Land</option>
+        <option value="sea">Sea</option>
+        <option value="air">Air</option>
+        <option value="debark">Debark</option>
+      </select>
+      <p class="field-note" id="def-terrain-note">Terrain is <em>per side</em>, and the target&rsquo;s is what picks the coefficient column: a battleship deals 6.0 per effective unit to fighters in the air and 40.0 to the same fighters embarked at sea.</p>
     </div>
     <div class="field field-distance">
       <label for="distance">Distance (km)</label>
@@ -376,6 +387,10 @@
         <label class="hero-field hero-lvl">
           <span>Level</span>
           <input type="number" id="{s}-hero-lvl" min="1" max="20" step="1" value="10" inputmode="numeric">
+        </label>
+        <label class="hero-field hero-hp">
+          <span>Hero HP&nbsp;%</span>
+          <input type="number" id="{s}-hero-hp" min="1" max="100" step="1" value="100" inputmode="numeric">
         </label>
       </div>
       <p class="field-note" id="{s}-hero-note"></p>

@@ -2865,6 +2865,58 @@ console.log('\n15. the page cannot contradict the model');
 }
 
 // ===========================================================================
+console.log('\n16. the page can express what the engine models');
+// ===========================================================================
+// A control the engine reads but the page cannot set is a modelled law the
+// user cannot reach, and it fails silently — the number on screen is simply
+// always the default. Two of these existed at once: terrain became per-side
+// and the page had one control, and a hero's HP started mattering with no box
+// to type it in. A third was subtler: the defender-terrain control was added,
+// rendered, read into state, and never given a listener, so it sat there
+// looking functional and changed nothing.
+{
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const app = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+
+  check('the page has a defender-terrain control',
+    /id="def-terrain"/.test(html));
+  check('and it offers air, which the attacker control does not need',
+    /id="def-terrain"[\s\S]{0,400}value="air"/.test(html));
+  check('the page has a hero HP control',
+    /id="\{s\}-hero-hp"/.test(html));
+
+  // The listener. This is the one that failed: present in the markup, read in
+  // readGlobals, and absent from the list of ids that get wired.
+  check('every global control the engine reads is also LISTENED to',
+    /\['terrain', 'def-terrain', 'distance'\]/.test(app),
+    (app.match(/for \(const id of \[[^\]]*\]\) \{/) || ['absent'])[0]);
+  check('and the hero HP box has its own listener',
+    /hpBox\.addEventListener/.test(app));
+
+  // The share link. It carried the stacks and dropped terrain, distance and
+  // the hero, so "Copy link" handed out a link to a DIFFERENT battle.
+  for (const [re, what] of [
+    [/&t=\$\{cfg\.terrain\}/, 'attacker terrain'],
+    [/&dt=\$\{cfg\.defenderTerrain\}/, 'defender terrain'],
+    [/&km=\$\{cfg\.distance\}/, 'distance'],
+    [/s\.hero \? \[s\.hero\.code, s\.hero\.level,/, 'the hero, its level and its HP'],
+  ]) {
+    check(`the share link carries ${what}`, re.test(app));
+  }
+  check('and decoding tolerates links written before those fields existed',
+    /chunks\.length < 3/.test(app) && /chunks\[3\]/.test(app));
+
+  // Both hero tables reach the level box. The six air/naval heroes were fully
+  // modelled while the box stayed disabled for them, stuck at level 10 —
+  // exactly the state the record was in before they were measured.
+  check('the hero level box looks in BOTH tables',
+    /const defOf = \(code\) => HEROES\[code\] \|\| HEROES_REFUSED\[code\]/.test(app));
+  check('and the hero option group no longer says nothing is measured',
+    !/Nothing measured on land/.test(app)
+    && /Air and naval stacks only/.test(app));
+}
+
+// ===========================================================================
 console.log('');
 if (unreproduced.length) {
   console.log('MEASUREMENTS THE ENGINE COULD NOT REPRODUCE:');

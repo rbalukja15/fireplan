@@ -270,6 +270,10 @@ const DEFAULT_STATE = () => ({
   rounds: 1,
   mode: 'strike',
   terrain: 'land',
+  // Empty means "same as the attacker's", which is what every reading before
+  // the terrain sweep assumed. It is a real axis: the target's terrain picks
+  // the coefficient column, not just the attacker's.
+  defenderTerrain: '',
   distance: 0,
 });
 
@@ -386,7 +390,7 @@ function boot() {
   $('builders').addEventListener('change', onCommit);
   $('rounds').addEventListener('input', onInput);
   $('rounds').addEventListener('change', onCommit);
-  for (const id of ['terrain', 'distance']) {
+  for (const id of ['terrain', 'def-terrain', 'distance']) {
     if (!$(id)) continue;
     $(id).addEventListener('input', onInput);
     $(id).addEventListener('change', onCommit);
@@ -738,8 +742,14 @@ function maxLevelOf(code) {
 function renderHero(side) {
   const sel = $(side + '-hero');
   const lvlBox = $(side + '-hero-lvl');
+  const hpBox = $(side + '-hero-hp');
   const note = $(side + '-hero-note');
   if (!sel || !lvlBox) return;
+  // BOTH tables. The six air/naval heroes are fully modelled now -- own attack
+  // per side, curves, pools, level ranges -- so the level box has to be live
+  // for them too. Looking only in HEROES left it disabled and stuck at 10,
+  // which is exactly the state the record was in before they were measured.
+  const defOf = (code) => HEROES[code] || HEROES_REFUSED[code] || null;
   const cur = state[side].hero;
 
   if (!sel.dataset.built) {
@@ -787,20 +797,34 @@ function renderHero(side) {
     lvlBox.addEventListener('input', () => {
       const cur2 = state[side].hero;
       if (!cur2) return;
-      const def = HEROES[cur2.code];
+      const def = defOf(cur2.code);
       cur2.level = Math.max(1, Math.min(def ? def.maxLevel : 20,
         Number(lvlBox.value) || 1));
       renderHero(side);
       recompute();
     });
+    // A HERO'S OWN OUTPUT SCALES WITH ITS OWN HP, by the same m(f) a unit
+    // obeys, so this box changes the answer. Every hero reading in the record
+    // was taken at 100% because nothing had ever varied it.
+    if (hpBox) {
+      hpBox.addEventListener('input', () => {
+        const cur2 = state[side].hero;
+        if (!cur2) return;
+        cur2.hpPct = Math.max(1, Math.min(100, Number(hpBox.value) || 100));
+        renderHero(side);
+        recompute();
+      });
+    }
   }
 
   sel.value = cur ? cur.code : '';
-  const def = cur && HEROES[cur.code];
+  const def = cur && defOf(cur.code);
   lvlBox.disabled = !def;
+  if (hpBox) hpBox.disabled = !def;
   if (def) {
     lvlBox.max = String(def.maxLevel);
     lvlBox.value = String(Math.min(cur.level || 1, def.maxLevel));
+    if (hpBox) hpBox.value = String(cur.hpPct === undefined ? 100 : cur.hpPct);
   }
 
   if (!cur) {
@@ -973,6 +997,7 @@ function writeStateToDom() {
   }
   $('rounds').value = String(state.rounds);
   if ($('terrain')) $('terrain').value = state.terrain;
+  if ($('def-terrain')) $('def-terrain').value = state.defenderTerrain || '';
   if ($('distance')) $('distance').value = String(state.distance);
   $('mode').value = state.mode === 'patrol' ? 'patrol' : 'strike';
   renderBuildings('attacker');
@@ -998,6 +1023,10 @@ function readDomToState() {
   if ($('terrain')) {
     state.terrain = ['land', 'sea', 'debark'].includes($('terrain').value)
       ? $('terrain').value : 'land';
+  }
+  if ($('def-terrain')) {
+    state.defenderTerrain = ['land', 'sea', 'air', 'debark']
+      .includes($('def-terrain').value) ? $('def-terrain').value : '';
   }
   if ($('distance')) {
     const dkm = Number($('distance').value);
@@ -1057,6 +1086,9 @@ function currentConfig() {
     rounds: state.rounds,
     mode: state.mode,
     terrain: state.terrain,
+    // Omitted rather than passed empty: the engine defaults it to the
+    // attacker's, and passing '' would look like a fourth terrain.
+    ...(state.defenderTerrain ? { defenderTerrain: state.defenderTerrain } : {}),
     distance: state.distance,
   };
 }
@@ -1110,7 +1142,10 @@ function cloneSide(s) {
     rows,
     trench: s.trench,
     buildings: s.buildings.map((b) => ({ code: b.code, level: b.level, hpPct: b.hpPct })),
-    hero: s.hero ? { code: s.hero.code, level: s.hero.level } : null,
+    hero: s.hero
+      ? { code: s.hero.code, level: s.hero.level,
+          hpPct: s.hero.hpPct === undefined ? 100 : s.hero.hpPct }
+      : null,
   };
   if (rows.length === 1) {
     out.unit = rows[0].unit;
@@ -2197,14 +2232,30 @@ function buildLedger() {
  * because a link somebody saved should not stop working when the model behind
  * it learns that a stack is a mixture.
  */
+// A SHARE LINK HAS TO CARRY THE WHOLE BATTLE. This one carried the two stacks,
+// the trenches, the buildings and the rounds, and dropped terrain, distance and
+// the hero on the floor -- so "Copy link" handed someone a link that computes a
+// DIFFERENT battle from the one on screen, silently. That was survivable while
+// terrain and distance were unmodelled and heroes were half-modelled. It is not
+// now: terrain is per side and picks the coefficient column, distance gates
+// whole rows out and switches off return fire, and a hero carries a level and
+// an HP percentage that both change its contribution.
+//
+// Fields are appended, never reordered, and every one is optional on the way
+// back in, so links written before this still decode.
 function encodeState(cfg) {
   const side = (s) => [
     (s.rows || []).map((r) => [r.unit, r.count, r.hpPct].join('.')).join(','),
     String(s.trench),
     (s.buildings || []).map((b) => [b.code, b.level, b.hpPct].join('.')).join(','),
+    s.hero ? [s.hero.code, s.hero.level,
+      s.hero.hpPct === undefined ? 100 : s.hero.hpPct].join('.') : '',
   ].join('~');
   return `a=${side(cfg.attacker)}&d=${side(cfg.defender)}&r=${cfg.rounds}`
-    + (cfg.mode === 'patrol' ? '&m=patrol' : '');
+    + (cfg.mode === 'patrol' ? '&m=patrol' : '')
+    + (cfg.terrain && cfg.terrain !== 'land' ? `&t=${cfg.terrain}` : '')
+    + (cfg.defenderTerrain ? `&dt=${cfg.defenderTerrain}` : '')
+    + (cfg.distance ? `&km=${cfg.distance}` : '');
 }
 
 function decodeBuildings(str) {
@@ -2235,7 +2286,7 @@ function decodeState(hash) {
       const chunks = String(str || '').split('~');
 
       // Legacy single-unit link: unit.count.hp.trench ~ building ~ building
-      if (chunks.length !== 3) {
+      if (chunks.length < 3) {
         const [unit, count, hp, trench] = chunks[0].split('.');
         if (!UNITS[unit]) return null;
         return {
@@ -2261,10 +2312,24 @@ function decodeState(hash) {
       }
       if (!rows.length) return null;
       rows.sort((x, y) => rosterRank(x.unit) - rosterRank(y.unit));
+      // chunks[3] is absent in every link written before heroes were carried.
+      let hero = null;
+      if (chunks[3]) {
+        const [code, level, hpPct] = chunks[3].split('.');
+        const hdef = HEROES[code] || HEROES_REFUSED[code];
+        if (hdef) {
+          hero = {
+            code,
+            level: Math.min(hdef.maxLevel || 20, Math.max(1, Number(level) || 1)),
+            hpPct: Math.min(100, Math.max(1, Number(hpPct) || 100)),
+          };
+        }
+      }
       return {
         rows,
         trench: Math.min(20, Math.max(0, Number(chunks[1]) || 0)),
         buildings: decodeBuildings(chunks[2]),
+        hero,
       };
     };
 
@@ -2272,10 +2337,15 @@ function decodeState(hash) {
     const d = side(parts.d);
     if (!a || !d) return null;
     const r = Number(parts.r);
+    const km = Number(parts.km);
     return {
       attacker: a, defender: d,
       rounds: Number.isFinite(r) && r > 0 ? r : 1,
       mode: parts.m === 'patrol' ? 'patrol' : 'strike',
+      terrain: ['land', 'sea', 'debark'].includes(parts.t) ? parts.t : 'land',
+      defenderTerrain: ['land', 'sea', 'air', 'debark'].includes(parts.dt)
+        ? parts.dt : '',
+      distance: Number.isFinite(km) && km > 0 ? Math.round(km) : 0,
     };
   } catch {
     return null;
