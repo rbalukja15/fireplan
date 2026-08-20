@@ -7479,6 +7479,64 @@ def exp_patrol_pin(p: Probe) -> None:
                           f"{b.get('lost', 0) or 0:9.2f}"
                           + ("   WIPED — discarded" if wiped else ""))
 
+
+def exp_building_damage_rest(p: Probe) -> None:
+    """The eight units with no building-damage figure, and the censored ninth.
+
+    BUILDING_DAMAGE_PER_EFFECTIVE_UNIT holds eight of the ten land types.
+    Convoys, the Balloon and every air and naval unit have no entry at all --
+    not a bracket, not a floor, nothing -- because the sweep that measured it
+    only ever flew land attackers. The heavy tank has a FLOOR rather than a
+    value: it dealt exactly 250.00 against a fortress holding 250.00, so the
+    reading is censored and 8.82 is a lower bound.
+
+    Both are fixed the same way: a small enough stack that the building
+    survives. Five attackers against a level-5 fortress gives E(5) = 5, so any
+    per-unit figure under 50 reads clean.
+    """
+    abb, lvl, hp = "B.1.bldg.1.abb", "B.1.bldg.1.lvl", "B.1.bldg.1.hp"
+    cls_of = {u: c for c, us in UNIT_CLASSES.items() for u in us}
+    print(f"\n  {'unit':8} {'class':6} {'n':>3} {'bldg lost':>10} "
+          f"{'per eff. unit':>14}")
+    out: dict[str, float] = {}
+    for unit in ("convoy", "bal", "int", "tac", "zep", "sub", "cl", "bb", "ht"):
+        acls = cls_of.get(unit, "land")
+        terr = {"land": ("land", "land"), "air": ("air", "land"),
+                "naval": ("sea", "land")}[acls]
+        if unit == "bal":
+            terr = ("land", "land")
+        n = 5
+        ov = settings()
+        ov.update(duel(1, unit, n, "inf", 60,
+                       atk_terrain=terr[0], def_terrain=terr[1]))
+        ov.update({abb: "fortress", lvl: "5", hp: "100%"})
+        try:
+            p.submit(ov, create=(abb, lvl, hp))
+        except (BareFormReturned, ValueError) as e:
+            print(f"  {unit:8} {acls:6} {n:>3} {'refused':>10}   {e}"[:104])
+            record("building_damage_rest", {"unit": unit, "refused": True}, {})
+            continue
+        d = dict(p.last_details)
+        b = d.get("B.1.bldg.1") or {}
+        record("building_damage_rest",
+               {"unit": unit, "atk_n": n, "atk_class": acls,
+                "terrain": list(terr), "detail": d},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        if b.get("lost") is None:
+            print(f"  {unit:8} {acls:6} {n:>3} {'no row':>10}   "
+                  f"the building takes nothing from this attacker")
+            out[unit] = 0.0
+            continue
+        if (b.get("pct") or 0) >= 99.9:
+            print(f"  {unit:8} {acls:6} {n:>3} {b['lost']:10.2f}   "
+                  f"CENSORED — building destroyed, this is a floor")
+            continue
+        per = b["lost"] / effective_units(n)
+        out[unit] = per
+        print(f"  {unit:8} {acls:6} {n:>3} {b['lost']:10.2f} {per:14.4f}")
+    print("\n  building damage per effective unit = " + json.dumps(
+        {k: round(v, 4) for k, v in out.items()}, sort_keys=True))
+
 # Every (hero, unit) pair with a measured OUTPUT buff, and the level cap to
 # sweep to. Read with a SINGLE-TYPE stack, which needs no baseline subtraction
 # and cannot be contaminated by another curve.
@@ -8583,6 +8641,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "building_levels": exp_building_levels,
     "e_n_gaps": exp_e_n_gaps,
     "patrol_pin": exp_patrol_pin,
+    "building_damage_rest": exp_building_damage_rest,
     "mixed_stacks": exp_mixed_stacks,
     "heroes": exp_heroes,
     "stack_limits": exp_stack_limits,

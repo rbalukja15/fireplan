@@ -223,6 +223,18 @@ export const GROUND_DEFENCE_VS_AIR = {
 export const BUILDING_DAMAGE_PER_EFFECTIVE_UNIT = {
   inf: 0.30, lart: 0.30, ac: 1.00, st: 1.00, art: 1.50,
   cav: 2.00, rrg: 4.00, lt: 6.00,
+  // The nine that had no entry at all, because the original sweep only ever
+  // flew LAND attackers. Read against a level-5 fortress with a five-unit
+  // stack, which is small enough that the building survives.
+  ht: 9.00,                       // was a censored FLOOR of 8.82
+  convoy: 0.00, sub: 0.00,        // measured zero: these cannot hurt a building
+  bal: 0.50,
+  // The three fliers are read on an ATTENUATED path, so the raw figures --
+  // 0.96, 5.80, 29.44 -- are the post-fire law applied to building damage as
+  // well. Corrected by the same factor the unit damage uses, they are round:
+  // 1.0045, 5.9995, 30.0102.
+  int: 1.00, tac: 6.00, zep: 30.00,
+  cl: 2.00, bb: 8.00,
 };
 
 // A UNIT'S ATTACK COEFFICIENT AGAINST EACH TARGET CLASS. This is the whole
@@ -753,7 +765,13 @@ export const VARIANCE_BAND = { lo: 0.90, hi: 1.10, rolls: 'one per side per roun
 // ranges from 0.04 to 0.20. ht is a FLOOR, not a value -- it dealt exactly
 // 250.00 against a fortress holding 250.00, so the reading is censored.
 // The censored one, kept separate so it can never be mistaken for a value.
-export const BUILDING_DAMAGE_FLOOR = { ht: 8.82 };
+// EMPTY NOW. The heavy tank was the only censored reading -- it dealt exactly
+// 250.00 against a fortress holding 250.00, so 8.82 was a lower bound and not
+// a value. Read again with five tanks instead, which the fortress survives, it
+// is 9.00. Kept as an exported constant rather than deleted so that any future
+// censored reading has an obvious place to go, and so the engine's withholding
+// path stays exercised by the tests.
+export const BUILDING_DAMAGE_FLOOR = {};
 
 // The fortress caps at level 5 -- the server refuses 6 and says so. That is
 // why the DR formula's value at level 6 (1.05, more than total immunity) never
@@ -1527,6 +1545,23 @@ export const PROVENANCE = {
       + 'higher. The server says "max level for Factory is 4". The workshop caps at 3. Everything '
       + 'else confirms what was recorded: barracks 40 per level to 2, railway, aerodrome and '
       + 'harbor 60 at their single level, recruiting 5.',
+  },
+  'BUILDING_DAMAGE.rest': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=building_damage_rest: nine units against a level-5 '
+      + 'fortress with a five-unit stack, small enough that the building survives.',
+    note: 'THE NINE UNITS THAT HAD NO FIGURE AT ALL. The original sweep only ever flew LAND '
+      + 'attackers, so convoys, the Balloon and every air and naval unit had no entry -- not a '
+      + 'bracket, not a floor, nothing -- and the heavy tank had a FLOOR, 8.82, because its one '
+      + 'reading was censored against a fortress it destroyed outright. Read with five tanks it '
+      + 'is 9.00, so nothing in the table is censored any more. TWO UNITS DEAL EXACTLY ZERO: a '
+      + 'convoy and a submarine cannot hurt a building, which is a reading rather than an '
+      + 'absence and is reported as 0.00 rather than withheld. AND BUILDING DAMAGE IS ATTENUATED '
+      + 'on the same paths the unit damage is, which the engine did not do: five zeppelins read '
+      + '147.20 where an unattenuated 30.00 per effective unit gives 150.00. The fliers\' raw '
+      + 'figures -- 0.96, 5.80, 29.44 -- are the post-fire law applied to buildings; corrected by '
+      + 'the same factor the unit damage uses they are 1.0045, 5.9995 and 30.0102, which is how a '
+      + 'derived correction announces that it is right.',
   },
   'STACK.composition': {
     confidence: 'measured',

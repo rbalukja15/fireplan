@@ -38,6 +38,7 @@ import {
   UNIT_RANGE, MELEE_RANGE, EMBARKED_MAXHP, CLASS_ATTACK_CORROBORATED,
   PATROL,
   BUILDINGS,
+  BUILDING_DAMAGE_FLOOR, BUILDING_DAMAGE_PER_EFFECTIVE_UNIT,
   GROUND_DEFENCE_VS_AIR,
   CLASS_DEFENCE, EMBARKED_ATTACK, EMBARKED_DEFENCE,
   MAX_UNIT_ROWS,
@@ -642,14 +643,19 @@ check('building damage from a measured attacker is computed',
     });
     return Math.abs(r.defender.damageToBuildings - 2.0 * effectiveUnits(30)) < 1e-6;
   })(), '2.00 per effective unit');
-check('and from the CENSORED heavy tank it is withheld, and said to be censored',
+// This asserted that the heavy tank's building damage is WITHHELD, because its
+// only reading was censored: it dealt exactly 250.00 against a fortress holding
+// 250.00, making 8.82 a floor. Read again with five tanks instead of thirty --
+// small enough that the fortress survives -- it is 9.00. Withholding a figure
+// that exists is as wrong as inventing one, so the assertion is inverted.
+check('the heavy tank is measured now, not censored, and is computed',
   (() => {
     const r = simulate({
       attacker: { unit: 'ht', count: 30 },
       defender: { unit: 'ht', count: 30, buildings: [{ code: 'fortress', level: 3 }] },
     });
-    return r.defender.damageToBuildings === null
-      && r.coverage.caveats.some((c) => /CENSORED, not unknown/.test(c));
+    return Math.abs(r.defender.damageToBuildings - 9.0 * effectiveUnits(30)) < 1e-6
+      && BUILDING_DAMAGE_FLOOR.ht === undefined;
   })());
 check('a fortress against an air attacker still computes, but is downgraded and caveated',
   (() => {
@@ -1467,20 +1473,27 @@ console.log('\n12i. building damage, replayed per attacking unit type');
                   buildings: [{ code: 'fortress', level: 5 }] },
       rounds: 1,
     });
-    if (res.defender.damageToBuildings === null) {
-      // The censored heavy tank: withheld on purpose, so there is nothing to
-      // compare and that is the correct outcome rather than a skip.
-      check(`${m.attacker}: withheld because the reading is censored`,
-        m.attacker === 'ht', `${m.attacker} dealt ${obs}`);
+    n += 1;
+    // A CENSORED cell is a FLOOR and must be replayed as one. The heavy tank
+    // dealt exactly the fortress's whole 250.00 pool here, so the only thing
+    // the reading supports is "at least 250" -- and the engine, which now has
+    // the real 9.00 per unit from an uncensored stack, predicts 255.00. That
+    // is agreement, and asserting equality against a clamped number would
+    // demand the engine reproduce the clamp instead of the physics.
+    const censored = ((m.detail || {})['B.1.bldg.1'] || {}).pct >= 99.9;
+    if (censored) {
+      check(`${m.attacker} vs a fortress: censored at ${obs}, engine predicts `
+        + `${res.defender.damageToBuildings.toFixed(2)} — at least as much`,
+        res.defender.damageToBuildings >= obs - 0.05,
+        `${res.defender.damageToBuildings.toFixed(2)} < ${obs}`);
       continue;
     }
-    n += 1;
     check(`${m.attacker} vs a fortress: `
       + `${res.defender.damageToBuildings.toFixed(2)} vs measured ${obs}`,
       Math.abs(res.defender.damageToBuildings - obs) <= 0.05,
       `${(res.defender.damageToBuildings - obs).toFixed(3)} off`);
   }
-  check('eight of the nine land types were replayed', n === 8, String(n));
+  check('all nine land types were replayed', n === 9, String(n));
 }
 
 console.log('\n12j. the class matrix — every unit against every target class');
@@ -2984,6 +2997,72 @@ console.log('\n12w. patrol — both sides, solved as a fixed point');
 }
 
 // ===========================================================================
+console.log('\n12x. building damage for the nine units that had no figure');
+// ===========================================================================
+// The original sweep only ever flew LAND attackers, so convoys, the Balloon
+// and every air and naval unit had no entry at all — not a bracket, not a
+// floor, nothing. The heavy tank had a FLOOR, because its one reading was
+// censored against a fortress it destroyed outright.
+{
+  const bd = rows.filter((r) => r.experiment === 'building_damage_rest'
+    && r.meta.detail);
+  let cells = 0;
+  for (const r of bd) {
+    const m = r.meta;
+    const b = m.detail['B.1.bldg.1'] || {};
+    if (b.lost == null) continue;
+    if ((b.pct || 0) >= 99.9) continue;
+    const terr = { land: 'land', air: 'air', naval: 'sea' }[m.atk_class];
+    const got = simulate({
+      terrain: m.unit === 'bal' ? 'land' : terr,
+      defenderTerrain: 'land',
+      attacker: { unit: m.unit, count: m.atk_n },
+      defender: { unit: 'inf', count: 60,
+        buildings: [{ code: 'fortress', level: 5, hpPct: 100 }] },
+    });
+    check(`${m.unit} vs a level-5 fortress: ${b.lost}`,
+      got.defender.damageToBuildings !== null
+      && Math.abs(got.defender.damageToBuildings - b.lost) < 0.06,
+      `got ${got.defender.damageToBuildings === null ? 'withheld'
+        : got.defender.damageToBuildings.toFixed(2)}`);
+    cells += 1;
+  }
+  check('every one of the nine was replayed', cells === 9, String(cells));
+  check('and no unit in the roster is left without a figure',
+    Object.keys(UNITS).every((u) => BUILDING_DAMAGE_PER_EFFECTIVE_UNIT[u] !== undefined),
+    Object.keys(UNITS).filter((u) => BUILDING_DAMAGE_PER_EFFECTIVE_UNIT[u] === undefined)
+      .join(', ') || 'all present');
+  check('nothing is censored any more', Object.keys(BUILDING_DAMAGE_FLOOR).length === 0);
+
+  // Two units deal EXACTLY zero, which is a reading and not an absence.
+  check('convoys and submarines cannot hurt a building at all',
+    BUILDING_DAMAGE_PER_EFFECTIVE_UNIT.convoy === 0
+    && BUILDING_DAMAGE_PER_EFFECTIVE_UNIT.sub === 0);
+  check('and the engine reports 0.00 for them rather than withholding',
+    simulate({ attacker: { unit: 'convoy', count: 5 },
+      defender: { unit: 'inf', count: 60,
+        buildings: [{ code: 'fortress', level: 5 }] } })
+      .defender.damageToBuildings === 0);
+
+  // The fliers' figures are round only once the post-fire law is applied to
+  // building damage as well, which the engine did not do.
+  check('building damage is attenuated on the same paths the unit damage is',
+    (() => {
+      const z = simulate({ terrain: 'air', defenderTerrain: 'land',
+        attacker: { unit: 'zep', count: 5 },
+        defender: { unit: 'inf', count: 60,
+          buildings: [{ code: 'fortress', level: 5 }] } });
+      // 30.00 x E(5) = 150.00 unattenuated; the server prints 147.20.
+      return Math.abs(z.defender.damageToBuildings - 147.20) < 0.1
+        && Math.abs(z.defender.damageToBuildings - 150.0) > 2;
+    })());
+  check('and the corrected flier figures are round',
+    BUILDING_DAMAGE_PER_EFFECTIVE_UNIT.int === 1.0
+    && BUILDING_DAMAGE_PER_EFFECTIVE_UNIT.tac === 6.0
+    && BUILDING_DAMAGE_PER_EFFECTIVE_UNIT.zep === 30.0);
+}
+
+// ===========================================================================
 console.log('\n14. coverage of the record itself');
 // ===========================================================================
 {
@@ -3005,7 +3084,7 @@ console.log('\n14. coverage of the record itself');
     'togo_b_disagreement', 'togo_b_shape', 'togo_b_kind', 'hero_hp_scaling',
     'land_hero_attacking', 'land_hero_screen', 'hero_new_buffs', 'hank_sides',
     'land_hero_target_class', 'land_hero_def_class',
-    'm_f_generality', 'building_levels', 'e_n_gaps', 'patrol_pin',
+    'm_f_generality', 'building_levels', 'e_n_gaps', 'patrol_pin', 'building_damage_rest',
     // Heroes are now modelled and replayed above: the sweeps that measured
     // them are physics the engine reproduces, not declared omissions.
     'heroes', 'hero_scaling', 'hero_table', 'hero_levels', 'air_rounds'];

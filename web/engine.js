@@ -1947,11 +1947,22 @@ function runSimulation(config, derivation, caveats) {
     // 5. Building damage — additive, NOT carved out of unit damage and NOT
     //    reduced by the fortress's own DR (both measured).
     if (def.buildings.length && bdRate !== undefined && atkOutput !== null) {
-      const bDmg = bdRate * atkE * hpMultiplier(atkF);
+      // BUILDING DAMAGE IS ATTENUATED TOO, on the same paths the unit damage
+      // is. It was computed from the pre-round stack regardless, which reads
+      // 150.00 for five zeppelins where the server prints 147.20. The three
+      // fliers' raw figures -- 0.96, 5.80, 29.44 per effective unit -- are the
+      // post-fire law applied to buildings; corrected they are 1.00, 6.00 and
+      // 30.00 exactly, which is what the table now holds.
+      const bdScale = (atkOutput !== null && !defSuppressed
+        && (attenuated || patrol.applies))
+        ? attenuationFactor(atk, atkLostThis, patrol.applies ? patrol.c : 1)
+        : 1;
+      const bDmg = bdRate * atkE * hpMultiplier(atkF) * bdScale;
       const target = def.buildings[0];
       derivation.push({
         label: `${tag}Damage to ${target.label}`,
-        formula: `${bdRate} per effective unit x E(${atk.n})=${round4(atkE)} = ${round4(bDmg)} — `
+        formula: `${bdRate} per effective unit x E(${atk.n})=${round4(atkE)}`
+          + `${bdScale !== 1 ? ` x post-fire ${round4(bdScale)}` : ''} = ${round4(bDmg)} — `
           + 'additive, not carved out of the damage to units, and not reduced by fortress DR (measured)',
         value: bDmg,
       });
@@ -2151,6 +2162,25 @@ function deathsFromShare(row, share) {
   if (remaining - share <= EPS) return alive;      // wiped: all of them
   if (remaining <= 0) return 0;
   return Math.min(alive, Math.floor(share / (remaining / alive)));
+}
+
+/**
+ * How much a stack's output is scaled down by the damage it took this round.
+ * The post-fire law expressed as a ratio, so building damage can be charged
+ * the same discount the unit damage is without duplicating the arithmetic.
+ * c is 1 for a strike and the patrol fraction for a patrol.
+ */
+function attenuationFactor(side, lostThis, c) {
+  const hp = side.perUnitMaxHP;
+  if (!hp || side.n <= 0) return 1;
+  const L = c * lostThis;
+  const surv = side.n - Math.floor(L / hp);
+  if (surv <= 0) return 0;
+  const before = effectiveUnits(side.n) * hpMultiplier(stackFraction(side));
+  if (before <= 0) return 1;
+  const after = effectiveUnits(surv)
+    * hpMultiplier(Math.max(0, Math.min(1, (side.pool - L) / (surv * hp))));
+  return after / before;
 }
 
 /**
