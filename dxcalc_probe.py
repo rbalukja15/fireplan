@@ -6048,6 +6048,61 @@ def exp_attenuation_scope(p: Probe) -> None:
         print(f"  {label:16} {b['lost']:9.2f} {plain:13.2f} {att:11.2f}  "
               f"{verdict}  (attacker lost {lost})")
 
+
+# Chosen to span per-unit HP by a factor of twenty-six, because that is the
+# quantity the survivor count is coarse in: lart 10, inf 20, cav 25, st 40,
+# ac 60, ht 260. If the round law drifts because whole-unit survivors are a
+# coarse grid, the drift has to track this column and nothing else.
+MULTI_ROUND_TYPES = ["lart", "inf", "st", "ac", "ht"]
+
+
+def exp_multi_round_types(p: Probe) -> None:
+    """The round law across the whole per-unit-HP range, not just infantry.
+
+    The law -- output = coefficient x E(survivors) x m(f), survivors counted as
+    WHOLE units -- was fitted on fifty infantry against fifty infantry and fits
+    that ladder to 0.042%. Cavalry reproduces exactly. Heavy tanks drift to
+    0.5% by round four, and the standing explanation is that 260 HP per unit
+    makes the whole-unit survivor count coarse.
+
+    That explanation has never been tested, because it was written from ONE
+    unit type at the far end of the range. If it is right the error should be
+    monotone in per-unit HP: light artillery at 10 HP should be the cleanest
+    reading in the roster and the heavy tank the worst, with three types in
+    between falling in order. If the error does not track that column, the
+    coarseness story is wrong and something else is going on.
+
+    Deaths are recorded too. The printed count is the sum of per-round
+    floor(round damage / per-unit HP) and reproduces ten of twelve measured
+    cells; infantry rounds 3 and 4 come out one short with no explanation. A
+    ladder on five types either finds that pattern again somewhere else, which
+    makes it a law, or finds it nowhere, which makes it specific to that cell.
+    """
+    print(f"\n  {'unit':6} {'HP/unit':>8} {'rounds':>7} {'A lost':>10} "
+          f"{'A died':>7} {'B lost':>10} {'B died':>7}")
+    for unit in MULTI_ROUND_TYPES:
+        hp = MEASURED_UNITS[unit][0]
+        for rounds in range(1, 9):
+            ov = settings(rounds=rounds)
+            ov.update(duel(1, unit, 50, unit, 50))
+            try:
+                p.submit(ov)
+            except (BareFormReturned, ValueError) as e:
+                print(f"  {unit:6} {hp:8.0f} {rounds:>7}  {e}"[:100])
+                continue
+            d = dict(p.last_details)
+            a = d.get("A.1.1") or {}
+            b = d.get("B.1.1") or {}
+            record("multi_round_types", {"unit": unit, "rounds": rounds,
+                                         "n": 50, "detail": d},
+                   {k: (v or {}).get("lost") for k, v in d.items()})
+            print(f"  {unit:6} {hp:8.0f} {rounds:>7} "
+                  f"{a.get('lost', 0) or 0:10.2f} {a.get('died', 0) or 0:7.0f} "
+                  f"{b.get('lost', 0) or 0:10.2f} {b.get('died', 0) or 0:7.0f}"
+                  + ("   (both sides wiped)"
+                     if (a.get('pct') or 0) >= 99.9 and (b.get('pct') or 0) >= 99.9
+                     else ""))
+
 # Every (hero, unit) pair with a measured OUTPUT buff, and the level cap to
 # sweep to. Read with a SINGLE-TYPE stack, which needs no baseline subtraction
 # and cannot be contaminated by another curve.
@@ -7131,6 +7186,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "class_matrix_2": exp_class_matrix_2,
     "balloon_columns": exp_balloon_columns,
     "attenuation_scope": exp_attenuation_scope,
+    "multi_round_types": exp_multi_round_types,
     "mixed_stacks": exp_mixed_stacks,
     "heroes": exp_heroes,
     "stack_limits": exp_stack_limits,

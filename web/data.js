@@ -889,7 +889,6 @@ export const FORM_DOMAINS = {
 export const NOT_MEASURED = [
     { key: 'air_to_air_mechanism', what: 'WHY an air stack is attenuated against surface targets and not against other aircraft.', why: 'The scope is measured hard and modelled. Attacking land or naval, an air stack fires with what survives the round; attacking air it does not \u2014 twenty fighters lose 58% of their pool to two hundred fighters and still deal the full 20.0 x E(20) = 400.00. Embarkation is seen by every attacker including air, which is what the discriminating cell showed: against two hundred EMBARKED fighters the same stack deals 98.61, the naval column attenuated. What no black-box reading can reach is the mechanism \u2014 whether air-to-air resolves simultaneously or whether something else exempts it.', closedBy: 'nothing available. The obvious experiment is an air stack whose target cannot shoot back, and there is no such configuration: every air unit bisects to a range of 5 km and 5 km is exactly where return fire stops, so an aircraft is never out of reach of what it is attacking' },
     { key: 'return_fire_generality', what: 'Whether the 5 km return-fire cut-off is a constant or every unit\u2019s own melee reach.', why: 'Past 5 km a bombarded defender deals exactly zero while still taking the attacker\u2019s full figure. That is measured hard \u2014 lart at 4 and 5 km loses 20.00, at 6, 7 and 8 km loses nothing, and three defenders that could easily shoot back (lart reaching 30, cruiser 40, battleship 75) are all silent at 8 km, as is a mixed inf+lart defender at 6. But every unit in the roster ALSO bisected to a melee attack range of exactly 5, so "the cut-off is the constant 5" and "the cut-off is the defender\u2019s own melee reach" predict the identical number everywhere. The two are indistinguishable in this game and the engine uses the constant.', closedBy: 'nothing available \u2014 it would need a unit whose melee reach is not 5, and there is none' },
-    { key: 'multi_round_heavy_units', what: 'Multi-round drift on units with large per-unit HP, and two anomalous death counts.', why: 'The round law was fitted on 50-vs-50 INFANTRY at 0.042%. Cavalry reproduces exactly too, but heavy tanks drift to 0.5% by round four \u2014 260 HP per unit makes the whole-unit survivor count coarse and the model more sensitive to it. Separately, the printed death count is the sum of per-round floor(round damage / per-unit HP), which reproduces 10 of 12 measured cells; infantry rounds 3 and 4 come out one short and nothing explains it.', closedBy: 'a maxRounds ladder on two or three more unit types, chosen for their per-unit HP' },
   { key: 'air_E_above_20_rival', what: 'Whether an attenuated air stack above 20 units uses E(survivors) or a per-unit sum of m(f).', why: 'The post-fire law now reproduces attenuated stacks at 10, 25, 40 and 50 units \u2014 three exactly and 40 units to 0.11% \u2014 so it does hold above the knee, which is what the app needs. But the RIVAL hypothesis was not properly separated: the two formulations I wrote reduce to the same expression for these stack sizes, so this is a confirmation of one law rather than a discrimination between two.', closedBy: 'a rival stated so it actually differs, then one cell where they disagree' },
                 { key: 'hero_other_terrain_levels', what: 'The six air/naval heroes DEFENDING, and at any level but 10.', why: 'All six are decomposed ATTACKING at level 10 — own attack separated from multiplier with two attacker types apiece — and each buffs the thing its namesake commanded: Hersing submarines, von Thaden zeppelins, Richthofen fighters, T\u014dg\u014d battleships. Ivan buffs nothing and attacks at 1.00. What none of them has been read at is a DEFENDING stack, or any level but 10, and the land heroes proved both of those matter — thirteen of sixteen have different attack and defence values, and every curve moves with level.', closedBy: 'the same two-configuration decomposition run defending, plus a level sweep' },
 
@@ -1221,6 +1220,28 @@ export const PROVENANCE = {
       + 'stack against EMBARKED FIGHTERS, where the columns are 20.0 and 5.0: it deals 98.61, '
       + 'which is 5.0 x E(20) x m(0.98542), the naval column attenuated. Everyone sees '
       + 'embarkation. The rule is uniform and the exemption was an artifact.',
+  },
+  'ROUNDS.law': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=multi_round (an 8-rung infantry ladder) and '
+      + 'multi_round_types (40 more: five unit types spanning per-unit HP from 10 to 260, eight '
+      + 'rounds each, 50 a side).',
+    note: 'EACH ROUND FIGHTS WITH WHAT IS LEFT: output = coefficient x E(survivors) x m(f), where '
+      + 'survivors are COUNT MINUS DEATHS and f is the remaining pool over what those survivors '
+      + 'could hold. Exact to 0.0032% across all 48 cells, with every death count reproduced '
+      + 'exactly. TWO THINGS WERE WRONG BEFORE THE LADDER. First, survivors were recomputed as '
+      + 'count - floor(cumulative damage / max HP), which is a different number: solving each '
+      + 'measured round\'s output for the survivor count it implies lands on count-minus-deaths '
+      + 'in 20 of 21 cells and on the floor rule in 8. Second, a round\'s casualties are counted '
+      + 'against what the survivors HAVE LEFT -- the remaining pool divided between them -- not '
+      + 'against a full unit, so a battered stack loses units faster than its paper HP suggests. '
+      + 'THE EXPLANATION THAT WAS WRONG: the residual drift used to be attributed to high '
+      + 'per-unit HP making the survivor count coarse, which was written from ONE unit type at '
+      + 'the far end of the range. The ladder disproves it -- the stormtrooper at 40 HP is exact '
+      + 'through eight rounds while the armoured car at 60 was the worst in the roster at 0.970% '
+      + 'and infantry at 20 drifted to 0.340%. The error tracked how many rounds both sides '
+      + 'survived, never what they were made of. The two anomalous infantry death counts that '
+      + '"nothing explained" were this rule all along.',
   },
   'STACK.composition': {
     confidence: 'measured',

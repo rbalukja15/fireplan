@@ -2192,6 +2192,69 @@ console.log('\n12n. attenuation scope, and a test that had no power');
 }
 
 // ===========================================================================
+console.log('\n12o. the round law across five unit types, and the death rule');
+// ===========================================================================
+// The law was fitted on 50-a-side INFANTRY and the drift on other types was
+// explained by high per-unit HP making the whole-unit survivor count coarse.
+// A ladder on five types spanning 10 to 260 HP disproves that outright: the
+// stormtrooper at 40 is exact through eight rounds while the armoured car at
+// 60 is the worst in the roster. The error tracked how long both sides
+// survived, not what they were made of.
+{
+  const mr = rows.filter((r) => r.experiment === 'multi_round_types' && r.meta.detail);
+  let cells = 0;
+  let worst = 0;
+  const types = new Set();
+  for (const r of mr) {
+    const d = r.meta.detail;
+    const got = simulate({
+      attacker: { rows: [{ unit: r.meta.unit, count: r.meta.n }] },
+      defender: { rows: [{ unit: r.meta.unit, count: r.meta.n }] },
+      rounds: r.meta.rounds,
+    });
+    const wa = d['A.1.1'].lost;
+    const wb = d['B.1.1'].lost;
+    const ea = Math.abs(got.attacker.hpLost - wa) / Math.max(1, wa);
+    const eb = Math.abs(got.defender.hpLost - wb) / Math.max(1, wb);
+    worst = Math.max(worst, ea, eb);
+    check(`${r.meta.unit} 50v50 x${r.meta.rounds}: ${wa} / ${wb}`,
+      ea < 0.001 && eb < 0.001,
+      `got ${got.attacker.hpLost.toFixed(2)} / ${got.defender.hpLost.toFixed(2)}`);
+    // Deaths are EXACT, not bracketed. They are integers the server prints.
+    check(`  and the death counts ${d['A.1.1'].died} / ${d['B.1.1'].died}`,
+      got.attacker.deaths === d['A.1.1'].died && got.defender.deaths === d['B.1.1'].died,
+      `got ${got.attacker.deaths} / ${got.defender.deaths}`);
+    cells += 1;
+    types.add(r.meta.unit);
+  }
+  check('the whole five-type ladder was replayed', cells === 40, String(cells));
+  check('spanning per-unit HP from 10 to 260', types.size === 5,
+    [...types].join(', '));
+  check('worst HP error across all forty cells is under 0.01%',
+    worst < 0.0001, `${(worst * 100).toFixed(4)}%`);
+
+  // The specific claim that was wrong, kept as an assertion so it cannot come
+  // back: the error does not track per-unit HP.
+  const errByHP = [];
+  for (const unit of ['lart', 'inf', 'st', 'ac', 'ht']) {
+    let w = 0;
+    for (const r of mr.filter((x) => x.meta.unit === unit)) {
+      const got = simulate({
+        attacker: { rows: [{ unit, count: 50 }] },
+        defender: { rows: [{ unit, count: 50 }] },
+        rounds: r.meta.rounds,
+      });
+      w = Math.max(w, Math.abs(got.attacker.hpLost - r.meta.detail['A.1.1'].lost)
+        / Math.max(1, r.meta.detail['A.1.1'].lost));
+    }
+    errByHP.push([UNITS[unit].maxHP, w]);
+  }
+  check('every type is now exact regardless of per-unit HP',
+    errByHP.every(([, w]) => w < 0.0001),
+    errByHP.map(([hp, w]) => `${hp}:${(w * 100).toFixed(4)}%`).join(' '));
+}
+
+// ===========================================================================
 console.log('\n14. coverage of the record itself');
 // ===========================================================================
 {
@@ -2207,7 +2270,7 @@ console.log('\n14. coverage of the record itself');
     'range_roster', 'return_fire', 'mixed_range',
     'target_terrain', 'embarked_hp', 'embarked_class',
     'defence_matrix', 'balloon_class', 'naval_air_column', 'embarked_convoy',
-    'class_matrix_2', 'balloon_columns', 'attenuation_scope',
+    'class_matrix_2', 'balloon_columns', 'attenuation_scope', 'multi_round_types',
     // Heroes are now modelled and replayed above: the sweeps that measured
     // them are physics the engine reproduces, not declared omissions.
     'heroes', 'hero_scaling', 'hero_table', 'hero_levels', 'air_rounds'];

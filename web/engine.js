@@ -1546,7 +1546,7 @@ function runSimulation(config, derivation, caveats) {
     const atkAlloc = allocate(atk, atkLostThis);
     let atkDeathsThis = 0;
     for (const pt of atkAlloc.parts) {
-      const d = pt.row.perUnitMaxHP ? Math.floor(pt.share / pt.row.perUnitMaxHP) : 0;
+      const d = deathsFromShare(pt.row, pt.share);
       pt.row.hpLost += pt.share;
       pt.row.deaths += d;
       atkDeathsThis += d;
@@ -1741,7 +1741,7 @@ function runSimulation(config, derivation, caveats) {
     const defAlloc = allocate(def, defLostThis);
     let defDeathsThis = 0;
     for (const pt of defAlloc.parts) {
-      const d = pt.row.perUnitMaxHP ? Math.floor(pt.share / pt.row.perUnitMaxHP) : 0;
+      const d = deathsFromShare(pt.row, pt.share);
       pt.row.hpLost += pt.share;
       pt.row.deaths += d;
       defDeathsThis += d;
@@ -1930,10 +1930,47 @@ function stackOutput(side, coefFor, scale, mulEach) {
  * it, which is the "fixed E" law: 13.66% out by round six, where it declared a
  * wipe that does not happen.
  */
+/**
+ * How many whole units a round's damage destroys.
+ *
+ * NOT floor(damage / max HP). A round's casualties are counted against what
+ * the surviving units actually have left -- the stack's remaining pool divided
+ * between them -- so a battered stack loses units faster than its paper HP
+ * suggests. Fitting the max-HP rule to a 50-a-side ladder on five unit types
+ * missed the printed death count in 27 of 40 cells and drifted the HP figures
+ * up to 0.970%; this rule is exact on all 40 deaths and 0.0032% on HP.
+ *
+ * The explanation that stood before this was that high per-unit HP made the
+ * survivor count coarse, so heavy tanks drifted and infantry did not. That was
+ * written from one unit type and the ladder disproves it: at 40 HP the
+ * stormtrooper is exact through eight rounds while the armoured car at 60 is
+ * the worst in the roster and infantry at 20 drifts too. The error never
+ * tracked per-unit HP at all -- it tracked how many rounds both sides survived.
+ *
+ * A stack whose remaining pool reaches zero loses every unit, which the
+ * division alone does not give: the last round's floor leaves one standing.
+ */
+function deathsFromShare(row, share) {
+  if (!row.perUnitMaxHP) return 0;
+  const alive = Math.max(0, row.count - row.deaths);
+  if (alive <= 0) return 0;
+  const remaining = row.pool - row.hpLost;
+  if (remaining - share <= EPS) return alive;      // wiped: all of them
+  if (remaining <= 0) return 0;
+  return Math.min(alive, Math.floor(share / (remaining / alive)));
+}
+
 function refreshRound(side) {
   for (const r of side.rows) {
     if (!r.perUnitMaxHP) continue;
-    const alive = Math.max(0, r.count - Math.floor(r.hpLost / r.perUnitMaxHP));
+    // SURVIVORS ARE COUNT MINUS DEATHS, and deaths are counted round by round
+    // as the damage lands (see deathsFromShare). Recomputing them here as
+    // floor(cumulative damage / max HP) gives a DIFFERENT number, because a
+    // round's damage is measured against what the survivors have left rather
+    // than against a full unit. Solving each measured round's output for the
+    // survivor count it implies puts it on count-minus-deaths in 20 of 21
+    // cells and on the floor rule in 8.
+    const alive = Math.max(0, r.count - r.deaths);
     r.liveCount = alive;
     const full = alive * r.perUnitMaxHP;
     r.liveFrac = full > 0 ? Math.min(1, (r.pool - r.hpLost) / full) : 0;
