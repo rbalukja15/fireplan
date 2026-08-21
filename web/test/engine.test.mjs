@@ -3379,6 +3379,44 @@ console.log('\n16. the page can express what the engine models');
   check('and the hero HP box has its own listener',
     /hpBox\.addEventListener/.test(app));
 
+
+  // ---- HP INPUT: decimals, and absolute hit points -----------------------
+  // The boxes were type="number" step="1", so 87.5 was rejected and 17.3 --
+  // the figure the game's own Army Details tab shows -- could not be entered
+  // at all. The source form's field is pattern="[\d.]+%?" and takes either
+  // form; this one does now, for unit rows AND for the hero, which has hit
+  // points like anything else.
+  check('no HP box is still integer-only',
+    !/hp\.min = '1'; hp\.max = '100'; hp\.step = '1';/.test(app)
+    && !/id="\{s\}-hero-hp"[^>]*step="1"/.test(html),
+    'a step of 1 rejects both the decimal and the absolute figure');
+  check('the unit HP box accepts the source form\'s own pattern',
+    /hp\.setAttribute\('pattern', '\[\\\\d\.\]\+%\?'\)/.test(app));
+  check('and so does the hero HP box',
+    /id="\{s\}-hero-hp"[\s\S]{0,200}pattern="\[\\d\.\]\+%\?"/.test(html));
+  check('clampHp keeps decimals rather than rounding them away',
+    /function clampHp[\s\S]{0,220}Math\.round\(n \* 1e4\) \/ 1e4/.test(app)
+    && !/function clampHp[\s\S]{0,160}Math\.max\(1, Math\.round\(n\)\)/.test(app));
+  check('absolute HP is divided by the HERO-BUFFED max, not the base max',
+    /function rowMaxHP[\s\S]{0,400}heroHpBuff/.test(app),
+    'with Marco in the stack a tank\'s shown HP is out of the buffed maximum');
+  check('an unparseable HP keeps the last good value instead of becoming 100%',
+    /r\.hpBad = !parsed;/.test(app) && /last value kept/.test(app));
+
+  // The share link uses '.' between fields AND a decimal HP contains one.
+  check('every share-link decode rejoins the HP tail instead of truncating it',
+    (app.match(/hpRest|hpRest2|legacy\.slice\(2/g) || []).length >= 4,
+    'inf.30.86.35 must decode as 86.35, not 86');
+  check('and the encoder emits the decimal',
+    /fmtHpPct\(r\.hpPct\)\]\.join\('\.'\)/.test(app));
+
+  // A COSMETIC HELPER MUST NOT BE ABLE TO STOP THE CALCULATION. updateHpEchoes
+  // threw on a scope slip and took recompute() with it: every figure on the
+  // page froze at its last value while the inputs went on accepting edits.
+  check('the HP echo cannot break recompute()',
+    /try \{ updateHpEchoes\(\); \} catch/.test(app),
+    'it only writes a caption; it must never be load-bearing');
+
   // The share link. It carried the stacks and dropped terrain, distance and
   // the hero, so "Copy link" handed out a link to a DIFFERENT battle.
   for (const [re, what] of [

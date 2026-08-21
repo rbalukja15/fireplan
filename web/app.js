@@ -486,10 +486,80 @@ function buildStack(side) {
   renderHero(side);
 }
 
+/**
+ * HP as the source form takes it: "85%" is a percentage, "17.3" is absolute.
+ *
+ * The game shows you ABSOLUTE hit points -- the Army Details tab gives 17.3,
+ * not 86.5% -- so demanding a percentage made the reader do arithmetic the
+ * calculator is for. dxcalc's own field is pattern="[\d.]+%?" and accepts
+ * either, and so does this one now.
+ *
+ * `maxHP` is the row's max INCLUDING any hero HP buff, which matters and is
+ * documented on the source's help page: with Marco in the stack a light tank's
+ * displayed HP is out of the buffed maximum, so an absolute figure has to be
+ * divided by the buffed max or it reads low. A percentage is the same number
+ * either way, which is exactly why the page recommends it in that case.
+ *
+ * Returns null for anything unparseable rather than a silent 100: a typo that
+ * quietly becomes "undamaged" is the sort of confident wrong answer this whole
+ * project is organised against.
+ */
+function parseHp(text, maxHP) {
+  const s = String(text == null ? '' : text).trim();
+  if (!s) return null;
+  const m = /^([\d]*\.?[\d]+)\s*(%?)$/.exec(s);
+  if (!m) return null;
+  const n = Number(m[1]);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const pct = m[2] === '%'
+    ? n
+    : (maxHP > 0 ? (n / maxHP) * 100 : null);
+  if (pct === null) return null;
+  return {
+    pct: Math.min(100, Math.max(0.01, Math.round(pct * 1e4) / 1e4)),
+    wasPercent: m[2] === '%',
+  };
+}
+
+/** Clamp a percentage, keeping decimals. This used to Math.round(). */
 function clampHp(v) {
   const n = Number(v);
   if (!Number.isFinite(n)) return 100;
-  return Math.min(100, Math.max(1, Math.round(n)));
+  return Math.min(100, Math.max(0.01, Math.round(n * 1e4) / 1e4));
+}
+
+/** Tidy display of an HP percentage: 100, 86.5, 33.3333 -> 33.33. */
+function fmtHpPct(pct) {
+  const n = Number(pct);
+  if (!Number.isFinite(n)) return '100';
+  return String(Math.round(n * 100) / 100);
+}
+
+/**
+ * A row's maximum HP per unit, including a hero HP buff if one applies to that
+ * type. Marco raises a Tank's max by 1.12 at level 10, and an absolute HP
+ * figure typed while Marco is in the stack is out of THAT maximum.
+ */
+function rowMaxHP(side, unitCode) {
+  const base = (UNITS[unitCode] || {}).maxHP;
+  if (!base) return null;
+  const hero = state[side] && state[side].hero;
+  if (!hero || !ENGINE || !ENGINE.heroHpBuff) return base;
+  try {
+    const b = ENGINE.heroHpBuff(hero.code, hero.level, unitCode);
+    return b && typeof b.m === 'number' ? base * b.m : base;
+  } catch { return base; }
+}
+
+/** Both hero tables, at module scope. `defOf` inside renderHero is local. */
+function heroDefOf(code) {
+  return HEROES[code] || HEROES_REFUSED[code] || null;
+}
+
+/** The hero's own maximum HP pool. */
+function heroMaxHP(code) {
+  const d = heroDefOf(code);
+  return d && typeof d.pool === 'number' ? d.pool : null;
 }
 
 function clampCount(v) {
@@ -623,16 +693,26 @@ function renderRows(side) {
     countField.append(countLabel, count);
 
     // --- HP % -------------------------------------------------------------
+    // HP, in either form the source form accepts: "85%" or an absolute "17.3".
+    // A number input with step=1 was rejecting both the decimal and the unit
+    // the game actually shows you.
     const hpField = el('div', 'field field-hp');
-    const hpLabel = el('label', null, 'HP %');
+    const hpLabel = el('label', null, 'HP');
     hpLabel.htmlFor = uid + '-hp';
     const hp = document.createElement('input');
-    hp.type = 'number';
+    hp.type = 'text';
     hp.id = uid + '-hp';
-    hp.min = '1'; hp.max = '100'; hp.step = '1';
-    hp.inputMode = 'numeric';
-    hp.value = String(r.hpPct);
-    hpField.append(hpLabel, hp);
+    hp.setAttribute('pattern', '[\\d.]+%?');
+    hp.inputMode = 'decimal';
+    hp.autocomplete = 'off';
+    hp.spellcheck = false;
+    hp.title = 'Either a percentage (85%) or the absolute hit points the game '
+      + 'shows in Army Details (17.3).';
+    hp.value = r.hpText === undefined ? `${fmtHpPct(r.hpPct)}%` : r.hpText;
+    const hpEcho = el('span', 'field-echo');
+    hpEcho.id = uid + '-hp-echo';
+    hp.setAttribute('aria-describedby', hpEcho.id);
+    hpField.append(hpLabel, hp, hpEcho);
 
     // --- remove -----------------------------------------------------------
     const rm = el('button', 'btn btn-small btn-icon', '×');
@@ -813,8 +893,12 @@ function renderHero(side) {
       hpBox.addEventListener('input', () => {
         const cur2 = state[side].hero;
         if (!cur2) return;
-        cur2.hpPct = Math.max(1, Math.min(100, Number(hpBox.value) || 100));
-        renderHero(side);
+        // Heroes have hit points like anything else, and the game shows them
+        // absolutely. Same field semantics as a unit row: "85%" or "34.2".
+        cur2.hpText = hpBox.value;
+        const parsed = parseHp(hpBox.value, heroMaxHP(cur2.code));
+        if (parsed) cur2.hpPct = parsed.pct;
+        cur2.hpBad = !parsed;
         recompute();
       });
     }
@@ -827,7 +911,10 @@ function renderHero(side) {
   if (def) {
     lvlBox.max = String(def.maxLevel);
     lvlBox.value = String(Math.min(cur.level || 1, def.maxLevel));
-    if (hpBox) hpBox.value = String(cur.hpPct === undefined ? 100 : cur.hpPct);
+    if (hpBox && document.activeElement !== hpBox) {
+      hpBox.value = cur.hpText === undefined
+        ? `${fmtHpPct(cur.hpPct === undefined ? 100 : cur.hpPct)}%` : cur.hpText;
+    }
   }
 
   if (!cur) {
@@ -953,13 +1040,13 @@ function renderBuildings(side) {
 
     const hp = document.createElement('input');
     hp.type = 'number';
-    hp.min = '1'; hp.max = '100'; hp.step = '1';
+    hp.min = '0.1'; hp.max = '100'; hp.step = 'any';
     hp.value = String(b.hpPct);
     hp.id = uid + '-hp';
     hp.setAttribute('aria-label', `Building ${i + 1} HP percent`);
     hp.addEventListener('input', () => {
       const n = Number(hp.value);
-      b.hpPct = Number.isFinite(n) ? Math.min(100, Math.max(1, n)) : 100;
+      b.hpPct = Number.isFinite(n) ? Math.min(100, Math.max(0.1, n)) : 100;
       recompute();
     });
 
@@ -1014,7 +1101,16 @@ function readDomToState() {
       const count = $(`${key}-r${i}-count`);
       const hp = $(`${key}-r${i}-hp`);
       if (count) r.count = clampCount(count.value);
-      if (hp) r.hpPct = clampHp(hp.value);
+      if (hp) {
+        // Keep what was typed, so the field does not reformat under the
+        // cursor, and derive the percentage the engine wants from it.
+        r.hpText = hp.value;
+        const parsed = parseHp(hp.value, rowMaxHP(key, r.unit));
+        // An unparseable box leaves the last good value in place rather than
+        // silently becoming 100%.
+        if (parsed) r.hpPct = parsed.pct;
+        r.hpBad = !parsed;
+      }
       // The type is not read here: it only ever changes through its own
       // handler, which re-sorts and re-renders the whole side.
     });
@@ -1065,7 +1161,9 @@ function writeNumbersToDom() {
       const count = $(`${key}-r${i}-count`);
       const hp = $(`${key}-r${i}-hp`);
       if (count) count.value = String(r.count);
-      if (hp) hp.value = String(r.hpPct);
+      if (hp && document.activeElement !== hp) {
+        hp.value = r.hpText === undefined ? `${fmtHpPct(r.hpPct)}%` : r.hpText;
+      }
     });
   }
   $('rounds').value = String(state.rounds);
@@ -1099,7 +1197,65 @@ function currentConfig() {
   };
 }
 
+
+/**
+ * Under each HP box, show the same figure the other way round: type a
+ * percentage and see the absolute hit points, type absolute and see the
+ * percentage. This is also where a bad entry is reported -- the box keeps the
+ * last good value, so without this the typo would be invisible.
+ */
+function updateHpEchoes() {
+  for (const { key } of SIDES) {
+    rowsOf(key).forEach((r, i) => {
+      const echo = $(`${key}-r${i}-hp-echo`);
+      if (!echo) return;
+      const maxHP = rowMaxHP(key, r.unit);
+      if (r.hpBad) {
+        echo.textContent = 'not a number — last value kept';
+        echo.className = 'field-echo is-warn';
+        return;
+      }
+      echo.className = 'field-echo';
+      if (!maxHP) { echo.textContent = ''; return; }
+      const abs = (r.hpPct / 100) * maxHP;
+      const buffed = Math.abs(maxHP - (UNITS[r.unit] || {}).maxHP) > 1e-9;
+      echo.textContent = `${fmtLoose(Math.round(abs * 100) / 100)} of `
+        + `${fmtLoose(Math.round(maxHP * 100) / 100)} HP`
+        + (buffed ? ' (hero-buffed max)' : '')
+        + ` · ${fmtHpPct(r.hpPct)}%`;
+    });
+  }
+  const heroEcho = {};
+  for (const { key } of SIDES) {
+    const e = $(`${key}-hero-hp-echo`);
+    const h = state[key].hero;
+    if (!e) continue;
+    if (!h) { e.textContent = ''; continue; }
+    const maxHP = heroMaxHP(h.code);
+    if (h.hpBad) {
+      e.textContent = 'not a number — last value kept';
+      e.className = 'field-echo is-warn';
+      continue;
+    }
+    e.className = 'field-echo';
+    // A freshly chosen hero has no hpPct yet; it defaults to full, and reading
+    // it raw printed "NaN of 60 HP".
+    const pct = h.hpPct === undefined ? 100 : h.hpPct;
+    e.textContent = maxHP
+      ? `${fmtLoose(Math.round((pct / 100) * maxHP * 100) / 100)} of `
+        + `${fmtLoose(maxHP)} HP · ${fmtHpPct(pct)}%`
+      : `${fmtHpPct(pct)}%`;
+  }
+  void heroEcho;
+}
+
 function recompute() {
+  // Wrapped, and the wrapping is the point. updateHpEchoes() only writes a
+  // caption under each HP box, and when it threw -- heroMaxHP reached a `defOf`
+  // that is local to renderHero -- it took recompute() with it, so every figure
+  // on the page silently froze at its last value while the inputs kept
+  // accepting edits. A cosmetic helper must not be able to do that.
+  try { updateHpEchoes(); } catch (err) { console.error('HP echo failed', err); }
   const config = currentConfig();
 
   updateStackNotes();
@@ -2317,7 +2473,7 @@ function buildLedger() {
 // back in, so links written before this still decode.
 function encodeState(cfg) {
   const side = (s) => [
-    (s.rows || []).map((r) => [r.unit, r.count, r.hpPct].join('.')).join(','),
+    (s.rows || []).map((r) => [r.unit, r.count, fmtHpPct(r.hpPct)].join('.')).join(','),
     String(s.trench),
     (s.buildings || []).map((b) => [b.code, b.level, b.hpPct].join('.')).join(','),
     s.hero ? [s.hero.code, s.hero.level,
@@ -2334,7 +2490,10 @@ function encodeState(cfg) {
 function decodeBuildings(str) {
   return String(str || '').split(',').map((c) => {
     if (!c) return null;
-    const [code, level, hpPct] = c.split('.');
+    // '.' separates the fields AND appears inside a decimal HP, so the tail
+    // is rejoined rather than taken as one part. Old links still decode.
+    const [code, level, ...hpRest] = c.split('.');
+    const hpPct = hpRest.join('.');
     if (!BUILDINGS[code]) return null;
     return {
       code,
@@ -2360,7 +2519,13 @@ function decodeState(hash) {
 
       // Legacy single-unit link: unit.count.hp.trench ~ building ~ building
       if (chunks.length < 3) {
-        const [unit, count, hp, trench] = chunks[0].split('.');
+        // HP can carry a decimal now, and '.' is also the separator, so the
+        // fields are taken from the ends and the middle is rejoined.
+        const legacy = chunks[0].split('.');
+        const unit = legacy[0];
+        const count = legacy[1];
+        const trench = legacy.length > 3 ? legacy[legacy.length - 1] : undefined;
+        const hp = legacy.slice(2, legacy.length > 3 ? -1 : undefined).join('.');
         if (!UNITS[unit]) return null;
         return {
           rows: [{ unit, count: clampCount(count), hpPct: clampHp(hp) }],
@@ -2377,7 +2542,8 @@ function decodeState(hash) {
       const rows = [];
       for (const chunk of chunks[0].split(',')) {
         if (!chunk) continue;
-        const [unit, count, hp] = chunk.split('.');
+        const [unit, count, ...hpRest] = chunk.split('.');
+        const hp = hpRest.join('.');
         if (!UNITS[unit] || seen.has(unit)) continue;
         seen.add(unit);
         rows.push({ unit, count: clampCount(count), hpPct: clampHp(hp) });
@@ -2388,13 +2554,14 @@ function decodeState(hash) {
       // chunks[3] is absent in every link written before heroes were carried.
       let hero = null;
       if (chunks[3]) {
-        const [code, level, hpPct] = chunks[3].split('.');
+        const [code, level, ...hpRest2] = chunks[3].split('.');
+        const hpPct = hpRest2.join('.');
         const hdef = HEROES[code] || HEROES_REFUSED[code];
         if (hdef) {
           hero = {
             code,
             level: Math.min(hdef.maxLevel || 20, Math.max(1, Number(level) || 1)),
-            hpPct: Math.min(100, Math.max(1, Number(hpPct) || 100)),
+            hpPct: clampHp(hpPct),
           };
         }
       }

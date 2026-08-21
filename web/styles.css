@@ -797,3 +797,9 @@ input:hover, select:hover { border-color: var(--muted); }
 .repair-res li b { font-weight: 600; }
 .repair-res li.is-zero { display: none; }
 .repair-note { margin: .4rem 0 0; font-size: .76rem; color: var(--muted, #5a6472); }
+
+/* The HP box shows the same figure the other way round: type a percentage and
+   see absolute hit points, type absolute and see the percentage. */
+.field-echo { display: block; margin-top: .2rem; font-size: .72rem;
+              color: var(--muted, #5a6472); font-variant-numeric: tabular-nums; }
+.field-echo.is-warn { color: var(--warn-fg, #9a3412); }
