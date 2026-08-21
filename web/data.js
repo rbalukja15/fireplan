@@ -1463,12 +1463,28 @@ export const NOT_MEASURED = [
 // measured, how well, and what it is NOT evidence for.
 
 export const PROVENANCE = {
+  'BUILDINGS.hpBar': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=fortress_hp_scale \u2014 four settings of the same level-4 fortress, one round each.',
+    method: "Ask the field what it counts. '5' and '10%' produce the byte-identical battle, and so do '50' and '100%', so the bar is 0-50 WHATEVER the level and a percentage is a percentage of that band, not of the pool. The site prints its own damage reduction on the building row, which converts straight back to a pool through DR = 0.15 x (hp/50 + 1): 75.0% is 200 HP and 61.5% is 155.",
+    tolerance: 'Exact. pool = (level - 1) x 50 + top-band HP reproduces all four settings, and it is the same arithmetic the site uses to REPORT a battered fortress \u2014 one reading on file has a 250 HP fortress emerge from a round as \u201clevel 5, 41.5\u201d, which is 4 x 50 + 41.5 = 241.5.',
+    notEvidenceFor: 'Buildings whose levels are not uniform. One of them holds 35 HP at level 3 with 20 in the top level, so it has no 50-HP band to take a percentage on; for those the engine keeps the old proportional reading and says so.',
+  },
+  'BUILDINGS.hpBar.correction': {
+    confidence: 'measured',
+    note: 'This engine read a building\u2019s HP percentage as a fraction of the WHOLE pool, which is the same number at 100% and wrong at every other value. Every fortress ever measured here was entered at 100%, so nothing in the record could separate the two readings \u2014 the third time in this project that a law was right only because the data had never varied the axis that would break it. A level-4 fortress at 5/50 came out as 20 HP and 21% damage reduction where the site gives 155 and 61.5%.',
+  },
+  'RESULTS.relabelled': {
+    confidence: 'measured',
+    note: 'Five real_army rows carried meta.fortress = "lvl4 hp5" while their payload had actually sent 100%: the edit meant to set the fortress HP had landed in a different experiment, and the metadata was written from the variable rather than from what was submitted. The readings themselves are sound and duplicate the earlier full-fortress runs exactly, so they were RELABELLED from the building row rather than deleted \u2014 a fortress pool of 200 is full, 155 is 5/50 \u2014 and each carries a `relabelled` field saying so. Recorded because a mislabelled row is worse than a missing one: it replays silently against the wrong configuration and blames the model.',
+  },
+
   'REAL_ARMY.validation': {
     confidence: 'measured',
     source: 'results.jsonl, experiment=real_army \u2014 two armies read off a player\u2019s own screen, submitted to the live site at 1, 2, 3, 5, 6, 7, 8, 10, 20 and 100 rounds.',
     method: 'End-to-end rather than isolating: 35 infantry at 453.6/700 plus 6 armoured cars and 17 cavalry, all damaged, attacking 12 armoured cars with Orhan \u201cKangal\u201d Demir behind a full level-4 fortress. Every other measurement in this project isolates ONE law, which is exactly what makes a law that is individually right and wrongly COMBINED invisible.',
     tolerance: 'Round 1 exact to the printed 0.01 on both sides, both hero levels, and on the fortress, at BOTH fortress levels submitted. Agreement holds while both sides are healthy and decays as the loser nears death \u2014 which is a better predictor than the round number, since a level-3 fortress falls sooner and its round 5 sits as deep into the battle as a level-4\u2019s round 7. At the corrected level 3 the model is exact at round 1, 0.5% out at round 3, 1.4% at round 5, and 1.6% on the attacker\u2019s total in a battle fought to the end \u2014 with the defender\u2019s total and the fortress both exact.',
-    notEvidenceFor: 'Anything about the live GAME. The battle was first submitted against a level-4 fortress on a misreading, where the site gives 75% damage reduction against the player\u2019s in-game panel reading 62% \u2014 a gap that looked like a site-versus-game divergence and was not. At the actual level 3 the site gives exactly 60.0%, which this engine reproduces to the digit. Two points still separate that from the panel\u2019s 62%, and this project cannot say whether that is a real difference or something else the panel is counting.',
+    notEvidenceFor: 'Anything about the live GAME beyond one striking agreement. The player\u2019s in-game panel reads 62% fortification; the fortress turned out to be level 4 at 5/50 on its bar, and the site gives that exactly 61.5%, which this engine reproduces. Two earlier readings of the same fortress \u2014 level 4 full (75%) and level 3 full (60%) \u2014 were both wrong, and each briefly looked like a site-versus-game divergence. It was neither; it was the building being specified wrongly, twice.',
   },
   'REAL_ARMY.endgameDrift': {
     confidence: 'measured',

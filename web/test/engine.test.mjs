@@ -3158,7 +3158,7 @@ console.log('\n14. coverage of the record itself');
     'bombardment_law', 'bombardment_own', 'bombardment_finish',
     'bombardment_lucien2', 'togo_buff_clean',
     'mutual', 'mutual_law', 'mutual_order', 'mutual_control', 'mutual_rounds',
-    'real_army'];
+    'real_army', 'fortress_hp_scale'];
   const notReplayed = Object.keys(counts).filter(
     (e) => !replayed.includes(e) && !replayedLater.includes(e));
   console.log(`  note  replayed: ${replayed.map((e) => `${e} ${counts[e] || 0}`).join(', ')}`);
@@ -4189,10 +4189,10 @@ console.log('\n23. a real army');
   // first said level 4 and then corrected it to 3, and both sets of readings
   // are on file. A hard-coded 4 would have replayed the level-3 rows against
   // the wrong building and blamed the engine.
-  const DEF = (lv, fortLevel = 4) => ({
+  const DEF = (lv, fortLevel = 4, fortPct = 100) => ({
     rows: [{ unit: 'ac', count: 12, hpPct: (677.5 / 720) * 100 }],
     hero: { code: 'kangal', level: lv, hpPct: (83.1 / 90) * 100 },
-    buildings: [{ code: 'fortress', level: fortLevel, hpPct: 100 }],
+    buildings: [{ code: 'fortress', level: fortLevel, hpPct: fortPct }],
   });
 
   check('the roster maxima match the game\'s own display',
@@ -4208,6 +4208,32 @@ console.log('\n23. a real army');
   check('...and a full level-4 one by 75%',
     Math.abs(fortressDR(BUILDINGS.fortress.poolAtLevel[4]) - 0.75) < 1e-9);
 
+
+  // A BUILDING'S HP BAR IS THE TOP LEVEL ONLY. The site's field treats "5" and
+  // "10%" as the same fortress, and "50" and "100%" likewise, so the bar is
+  // 0-50 whatever the level and a percentage is a percentage OF THAT BAND.
+  // Damage comes off the top: pool = (level - 1) x 50 + top-band HP.
+  for (const [lvl, pct, wantPool, wantDR] of [
+    [4, 100, 200, 0.750], [4, 10, 155, 0.615],
+    [3, 100, 150, 0.600], [5, 100, 250, 0.900]]) {
+    const r = simulate({
+      attacker: { rows: [{ unit: 'inf', count: 10 }] },
+      defender: { rows: [{ unit: 'inf', count: 10 }],
+        buildings: [{ code: 'fortress', level: lvl, hpPct: pct }] },
+      rounds: 1 });
+    const b = r.defender.buildings[0];
+    check(`a level-${lvl} fortress at ${pct}% of its bar holds ${wantPool} HP`,
+      Math.abs((b.hp + b.hpLost) - wantPool) < 0.01,
+      `${(b.hp + b.hpLost).toFixed(2)} — proportional-to-pool would give `
+        + `${(BUILDINGS.fortress.poolAtLevel[lvl] * pct / 100).toFixed(2)}`);
+    check(`...and reduces damage by ${(wantDR * 100).toFixed(1)}%`,
+      Math.abs(fortressDR(b.hp + b.hpLost) - wantDR) < 1e-6,
+      `${fortressDR(b.hp + b.hpLost)}`);
+  }
+  check('the two readings that separate the laws are on file',
+    rows.some((x) => x.experiment === 'fortress_hp_scale'),
+    'exp_fortress_hp_scale asked the site what its HP field counts');
+
   // Replay every reading of this battle that is on file, at the tolerance the
   // comparison actually supports: exact for one round, then a drift that is
   // documented rather than tuned away.
@@ -4219,9 +4245,18 @@ console.log('\n23. a real army');
     const wantA = (s['A.1'] || {}).hp_lost;
     const wantB = (s['B.1'] || {}).hp_lost;
     if (wantA == null || wantB == null) continue;
+    // The fortress spec on the record is "lvl4 100%" for the early runs and
+    // "lvl4 hp5" once the player corrected it -- level 4 but battered, 5 of the
+    // 50-HP top band. Both forms are parsed rather than assumed, because the
+    // whole point of this section is that a wrong building silently blames the
+    // engine.
     const fortLevel = Number((/lvl(\d)/.exec(m.fortress || '') || [])[1]) || 4;
+    const fortAbs = /hp(\d+(?:\.\d+)?)/.exec(m.fortress || '');
+    const fortPct = fortAbs
+      ? (Number(fortAbs[1]) / BUILDINGS.fortress.hpPerLevel) * 100
+      : (Number((/(\d+)%/.exec(m.fortress || '') || [])[1]) || 100);
     const r = simulate({ attacker: ATK(),
-      defender: DEF(m.hero_level, fortLevel), rounds: m.rounds });
+      defender: DEF(m.hero_level, fortLevel, fortPct), rounds: m.rounds });
     replayed += 1;
     // "Fought out" is not a round number -- rounds 6, 7 and 8 are still
     // running. It is whether the recorded battle ENDED, which the defender's
@@ -4237,10 +4272,10 @@ console.log('\n23. a real army');
     const DEF_POOL = 760.6;
     const tight = wantB < DEF_POOL * 0.65;
     if (tight) {
-      check(`real army (fort ${fortLevel}), ${m.rounds} rd, hero lv${m.hero_level}: attacker ${wantA}`,
+      check(`real army (fort ${fortLevel}@${Math.round(fortPct)}%), ${m.rounds} rd, hero lv${m.hero_level}: attacker ${wantA}`,
         Math.abs(r.attacker.hpLost - wantA) <= Math.max(0.05, wantA * 0.01),
         `got ${r.attacker.hpLost.toFixed(2)}`);
-      check(`real army (fort ${fortLevel}), ${m.rounds} rd, hero lv${m.hero_level}: defender ${wantB}`,
+      check(`real army (fort ${fortLevel}@${Math.round(fortPct)}%), ${m.rounds} rd, hero lv${m.hero_level}: defender ${wantB}`,
         Math.abs(r.defender.hpLost - wantB) <= Math.max(0.05, wantB * 0.01),
         `got ${r.defender.hpLost.toFixed(2)}`);
     } else if (foughtOut) {
@@ -4255,7 +4290,9 @@ console.log('\n23. a real army');
         wantA, r.attacker.hpLost,
         'tracks to 1% through round 5 then compounds — REAL_ARMY.endgameDrift');
       cannotReproduce(`real army fought out (fort ${fortLevel}, hero lv${m.hero_level}), fortress total`,
-        BUILDINGS.fortress.poolAtLevel[fortLevel], r.defender.buildings[0].hpLost,
+        BUILDINGS.fortress.poolAtLevel[fortLevel]
+          - BUILDINGS.fortress.hpPerLevel * (1 - fortPct / 100),
+        r.defender.buildings[0].hpLost,
         'the site finishes the fortress; this model leaves it at 97-100%');
     } else {
       // Rounds 6-8: mid-drift. Reported with the actual figures rather than

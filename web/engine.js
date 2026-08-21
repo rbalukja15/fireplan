@@ -1171,9 +1171,42 @@ function makeSide(cfg, role, derivation, caveats, battle) {
       caveats.push(`${label}: ${def.label} HP at level ${lvl} is unmeasured — its HP is not `
         + 'uniform per level (35 total at L3 with 20 in the top level), so it cannot be extrapolated.');
     }
+    // A BUILDING'S HP BAR IS THE TOP LEVEL ONLY, not the whole pool. The game
+    // shows a level-4 fortress as "5 / 50" and the site's field agrees: "5"
+    // and "10%" produce the identical battle, and "50" and "100%" likewise, so
+    // the bar is 0-50 whatever the level and a percentage is a percentage OF
+    // THAT BAND. Damage comes off the top, which is why the site reports a
+    // battered fortress as a LEVEL plus a top-band figure -- one reading on
+    // file has a 250 HP fortress come out of a round as "level 5, 41.5".
+    //
+    //     pool = (level - 1) x 50 + top-band HP
+    //
+    // This used to read full x (pct/100), which is the same number at 100% and
+    // wrong everywhere else -- and every fortress ever measured here was
+    // entered at 100%, so nothing in the record could show it. A level-4
+    // fortress at 5/50 came out as 20 HP and 21% damage reduction where the
+    // site gives 155 and 61.5%.
+    const band = (def.hpPerLevel === null || def.hpPerLevel === undefined)
+      ? null : def.hpPerLevel;
+    let bHp = null;
+    if (full !== null) {
+      if (band === null) {
+        // Non-uniform levels: no band size to take the percentage on, so the
+        // old proportional reading stands and says so.
+        bHp = full * (bHpPct / 100);
+        if (bHpPct !== 100) {
+          caveats.push(`${label}: ${def.label} HP is not uniform per level, so `
+            + 'what a partial HP bar means for it was never measured. The '
+            + 'percentage is applied to the whole pool, which is how a '
+            + 'fortress does NOT behave.');
+        }
+      } else {
+        bHp = Math.max(0, full - band * (1 - bHpPct / 100));
+      }
+    }
     side.buildings.push({
       code: def.code, label: def.label, level: lvl,
-      hpFull: full, hp: full === null ? null : full * (bHpPct / 100),
+      hpFull: full, hp: bHp,
       hpLost: 0, destroyed: false, mitigates: def.mitigates,
     });
   }

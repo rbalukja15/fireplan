@@ -10231,7 +10231,8 @@ def exp_real_army(p: Probe) -> None:
     # twice over -- it is 150 HP rather than 200, and its damage reduction is
     # 0.15 x (150/50 + 1) = 60% rather than 75%, which is far closer to the
     # 62% their own in-game panel reads.
-    FORT_LVL = "3"
+    FORT_LVL = "4"
+    FORT_HP = "5"      # the game shows 5 / 50 — the TOP-BAND bar
     ATK = [("inf", 35, "453.6"), ("ac", 6, "318.1"), ("cav", 17, "378.1")]
     DEF = [("ac", 12, "677.5")]
     abb, lvl, hhp = HERO_FIELDS          # the hero is on the DEFENDING side
@@ -10249,7 +10250,7 @@ def exp_real_army(p: Probe) -> None:
             ov[f"B.1.{i}.hp"] = hp
         ov.update({abb: "kangal", lvl: str(hero_level), hhp: "83.1"})
         ov.update({"B.1.bldg.1.abb": "fortress", "B.1.bldg.1.lvl": FORT_LVL,
-                   "B.1.bldg.1.hp": "100%"})
+                   "B.1.bldg.1.hp": FORT_HP})
         return ov
 
     fields = HERO_FIELDS + ("B.1.bldg.1.abb", "B.1.bldg.1.lvl", "B.1.bldg.1.hp") \
@@ -10257,7 +10258,7 @@ def exp_real_army(p: Probe) -> None:
 
     # The hero badge reads a star and a 9; the "Level 1" beside every unit is
     # the TECH level. Both readings are submitted rather than guessed between.
-    for hero_level, ladder in ((9, (1, 3, 5, 100)), (1, (1, 100))):
+    for hero_level, ladder in ((9, (1, 3, 100)), (1, (1, 100))):
         for rounds in ladder:
             ov = build(rounds, hero_level)
             try:
@@ -10268,7 +10269,7 @@ def exp_real_army(p: Probe) -> None:
             d = dict(p.last_details)
             record("real_army",
                    {"hero_level": hero_level, "rounds": rounds,
-                    "attacker": ATK, "defender": DEF, "fortress": f"lvl{FORT_LVL} 100%",
+                    "attacker": ATK, "defender": DEF, "fortress": f"lvl{FORT_LVL} hp{FORT_HP}",
                     "detail": d, "summary": dict(p.last_summary)},
                    {k: (v or {}).get("lost") for k, v in d.items()})
             print(f"\n  === Kangal level {hero_level}, {rounds} round(s)")
@@ -10283,6 +10284,61 @@ def exp_real_army(p: Probe) -> None:
             for stack, s in (p.last_summary or {}).items():
                 print(f"    {stack} summary: {s.get('hp_lost')} HP lost, "
                       f"{s.get('hours')} h to repair, ${s.get('cash')}")
+
+
+def exp_fortress_hp_scale(p: Probe) -> None:
+    """What does the site's fortress HP field actually count?
+
+    A player reports a LEVEL 4 fortress reading "5 / 50" in game. This project
+    measured the site's level-4 fortress as a 200 HP pool -- 50 per level -- so
+    the two are not on the same scale and "5" could mean 5 of 200 (2.5%) or the
+    10% the player's own bar shows. Those are different fortresses: the damage
+    reduction is 0.15 x (hp/50 + 1), so 5 of 200 gives 16.5% and 20 of 200
+    gives 21%.
+
+    The site prints its own damage reduction on the building row, so it can
+    simply be asked. Three settings, one round each, with everything else held
+    where the real battle has it.
+    """
+    ATK = [("inf", 35, "453.6"), ("ac", 6, "318.1"), ("cav", 17, "378.1")]
+    abb, lvl, hhp = HERO_FIELDS
+    print(f"\n  {'hp field':>10}{'fort lost':>11}{'of pool':>9}"
+          f"{'DR before':>11}{'DR after':>10}   what the field meant")
+    for hp_field in ("100%", "10%", "5", "50"):
+        ov = settings(1)
+        ov.update(duel(1, "inf", 35, "ac", 12))
+        for i, (u, n, hp) in enumerate(ATK, start=1):
+            ov[f"A.1.{i}.unit"] = u
+            ov[f"A.1.{i}.count"] = str(n)
+            ov[f"A.1.{i}.hp"] = hp
+        ov["B.1.1.unit"] = "ac"
+        ov["B.1.1.count"] = "12"
+        ov["B.1.1.hp"] = "677.5"
+        ov.update({abb: "kangal", lvl: "9", hhp: "83.1"})
+        ov.update({"B.1.bldg.1.abb": "fortress", "B.1.bldg.1.lvl": "4",
+                   "B.1.bldg.1.hp": hp_field})
+        fields = HERO_FIELDS + ("B.1.bldg.1.abb", "B.1.bldg.1.lvl",
+                                "B.1.bldg.1.hp") \
+            + composite_fields("A", 1, 3) + composite_fields("B", 1, 1)
+        try:
+            p.submit(ov, create=fields)
+        except (BareFormReturned, ValueError) as e:
+            print(f"  {hp_field:>10}  refused: {e}"[:96])
+            continue
+        d = dict(p.last_details)
+        record("fortress_hp_scale",
+               {"level": 4, "hp_field": hp_field, "detail": d,
+                "summary": dict(p.last_summary)},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        b = d.get("B.1.bldg.1") or {}
+        pool = b.get("pool")
+        dr0, dr1 = b.get("dr_before"), b.get("dr_after")
+        # DR = 0.15 x (hp/50 + 1)  ->  hp = 50 x (DR/0.15 - 1)
+        implied = (50.0 * ((dr0 or 0) / 100.0 / 0.15 - 1.0)) if dr0 else None
+        meaning = ("" if implied is None
+                   else f"pool {pool}, so the field set {implied:.1f} HP")
+        print(f"  {hp_field:>10}{str(b.get('lost')):>11}{str(pool):>9}"
+              f"{str(dr0):>11}{str(dr1):>10}   {meaning}")
 
 
 EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
@@ -10301,6 +10357,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "mutual_law": exp_mutual_law,
     "mutual_order": exp_mutual_order,
     "real_army": exp_real_army,
+    "fortress_hp_scale": exp_fortress_hp_scale,
     "range_roster": exp_range_roster,
     "return_fire": exp_return_fire,
     "mixed_range": exp_mixed_range,

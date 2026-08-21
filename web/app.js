@@ -1083,7 +1083,13 @@ function renderBuildings(side) {
     hp.min = '0.1'; hp.max = '100'; hp.step = 'any';
     hp.value = String(b.hpPct);
     hp.id = uid + '-hp';
-    hp.setAttribute('aria-label', `Building ${i + 1} HP percent`);
+    // The bar is the TOP LEVEL only, 0-50, exactly as the game shows it: a
+    // level-4 fortress reads "5 / 50" when it is battered, not "20 / 200".
+    hp.setAttribute('aria-label',
+      `Building ${i + 1}: percent of the top level's HP bar`);
+    hp.title = 'Percent of the TOP level\u2019s 50-HP bar, which is the bar the '
+      + 'game shows. A level-4 fortress at 5/50 is 10% here, and holds '
+      + '3x50 + 5 = 155 HP in total.';
     hp.addEventListener('input', () => {
       const n = Number(hp.value);
       b.hpPct = Number.isFinite(n) ? Math.min(100, Math.max(0.1, n)) : 100;
