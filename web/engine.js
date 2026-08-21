@@ -1699,6 +1699,11 @@ function runSimulation(config, derivation, caveats) {
   const wholeRounds = patrol.applies ? Math.max(1, Math.ceil(rounds)) : rounds;
   const patrolTail = patrol.applies && rounds > 1 ? rounds - Math.floor(rounds) : 0;
   const loopRounds = outOfRange ? 0 : wholeRounds;
+  // How many rounds were actually FOUGHT, which is not the number asked for:
+  // the loop stops the moment a side's pool is gone. The page needs this so it
+  // can say "decided in round 7" rather than making the reader choose a round
+  // count they have no way of knowing in advance.
+  let roundsFought = 0;
   for (let r = 1; r <= loopRounds; r += 1) {
     const tag = loopRounds > 1 ? `R${r} ` : '';
     // Rounds after the first fight with what is left: fewer units, and those
@@ -1725,6 +1730,7 @@ function runSimulation(config, derivation, caveats) {
       });
       break;
     }
+    roundsFought = r;
 
     // The patrol fixed point is per ROUND: each side fires with what survives a
     // fraction of THIS round's losses, and the stacks entering round five are
@@ -2360,6 +2366,15 @@ function runSimulation(config, derivation, caveats) {
   return {
     attacker: sideResult(atk, false),
     defender: sideResult(def, false),
+    // `asked` is what was requested; `fought` is what happened. They differ the
+    // moment a side is destroyed, and `decided` says the battle ended on its
+    // own rather than running out of rounds.
+    rounds: {
+      asked: rounds,
+      fought: roundsFought,
+      decided: !!(atk.wiped || def.wiped),
+      ranOut: !(atk.wiped || def.wiped) && roundsFought >= Math.floor(loopRounds),
+    },
     coverage: { level, reason: reasons.join(' '), caveats, pairs: matchup.pairs || [] },
     derivation,
   };

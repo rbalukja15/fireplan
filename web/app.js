@@ -278,7 +278,16 @@ const DEFAULT_STATE = () => ({
   // Both stacks attacking each other. Measured as TWO engagements, and it is
   // the half of the form this project never submitted until now.
   mutual: false,
+  // FIGHT IT OUT BY DEFAULT. Nobody knows the round number in advance -- it is
+  // an OUTPUT of the battle, not an input to it -- and asking for one was this
+  // research rig leaking into the product, because every MEASUREMENT used
+  // exactly one round. The source calculator ships with maxRounds at 100 and
+  // its help page says a battle runs "until one side dies" unless you say
+  // otherwise, so this is also the faithful default.
+  fightToEnd: true,
 });
+
+const FIGHT_OUT_ROUNDS = 100;
 
 let state = DEFAULT_STATE();
 
@@ -393,7 +402,7 @@ function boot() {
   $('builders').addEventListener('change', onCommit);
   $('rounds').addEventListener('input', onInput);
   $('rounds').addEventListener('change', onCommit);
-  for (const id of ['terrain', 'def-terrain', 'distance', 'mutual']) {
+  for (const id of ['terrain', 'def-terrain', 'distance', 'mutual', 'fight-out']) {
     if (!$(id)) continue;
     $(id).addEventListener('input', onInput);
     $(id).addEventListener('change', onCommit);
@@ -1135,6 +1144,13 @@ function writeStateToDom() {
   if ($('terrain')) $('terrain').value = state.terrain;
   if ($('def-terrain')) $('def-terrain').value = state.defenderTerrain || '';
   if ($('mutual')) $('mutual').checked = !!state.mutual;
+  if ($('fight-out')) {
+    $('fight-out').checked = !!state.fightToEnd;
+    const box = $('rounds');
+    const lab = $('rounds-label');
+    if (box) { box.disabled = !!state.fightToEnd; box.hidden = !!state.fightToEnd; }
+    if (lab) lab.hidden = !!state.fightToEnd;
+  }
   if ($('distance')) $('distance').value = String(state.distance);
   $('mode').value = state.mode === 'patrol' ? 'patrol' : 'strike';
   renderBuildings('attacker');
@@ -1179,6 +1195,7 @@ function readDomToState() {
     state.distance = Number.isFinite(dkm) && dkm > 0 ? Math.round(dkm) : 0;
   }
   if ($('mutual')) state.mutual = !!$('mutual').checked;
+  if ($('fight-out')) state.fightToEnd = !!$('fight-out').checked;
 }
 
 function onInput() {
@@ -1232,7 +1249,10 @@ function currentConfig() {
   return {
     attacker: cloneSide(state.attacker),
     defender: cloneSide(state.defender),
-    rounds: state.rounds,
+    // 100 is the source calculator's own default, and the cap this project
+    // has measured up to. The engine stops the moment a side is destroyed, so
+    // for most battles the number never binds.
+    rounds: state.fightToEnd ? FIGHT_OUT_ROUNDS : state.rounds,
     mode: state.mode,
     terrain: state.terrain,
     // Omitted rather than passed empty: the engine defaults it to the
@@ -1243,6 +1263,35 @@ function currentConfig() {
   };
 }
 
+
+/** What the rounds control is currently doing, in words. */
+function updateRoundsNote(result) {
+  // The box's enabled state belongs here, with the rest of this control's
+  // presentation. It was only set in writeStateToDom(), which runs at start-up
+  // and not on every edit -- so unticking "fight to the finish" left the rounds
+  // box greyed out and unusable, which is precisely the silent-dead-control
+  // failure this project has now hit three times.
+  // Hidden, not merely greyed out. The point of the default is that the reader
+  // does not have to think about rounds at all, and a disabled box labelled
+  // "stop after (rounds)" still asks them to.
+  const box = $('rounds');
+  const lab = $('rounds-label');
+  if (box) { box.disabled = !!state.fightToEnd; box.hidden = !!state.fightToEnd; }
+  if (lab) lab.hidden = !!state.fightToEnd;
+  const note = $('rounds-note');
+  if (!note) return;
+  const rd = (result && result.rounds) || {};
+  if (state.fightToEnd) {
+    note.textContent = rd.decided
+      ? `Running until one side is destroyed, which happened in round `
+        + `${fmtLoose(rd.fought)}. Untick to stop after a fixed number instead.`
+      : 'Running until one side is destroyed, or 100 rounds — the source '
+        + 'calculator\u2019s own default. Untick to stop after a fixed number.';
+  } else {
+    note.textContent = 'Stopping after a fixed number of rounds, whether or '
+      + 'not the battle is over. Tick "fight to the finish" to let it run.';
+  }
+}
 
 function recompute() {
   // Wrapped, and the wrapping is the point. updateHpEchoes() only writes a
@@ -1278,6 +1327,7 @@ function recompute() {
   renderCoverage(result.coverage, config);
   renderScoreboard(result, config);
   renderVerdict(result, config);
+  updateRoundsNote(result);
   renderSanity(result, config);
   renderDerivation(result.derivation);
   renderSticky(result);
@@ -1861,8 +1911,24 @@ function renderVerdict(result, config) {
       parts.push(`The defender loses the larger share of its pool (${dn.toFixed(1)}% against ${an.toFixed(1)}%) — the exchange favours the attacker.`);
     }
   }
-  const r = Number(config.rounds);
-  parts.push(r === 1 ? 'One round.' : `${fmtLoose(r)} rounds — extrapolated.`);
+  // SAY WHICH ROUND IT ENDED IN, rather than reciting the round count that was
+  // typed in. The round number is an OUTPUT of a battle; asking the reader for
+  // one was this research rig leaking into the product.
+  const rd = result.rounds || {};
+  const asked = Number(config.rounds);
+  if (rd.decided) {
+    const loser = a.wiped && d.wiped ? 'both stacks are'
+      : a.wiped ? 'the attacker is' : 'the defender is';
+    parts.push(rd.fought === 1
+      ? `Decided in the first round — ${loser} destroyed.`
+      : `Decided in round ${fmtLoose(rd.fought)} — ${loser} destroyed.`);
+  } else if (state.fightToEnd) {
+    parts.push(`Still fighting after ${fmtLoose(rd.fought || asked)} rounds — `
+      + 'neither stack is destroyed.');
+  } else {
+    parts.push(asked === 1 ? 'One round.'
+      : `${fmtLoose(asked)} rounds, stopped there.`);
+  }
   sub.textContent = parts.join(' ');
 
   const v = $('verdict');
@@ -2495,7 +2561,8 @@ function encodeState(cfg) {
     + (cfg.terrain && cfg.terrain !== 'land' ? `&t=${cfg.terrain}` : '')
     + (cfg.defenderTerrain ? `&dt=${cfg.defenderTerrain}` : '')
     + (cfg.distance ? `&km=${cfg.distance}` : '')
-    + (cfg.mutual ? '&mu=1' : '');
+    + (cfg.mutual ? '&mu=1' : '')
+    + (state.fightToEnd ? '&fo=1' : '');
 }
 
 function decodeBuildings(str) {
@@ -2598,6 +2665,7 @@ function decodeState(hash) {
         ? parts.dt : '',
       distance: Number.isFinite(km) && km > 0 ? Math.round(km) : 0,
       mutual: parts.mu === '1',
+      fightToEnd: parts.fo === '1',
     };
   } catch {
     return null;

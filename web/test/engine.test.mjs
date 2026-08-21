@@ -3429,6 +3429,25 @@ console.log('\n16. the page can express what the engine models');
   check('and the HP box points at the stats line for screen readers',
     /hp\.setAttribute\('aria-describedby', uid \+ '-stats'\)/.test(app));
 
+
+  // ---- ROUNDS ARE AN OUTPUT, NOT AN INPUT --------------------------------
+  // The page used to require a round count, defaulting to 1, because every
+  // MEASUREMENT behind this model used exactly one round. That is the research
+  // rig leaking into the product: nobody knows in advance how long a battle
+  // lasts, and the source calculator ships with maxRounds at 100 and a help
+  // page saying a battle runs "until one side dies" unless told otherwise.
+  check('the page has a fight-to-the-finish control, on by default',
+    /id="fight-out"[^>]*checked/.test(html));
+  check('and it is read and wired like every other global control',
+    /state\.fightToEnd = !!\$\('fight-out'\)\.checked/.test(app)
+    && /'fight-out'/.test((app.match(/for \(const id of \[[^\]]*\]\)/) || [''])[0]));
+  check('the share link carries it',
+    /&fo=1/.test(app) && /fightToEnd: parts\.fo === '1'/.test(app));
+  check('the rounds box is enabled from the RENDER path, not just at start-up',
+    /function updateRoundsNote[\s\S]{0,700}box\.disabled = !!state\.fightToEnd/.test(app),
+    'set only in writeStateToDom it stayed greyed out after unticking — the '
+      + 'same dead-control failure as the defender-terrain select');
+
   // The share link. It carried the stacks and dropped terrain, distance and
   // the hero, so "Copy link" handed out a link to a DIFFERENT battle.
   for (const [re, what] of [
@@ -4179,6 +4198,28 @@ console.log('\n22. mutual attacks');
 // by black-box measurement: 35x20=700, 6x60=360, 17x25=425, 12x60=720 and
 // Kangal's 90 are exactly what the game itself displays.
 console.log('\n23. a real army');
+{
+  const A = { rows: [{ unit: 'inf', count: 30 }] };
+  const D = { rows: [{ unit: 'inf', count: 30 }] };
+  const one = simulate({ attacker: A, defender: D, rounds: 1 });
+  check('a single round reports one round fought and no decision',
+    one.rounds.fought === 1 && one.rounds.decided === false,
+    JSON.stringify(one.rounds));
+  const out = simulate({ attacker: A, defender: D, rounds: 100 });
+  check('fought to the finish, it stops when a side dies and says which round',
+    out.rounds.decided === true && out.rounds.fought > 1 && out.rounds.fought < 100,
+    JSON.stringify(out.rounds));
+  check('...and asking for more rounds than that changes nothing',
+    simulate({ attacker: A, defender: D, rounds: 500 }).rounds.fought === out.rounds.fought);
+  // The same even pair, stopped early: it takes seven rounds to decide, so at
+  // three it has not. (A weak stack against a strong one is NOT this test --
+  // that decides in round one.)
+  const stale = simulate({ attacker: A, defender: D, rounds: 3 });
+  check('a battle that runs out of rounds reports ranOut, not decided',
+    stale.rounds.decided === false && stale.rounds.ranOut === true,
+    JSON.stringify(stale.rounds));
+}
+
 {
   const ATK = () => ({ rows: [
     { unit: 'inf', count: 35, hpPct: (453.6 / 700) * 100 },
