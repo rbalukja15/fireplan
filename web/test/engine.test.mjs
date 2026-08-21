@@ -47,6 +47,7 @@ import {
   HEROES,
   REPAIR_COST, REPAIR_HOURS, HERO_REPAIR,
   BOMBARDMENT, BOMBARDMENT_SPLIT, HERO_REACH,
+  MUTUAL,
 } from '../data.js';
 import {
   heroBuff,
@@ -3155,7 +3156,8 @@ console.log('\n14. coverage of the record itself');
   // rather than left to look unreplayed.
   const replayedLater = ['repair_cost', 'repair_damaged', 'bombardment',
     'bombardment_law', 'bombardment_own', 'bombardment_finish',
-    'bombardment_lucien2', 'togo_buff_clean'];
+    'bombardment_lucien2', 'togo_buff_clean',
+    'mutual', 'mutual_law', 'mutual_order', 'mutual_control', 'mutual_rounds'];
   const notReplayed = Object.keys(counts).filter(
     (e) => !replayed.includes(e) && !replayedLater.includes(e));
   console.log(`  note  replayed: ${replayed.map((e) => `${e} ${counts[e] || 0}`).join(', ')}`);
@@ -3348,9 +3350,32 @@ console.log('\n16. the page can express what the engine models');
 
   // The listener. This is the one that failed: present in the markup, read in
   // readGlobals, and absent from the list of ids that get wired.
+  // DERIVED, not hard-coded. This used to assert the literal list
+  // ['terrain', 'def-terrain', 'distance'], which meant the guard broke the
+  // moment a fourth control was added — and a guard that fails on every
+  // addition teaches people to edit the guard rather than read it. It now
+  // reads the ids the app actually pulls out of the DOM in readDomToState()
+  // and requires each one to be wired, which is the property that matters and
+  // is the same fix coverageOf() got: derive the claim, do not restate it.
+  const readsBlock = (app.match(/function readDomToState\(\)[\s\S]*?\n\}/)
+    || [''])[0];
+  const readIds = [...new Set(
+    [...readsBlock.matchAll(/\$\('([a-z-]+)'\)/g)].map((mm) => mm[1]))];
+  const listenList = (app.match(/for \(const id of \[([^\]]*)\]\)/) || [
+    '', ''])[1];
+  const listened = [...listenList.matchAll(/'([a-z-]+)'/g)].map((mm) => mm[1]);
+  const wiredElsewhere = ['rounds', 'mode', 'builders'];
+  const unwired = readIds.filter(
+    (id) => !listened.includes(id) && !wiredElsewhere.includes(id));
   check('every global control the engine reads is also LISTENED to',
-    /\['terrain', 'def-terrain', 'distance'\]/.test(app),
-    (app.match(/for \(const id of \[[^\]]*\]\) \{/) || ['absent'])[0]);
+    readIds.length >= 4 && unwired.length === 0,
+    unwired.length ? `read but never wired: ${unwired.join(', ')}`
+      : `${readIds.length} read, all wired`);
+  check('the mutual-attack control exists, is read, and is wired',
+    /id="mutual"/.test(html) && readIds.includes('mutual')
+      && listened.includes('mutual'),
+    `markup ${/id="mutual"/.test(html)}, read ${readIds.includes('mutual')}, `
+      + `wired ${listened.includes('mutual')}`);
   check('and the hero HP box has its own listener',
     /hpBox\.addEventListener/.test(app));
 
@@ -3361,6 +3386,7 @@ console.log('\n16. the page can express what the engine models');
     [/&dt=\$\{cfg\.defenderTerrain\}/, 'defender terrain'],
     [/&km=\$\{cfg\.distance\}/, 'distance'],
     [/s\.hero \? \[s\.hero\.code, s\.hero\.level,/, 'the hero, its level and its HP'],
+    [/&mu=1/, 'the mutual-attack flag'],
   ]) {
     check(`the share link carries ${what}`, re.test(app));
   }
@@ -3935,6 +3961,145 @@ console.log('\n21. the bombardment ability');
       `got ${got.defender.hpLost === null ? 'withheld' : got.defender.hpLost.toFixed(2)}`);
   }
   check('the isolated bombardment cells were actually replayed', replayed >= 40,
+    String(replayed));
+}
+
+
+// ===========================================================================
+// 22. MUTUAL ATTACKS — the half of the form that was never submitted
+// ===========================================================================
+// Until this stretch, every reading in results.jsonl was one stack attacking a
+// stack that was only defending: duel() is the only thing in the rig that ever
+// set a B-side target, and it always set 0. The engine therefore could not
+// express a configuration the form has offered since the first request.
+//
+// Measured, a mutual attack is TWO engagements. A attacks; the stacks are
+// updated; then B attacks with what survived, using its own attack column
+// against A's defence column. These checks replay the readings, including the
+// eight that were predicted from the law BEFORE being submitted.
+console.log('\n22. mutual attacks');
+{
+  const M = (au, an, bu, bn, rounds = 1) => simulate({
+    mutual: true,
+    attacker: { rows: [{ unit: au, count: an }] },
+    defender: { rows: [{ unit: bu, count: bn }] },
+    rounds,
+  });
+
+  check('the engine declares a mutual attack as two engagements',
+    MUTUAL.engagements === 2 && MUTUAL.destroyedNeverFires === true);
+
+  // The eight cells predicted in advance, across a roster whose attack and
+  // defence columns disagree in BOTH directions — st is 25.0/6.3 and ac is
+  // 6.0/12.0, so a rule that merely inflated everything fails the armoured car.
+  for (const [bu, wantA, wantB] of [
+    ['st', 226.12, 314.74], ['rrg', 220.67, 314.40], ['cav', 141.45, 250.00],
+    ['ac', 166.10, 315.00], ['inf', 62.00, 200.00], ['lart', 10.00, 100.00],
+    ['art', 51.00, 200.00], ['lt', 577.20, 315.00]]) {
+    const r = M('inf', 100, bu, 10);
+    check(`mutual 100 inf vs 10 ${bu}: attacker loses ${wantA}`,
+      Math.abs(r.attacker.hpLost - wantA) < 0.6,
+      `got ${r.attacker.hpLost.toFixed(2)}`);
+    check(`mutual 100 inf vs 10 ${bu}: defender loses ${wantB}`,
+      Math.abs(r.defender.hpLost - wantB) < 0.6,
+      `got ${r.defender.hpLost.toFixed(2)}`);
+  }
+
+  // A STACK DESTROYED IN ENGAGEMENT 1 NEVER FIRES. This is the whole content
+  // of "Army A attacks first", and it is the one cell that separates the two
+  // engagements from any single simultaneous exchange: a wiped DEFENDER still
+  // deals its full figure, measured long ago and unchanged, while a wiped
+  // mutual attacker deals nothing at all.
+  const dead = M('inf', 100, 'lart', 10);
+  check('ten light artillery are destroyed in engagement 1 and deal nothing',
+    Math.abs(dead.attacker.hpLost - 10.0) < 0.05 && dead.defender.wiped,
+    `attacker lost ${dead.attacker.hpLost.toFixed(2)} — 10.00 is the lart `
+      + 'DEFENCE column firing once, with no second engagement behind it');
+  const wipedDefender = simulate({
+    attacker: { rows: [{ unit: 'inf', count: 100 }] },
+    defender: { rows: [{ unit: 'lart', count: 10 }] }, rounds: 1 });
+  check('...where the same stack merely DEFENDING still deals its full figure',
+    wipedDefender.defender.wiped
+      && Math.abs(wipedDefender.attacker.hpLost - 10.0) < 0.05,
+    `${wipedDefender.attacker.hpLost.toFixed(2)}`);
+
+  // THE SIDE LETTER IS WORTH A FIFTH OF A STACK'S LOSSES.
+  const onA = M('inf', 100, 'st', 10).attacker.hpLost;
+  const onB = M('st', 10, 'inf', 100).defender.hpLost;
+  check('a hundred infantry lose 226.12 on side A and 285.56 on side B',
+    Math.abs(onA - 226.12) < 0.6 && Math.abs(onB - 285.56) < 0.6,
+    `${onA.toFixed(2)} vs ${onB.toFixed(2)}`);
+  check('so holding the A slot is strictly better for the same stack',
+    onA < onB - 1,
+    'if this ever inverts, the engagements have been ordered the wrong way');
+  check('and the declared example matches what the engine computes',
+    Math.abs(MUTUAL.aSlotAdvantageExample.onA - onA) < 0.6
+    && Math.abs(MUTUAL.aSlotAdvantageExample.onB - onB) < 0.6);
+
+  // THE PAGE'S OWN CONTROL, which is the reason to trust the rest: with only
+  // ONE side attacking, moving both stacks to the other army must change
+  // nothing. An earlier version of this experiment compared two different
+  // battles and reported that the page was wrong; the mirror keeps the roles.
+  const oneWay = simulate({
+    attacker: { rows: [{ unit: 'inf', count: 10 }] },
+    defender: { rows: [{ unit: 'st', count: 10 }] }, rounds: 1 });
+  check('one-sided: the infantry lose 63.00 and the stormtroopers 40.00',
+    Math.abs(oneWay.attacker.hpLost - 63.0) < 0.05
+    && Math.abs(oneWay.defender.hpLost - 40.0) < 0.05,
+    `${oneWay.attacker.hpLost.toFixed(2)} / ${oneWay.defender.hpLost.toFixed(2)}`);
+  check('and mutual costs both sides strictly more than one-sided does',
+    M('inf', 10, 'st', 10).defender.hpLost > oneWay.defender.hpLost,
+    'each side fires twice in a mutual round — once attacking, once defending');
+
+  // Multi-round, and the stop condition.
+  const r1 = M('inf', 100, 'ac', 10, 1);
+  const r2 = M('inf', 100, 'ac', 10, 2);
+  const r3 = M('inf', 100, 'ac', 10, 3);
+  check('mutual round 1: 166.10 / 315.00',
+    Math.abs(r1.attacker.hpLost - 166.10) < 0.6
+    && Math.abs(r1.defender.hpLost - 315.00) < 0.6,
+    `${r1.attacker.hpLost.toFixed(2)} / ${r1.defender.hpLost.toFixed(2)}`);
+  check('mutual round 2: 237.97 / 600.00',
+    Math.abs(r2.attacker.hpLost - 237.97) < 0.6
+    && Math.abs(r2.defender.hpLost - 600.00) < 0.6,
+    `${r2.attacker.hpLost.toFixed(2)} / ${r2.defender.hpLost.toFixed(2)}`);
+  check('and round 3 adds nothing — the defender is already gone',
+    Math.abs(r3.attacker.hpLost - r2.attacker.hpLost) < 0.05
+    && Math.abs(r3.defender.hpLost - r2.defender.hpLost) < 0.05,
+    `${r3.attacker.hpLost.toFixed(2)} / ${r3.defender.hpLost.toFixed(2)}`);
+
+  // Rows must still sum to their stack when a side fires twice in a round.
+  for (const r of [M('inf', 100, 'ac', 10), M('inf', 100, 'st', 10, 2)]) {
+    for (const side of ['attacker', 'defender']) {
+      const rowSum = r[side].rows.reduce(
+        (t, x) => t + (typeof x.hpLost === 'number' ? x.hpLost : 0), 0);
+      check(`mutual: ${side} rows still sum to the stack`,
+        Math.abs(rowSum - r[side].hpLost) < 0.01,
+        `${rowSum.toFixed(2)} vs ${r[side].hpLost.toFixed(2)}`);
+    }
+  }
+
+  // Straight replay of every mutual reading on file.
+  let replayed = 0;
+  for (const rec of rows) {
+    if (!['mutual', 'mutual_law', 'mutual_order', 'mutual_rounds']
+      .includes(rec.experiment)) continue;
+    const m = rec.meta;
+    if (m.mutual === false) continue;
+    if (m.a_target !== undefined && !(m.a_target === 'B.1' && m.b_target === 'A.1')) continue;
+    if (!m.a_unit || !m.b_unit) continue;
+    const wantA = ((m.detail || {})['A.1.1'] || {}).lost;
+    const wantB = ((m.detail || {})['B.1.1'] || {}).lost;
+    if (wantA == null || wantB == null) continue;
+    const got = M(m.a_unit, m.a_n, m.b_unit, m.b_n, Number(m.rounds) || 1);
+    replayed += 1;
+    check(`replay: ${m.a_n} ${m.a_unit} vs ${m.b_n} ${m.b_unit} x${m.rounds || 1}`,
+      Math.abs(got.attacker.hpLost - wantA) < 0.6
+      && Math.abs(got.defender.hpLost - wantB) < 0.6,
+      `${got.attacker.hpLost.toFixed(2)}/${got.defender.hpLost.toFixed(2)} vs `
+        + `${wantA}/${wantB}`);
+  }
+  check('the mutual readings were actually replayed', replayed >= 14,
     String(replayed));
 }
 

@@ -275,6 +275,9 @@ const DEFAULT_STATE = () => ({
   // the coefficient column, not just the attacker's.
   defenderTerrain: '',
   distance: 0,
+  // Both stacks attacking each other. Measured as TWO engagements, and it is
+  // the half of the form this project never submitted until now.
+  mutual: false,
 });
 
 let state = DEFAULT_STATE();
@@ -390,7 +393,7 @@ function boot() {
   $('builders').addEventListener('change', onCommit);
   $('rounds').addEventListener('input', onInput);
   $('rounds').addEventListener('change', onCommit);
-  for (const id of ['terrain', 'def-terrain', 'distance']) {
+  for (const id of ['terrain', 'def-terrain', 'distance', 'mutual']) {
     if (!$(id)) continue;
     $(id).addEventListener('input', onInput);
     $(id).addEventListener('change', onCommit);
@@ -998,6 +1001,7 @@ function writeStateToDom() {
   $('rounds').value = String(state.rounds);
   if ($('terrain')) $('terrain').value = state.terrain;
   if ($('def-terrain')) $('def-terrain').value = state.defenderTerrain || '';
+  if ($('mutual')) $('mutual').checked = !!state.mutual;
   if ($('distance')) $('distance').value = String(state.distance);
   $('mode').value = state.mode === 'patrol' ? 'patrol' : 'strike';
   renderBuildings('attacker');
@@ -1032,6 +1036,7 @@ function readDomToState() {
     const dkm = Number($('distance').value);
     state.distance = Number.isFinite(dkm) && dkm > 0 ? Math.round(dkm) : 0;
   }
+  if ($('mutual')) state.mutual = !!$('mutual').checked;
 }
 
 function onInput() {
@@ -1090,6 +1095,7 @@ function currentConfig() {
     // attacker's, and passing '' would look like a fourth terrain.
     ...(state.defenderTerrain ? { defenderTerrain: state.defenderTerrain } : {}),
     distance: state.distance,
+    ...(state.mutual ? { mutual: true } : {}),
   };
 }
 
@@ -2321,7 +2327,8 @@ function encodeState(cfg) {
     + (cfg.mode === 'patrol' ? '&m=patrol' : '')
     + (cfg.terrain && cfg.terrain !== 'land' ? `&t=${cfg.terrain}` : '')
     + (cfg.defenderTerrain ? `&dt=${cfg.defenderTerrain}` : '')
-    + (cfg.distance ? `&km=${cfg.distance}` : '');
+    + (cfg.distance ? `&km=${cfg.distance}` : '')
+    + (cfg.mutual ? '&mu=1' : '');
 }
 
 function decodeBuildings(str) {
@@ -2412,6 +2419,7 @@ function decodeState(hash) {
       defenderTerrain: ['land', 'sea', 'air', 'debark'].includes(parts.dt)
         ? parts.dt : '',
       distance: Number.isFinite(km) && km > 0 ? Math.round(km) : 0,
+      mutual: parts.mu === '1',
     };
   } catch {
     return null;

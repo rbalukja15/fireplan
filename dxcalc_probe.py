@@ -9778,6 +9778,430 @@ def exp_togo_buff_clean(p: Probe) -> None:
                   f"{'buffs MATCH — the second curve was the artifact' if ok else 'buffs really do differ'}")
 
 
+def exp_mutual(p: Probe) -> None:
+    """Both stacks attacking each other -- never once submitted by this rig.
+
+    duel() is the only thing in this file that has ever set a B-side target,
+    and it always sets "0". Every one of the 2,400-odd readings on disk is one
+    stack attacking a stack that is only defending. The form has always
+    offered the other configuration, and the author's help page says it is not
+    a cosmetic difference:
+
+        "There are always two armies or sides, A and B ... If two stacks are
+         each attacking the other it makes a difference which side they are
+         on. Army A will always attack first in such a scenario ... this only
+         applies if both stacks are attacking each other. If, for example, a
+         stack in one army is attacking a stack that is just defending, it
+         will make no difference which side they are on."
+
+    That is two claims, and they are separable.
+
+    CLAIM 1 -- A MUTUAL ATTACKER USES ITS ATTACK STAT. Not stated on the page
+    at all, but it is the first thing to check, because this game keeps attack
+    and defence as independent numbers and the gap is enormous for some units.
+    A stormtrooper attacks land at 25.0 and defends against it at 6.3; an
+    armoured car is the other way round, 6.0 attacking and 12.0 defending.
+    So the two of them predict opposite movements -- st should roughly
+    QUADRUPLE and ac should roughly HALVE -- and a rig artifact that inflated
+    everything would show up immediately as both moving the same way.
+
+    CLAIM 2 -- SIDE A GOES FIRST. If resolution is sequential then B fires
+    with whatever survives A's blow, and the m(f) this project already measured
+    applies. If it is simultaneous, the side letter cannot matter and the
+    author is describing something that is not there.
+
+        A = 10 inf vs B = 10 st, mutual
+          simultaneous : B deals 25.0 x E(10) = 250.00
+          A-first      : B has lost 40 of 400 first, so 250 x m(0.9) = 226.25
+
+    Ten percent apart, on a reading printed to two decimals.
+
+    THE SHARPEST FORM OF CLAIM 2 is the swap, where A's blow is fatal. Ten
+    stormtroopers on side A deal 250 into an infantry pool of 200. If A goes
+    first, B is dead before it fires. If the two are simultaneous, B still
+    deals its full 40.00 -- and this project has ALREADY measured that a wiped
+    stack deals full damage when it is defending, so "wiped" alone does not
+    silence a stack. Whether it silences one that was attacking is exactly
+    what has never been asked.
+    """
+    def run(tag: str, a_unit: str, a_n: int, b_unit: str, b_n: int,
+            mutual: bool, rounds: str | float = 1) -> dict | None:
+        ov = settings(rounds)
+        ov.update(duel(1, a_unit, a_n, b_unit, b_n))
+        if mutual:
+            ov["B.1.target"] = "A.1"
+        try:
+            p.submit(ov)
+        except (BareFormReturned, ValueError) as e:
+            print(f"    refused ({tag}): {e}"[:96])
+            return None
+        d = dict(p.last_details)
+        record("mutual", {"a_unit": a_unit, "a_n": a_n, "b_unit": b_unit,
+                          "b_n": b_n, "mutual": mutual, "rounds": rounds,
+                          "detail": d, "summary": dict(p.last_summary)},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        return d
+
+    print("\n  0. does the server accept a mutual target at all?\n")
+    d = run("sanity", "inf", 10, "inf", 10, True)
+    if d is None:
+        print("  The form offers B.1.target = A.1 and the server refused it. "
+              "Nothing below can run.")
+        return
+    print(f"  yes — A lost {(d.get('A.1.1') or {}).get('lost')}, "
+          f"B lost {(d.get('B.1.1') or {}).get('lost')}")
+
+    print("\n  1. does a MUTUAL attacker fire with its attack stat or its "
+          "defence stat?\n")
+    print("     A is ten infantry throughout; only B's role changes.")
+    print("     'A lost' is B's output, which is the whole question.\n")
+    print(f"  {'B stack':8}{'atk col':>9}{'def col':>9}"
+          f"{'A lost (B defends)':>21}{'A lost (B attacks)':>21}   verdict")
+    for unit, atk_c, def_c in (("st", 25.0, 6.3), ("rrg", 20.0, 6.7),
+                               ("cav", 15.0, 7.5), ("ac", 6.0, 12.0),
+                               ("inf", 4.0, 5.0), ("ht", 45.0, 45.0)):
+        got = {}
+        for mutual in (False, True):
+            dd = run(f"{unit} mutual={mutual}", "inf", 10, unit, 10, mutual)
+            a = (dd or {}).get("A.1.1") or {}
+            if a.get("lost") is not None and (a.get("pct") or 0) < 99.9:
+                got[mutual] = a["lost"]
+        if len(got) != 2:
+            print(f"  {unit:8}{atk_c:>9.1f}{def_c:>9.1f}"
+                  f"{'censored or refused':>43}")
+            continue
+        per_def = got[False] / effective_units(10)
+        per_atk = got[True] / effective_units(10)
+        near = lambda v, x: abs(v - x) < 0.06 * max(x, 1.0)
+        if near(per_atk, atk_c) and near(per_def, def_c):
+            verdict = "ATTACK stat when attacking, defence when defending"
+        elif abs(got[True] - got[False]) < 0.05:
+            verdict = "no change — it fires the same either way"
+        else:
+            verdict = f"neither column ({per_atk:.2f} per effective unit)"
+        print(f"  {unit:8}{atk_c:>9.1f}{def_c:>9.1f}"
+              f"{got[False]:>21.2f}{got[True]:>21.2f}   {verdict}")
+
+    print("\n  2. is it sequential (A first) or simultaneous?\n")
+    print("     A = 10 inf, B = 10 st, mutual. A deals 40.00 into a pool of "
+          "400.")
+    print("       simultaneous  B deals 25.0 x E(10)      = 250.00")
+    print("       A fires first B deals 250 x m(360/400)  = 226.25\n")
+    dd = run("order", "inf", 10, "st", 10, True)
+    if dd:
+        a = (dd.get("A.1.1") or {}); b = (dd.get("B.1.1") or {})
+        print(f"  A lost {a.get('lost')}   B lost {b.get('lost')}")
+        if a.get("lost") is not None:
+            v = a["lost"]
+            if abs(v - 250.0) < 1.0:
+                print("  VERDICT: SIMULTANEOUS — B fired at full strength.")
+            elif abs(v - 226.25) < 1.5:
+                print("  VERDICT: SEQUENTIAL — B fired with what survived A.")
+            else:
+                print(f"  VERDICT: neither figure ({v}). Investigate before "
+                      "writing anything down.")
+
+    print("\n  3. the swap, where A's blow is fatal\n")
+    print("     A = 10 st, B = 10 inf, mutual. A deals 250 into a pool of "
+          "200.")
+    print("       simultaneous  B still deals 4.0 x E(10) = 40.00, exactly as")
+    print("                     a WIPED DEFENDER already does (measured)")
+    print("       A fires first B is dead before it fires = 0.00\n")
+    dd = run("swap", "st", 10, "inf", 10, True)
+    if dd:
+        a = (dd.get("A.1.1") or {}); b = (dd.get("B.1.1") or {})
+        print(f"  A lost {a.get('lost')}   B lost {b.get('lost')} "
+              f"({b.get('pct')}%)")
+        if a.get("lost") is not None:
+            v = a["lost"]
+            if abs(v - 40.0) < 0.5:
+                print("  VERDICT: SIMULTANEOUS — a wiped mutual attacker still "
+                      "deals its full figure, exactly like a wiped defender.")
+            elif v < 0.05:
+                print("  VERDICT: SEQUENTIAL — side A killed it before it "
+                      "fired. The side letter is worth a whole stack.")
+            else:
+                print(f"  VERDICT: neither ({v}).")
+
+    print("\n  4. and the control the page itself offers: when only ONE side")
+    print("     attacks, the page says the side letter cannot matter.\n")
+    print(f"  {'configuration':34}{'A lost':>10}{'B lost':>10}")
+    for label, au, bu in (("A=inf attacks, B=st defends", "inf", "st"),
+                          ("A=st defends... (swap roles)", "st", "inf")):
+        dd = run(label, au, 10, bu, 10, False)
+        if dd:
+            a = (dd.get("A.1.1") or {}).get("lost")
+            b = (dd.get("B.1.1") or {}).get("lost")
+            f = lambda v: "-" if v is None else f"{v:.2f}"
+            print(f"  {label:34}{f(a):>10}{f(b):>10}")
+
+
+# Land-vs-land columns and per-unit max HP, from web/data.js. Only the land
+# column is needed here: every stack in this experiment is a land stack.
+LAND_ATK = {"inf": 4.0, "cav": 15.0, "ac": 6.0, "lart": 5.0, "art": 8.0,
+            "rrg": 20.0, "lt": 30.0, "ht": 45.0, "st": 25.0}
+LAND_DEF = {"inf": 5.0, "cav": 7.5, "ac": 12.0, "lart": 1.0, "art": 2.7,
+            "rrg": 6.7, "lt": 30.0, "ht": 45.0, "st": 6.3}
+LAND_HP = {"inf": 20, "cav": 25, "ac": 60, "lart": 10, "art": 20,
+           "rrg": 60, "lt": 175, "ht": 260, "st": 40}
+
+
+def _m(f: float) -> float:
+    return 0.05 + 0.95 * f
+
+
+def predict_mutual(a_unit: str, a_n: int, b_unit: str, b_n: int
+                   ) -> tuple[float, float, str]:
+    """Two engagements in order, each fought by whoever is still standing.
+
+    Engagement 1 is an ordinary battle: A attacks with its ATTACK column, B
+    answers with its DEFENCE column, both from the pre-round state -- which is
+    exactly the one-sided model this project already has. Then the stacks are
+    updated, and engagement 2 is the same battle with the roles swapped and the
+    survivors fighting it.
+
+    A stack destroyed in engagement 1 never fights engagement 2. That is what
+    "Army A will always attack first" is worth, and it is worth a whole stack.
+    """
+    a_pool = float(a_n * LAND_HP[a_unit])
+    b_pool = float(b_n * LAND_HP[b_unit])
+    a_surv, b_surv = a_n, b_n
+
+    def out(coef: float, surv: int, pool: float, maxhp: int) -> float:
+        if surv <= 0 or pool <= 0:
+            return 0.0
+        return coef * effective_units(surv) * _m(pool / (surv * maxhp))
+
+    # Engagement 1 -- A attacks.
+    d_b = out(LAND_ATK[a_unit], a_surv, a_pool, LAND_HP[a_unit])
+    d_a = out(LAND_DEF[b_unit], b_surv, b_pool, LAND_HP[b_unit])
+    d_b, d_a = min(d_b, b_pool), min(d_a, a_pool)
+    b_lost, a_lost = d_b, d_a
+    per_b = b_pool / b_surv
+    per_a = a_pool / a_surv
+    b_surv -= int(d_b // per_b)
+    a_surv -= int(d_a // per_a)
+    b_pool -= d_b
+    a_pool -= d_a
+
+    if b_pool <= 1e-9 or b_surv <= 0:
+        return a_lost, b_lost, "B destroyed in engagement 1 — it never fires"
+
+    # Engagement 2 -- B attacks, with what is left of both stacks.
+    d_a2 = out(LAND_ATK[b_unit], b_surv, b_pool, LAND_HP[b_unit])
+    d_b2 = out(LAND_DEF[a_unit], a_surv, a_pool, LAND_HP[a_unit])
+    a_lost += min(d_a2, a_pool)
+    b_lost += min(d_b2, b_pool)
+    return a_lost, b_lost, "both engagements fought"
+
+
+def exp_mutual_law(p: Probe) -> None:
+    """Confirm the two-engagement law, and test the page's own control.
+
+    The first mutual sweep produced four cells and all four fall out of one
+    rule to the printed decimal. Four cells fitted by a rule invented to
+    explain them is not a measurement, so this predicts each reading BEFORE
+    submitting it, across a roster whose attack and defence columns disagree by
+    up to a factor of four and in both directions.
+
+    The attacker is deliberately large so that nothing is censored: the first
+    sweep lost four of its six rows because ten infantry are wiped outright by
+    ten stormtroopers firing second, which is itself the finding but leaves no
+    number to check.
+
+    THE PAGE'S OWN CONTROL. It says the side letter matters ONLY when both
+    stacks attack: "if a stack in one army is attacking a stack that is just
+    defending, it will make no difference which side they are on." That is
+    falsifiable in one pair of requests -- put the attacker on B and the
+    defender on A, which no experiment here has ever done either.
+    """
+    print("\n  1. predicted BEFORE submitting, across both directions of the "
+          "attack/defence gap\n")
+    print(f"  {'A':>10} {'B':>10}{'A lost':>10}{'pred':>10}{'B lost':>10}"
+          f"{'pred':>10}   note")
+    agree = 0
+    total = 0
+    for b_unit in ("st", "rrg", "cav", "ac", "inf", "lart", "art", "lt"):
+        a_n, b_n = 100, 10
+        pa, pb, note = predict_mutual("inf", a_n, b_unit, b_n)
+        ov = settings(1)
+        ov.update(duel(1, "inf", a_n, b_unit, b_n))
+        ov["B.1.target"] = "A.1"
+        try:
+            p.submit(ov)
+        except (BareFormReturned, ValueError) as e:
+            print(f"  {'100 inf':>10} {b_n} {b_unit}: {e}"[:92]); continue
+        d = dict(p.last_details)
+        record("mutual_law", {"a_unit": "inf", "a_n": a_n, "b_unit": b_unit,
+                              "b_n": b_n, "mutual": True,
+                              "pred_a": pa, "pred_b": pb, "detail": d,
+                              "summary": dict(p.last_summary)},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        a = (d.get("A.1.1") or {}); b = (d.get("B.1.1") or {})
+        if a.get("lost") is None or b.get("lost") is None:
+            print(f"  {'100 inf':>10} {b_n:>7} {b_unit}   no reading"); continue
+        total += 1
+        ok = abs(a["lost"] - pa) < 0.6 and abs(b["lost"] - pb) < 0.6
+        agree += 1 if ok else 0
+        print(f"  {'100 inf':>10} {f'{b_n} {b_unit}':>10}{a['lost']:>10.2f}"
+              f"{pa:>10.2f}{b['lost']:>10.2f}{pb:>10.2f}   "
+              f"{'' if ok else 'MISS — '}{note}")
+    print(f"\n  {agree}/{total} cells predicted in advance")
+
+    print("\n  2. the page's control: with only ONE side attacking, does the "
+          "side letter matter?\n")
+    print(f"  {'configuration':38}{'A lost':>10}{'B lost':>10}")
+    reads = {}
+    for label, a_t, b_t in (("A attacks (A=inf, B=st defends)", "B.1", "0"),
+                            ("B attacks (A=inf defends, B=st)", "0", "A.1")):
+        ov = settings(1)
+        ov.update(duel(1, "inf", 10, "st", 10))
+        ov["A.1.target"] = a_t
+        ov["B.1.target"] = b_t
+        try:
+            p.submit(ov)
+        except (BareFormReturned, ValueError) as e:
+            print(f"  {label:38} {e}"[:92]); continue
+        d = dict(p.last_details)
+        record("mutual_control", {"a_target": a_t, "b_target": b_t,
+                                  "detail": d,
+                                  "summary": dict(p.last_summary)},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        a = (d.get("A.1.1") or {}).get("lost")
+        b = (d.get("B.1.1") or {}).get("lost")
+        reads[label] = (a, b)
+        f = lambda v: "-" if v is None else f"{v:.2f}"
+        print(f"  {label:38}{f(a):>10}{f(b):>10}")
+    if len(reads) == 2:
+        (a1, b1), (a2, b2) = reads.values()
+        if None not in (a1, b1, a2, b2):
+            mirror = abs(a1 - b2) < 0.05 and abs(b1 - a2) < 0.05
+            verdict = ("the two are exact mirrors — the side letter is inert "
+                       "when only one side attacks, as the page says."
+                       if mirror else
+                       "NOT mirrors — the side letter matters even one-sided, "
+                       "which the page denies.")
+            print(f"\n  VERDICT: {verdict}")
+
+    print("\n  3. what does a second round of a mutual battle look like?\n")
+    print(f"  {'rounds':>7}{'A lost':>10}{'B lost':>10}{'A this round':>14}"
+          f"{'B this round':>14}")
+    pa_, pb_ = 0.0, 0.0
+    for rounds in (1, 2, 3):
+        ov = settings(rounds)
+        ov.update(duel(1, "inf", 100, "ac", 10))
+        ov["B.1.target"] = "A.1"
+        try:
+            p.submit(ov)
+        except (BareFormReturned, ValueError) as e:
+            print(f"  {rounds:>7} {e}"[:92]); continue
+        d = dict(p.last_details)
+        record("mutual_rounds", {"a_unit": "inf", "a_n": 100, "b_unit": "ac",
+                                 "b_n": 10, "mutual": True, "rounds": rounds,
+                                 "detail": d, "summary": dict(p.last_summary)},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        a = (d.get("A.1.1") or {}).get("lost")
+        b = (d.get("B.1.1") or {}).get("lost")
+        if a is None or b is None:
+            print(f"  {rounds:>7}   no reading"); continue
+        print(f"  {rounds:>7}{a:>10.2f}{b:>10.2f}{a - pa_:>14.2f}"
+              f"{b - pb_:>14.2f}")
+        pa_, pb_ = a, b
+
+
+def exp_mutual_order(p: Probe) -> None:
+    """Two things the first sweep got wrong or did not ask.
+
+    A BROKEN CONTROL, reported here rather than quietly fixed. exp_mutual_law
+    set out to test the page's claim that the side letter is inert when only
+    one side attacks, and compared
+
+        A = inf attacking, B = st defending      vs
+        A = inf DEFENDING, B = st attacking
+
+    which are not mirrors of each other at all -- they are two different
+    battles, one with infantry attacking and one with stormtroopers attacking.
+    Naturally they disagreed, and the sweep printed "the side letter matters
+    even one-sided, which the page denies." That verdict was a defect in the
+    rig, exactly as §0 says to assume. The mirror keeps the ROLES and moves the
+    stacks between armies:
+
+        A = inf attacks   / B = st defends       vs
+        A = st defends    / B = inf attacks
+
+    THE ASYMMETRY ITSELF, which is the whole point of the page's claim and
+    which the first sweep never measured. Same pair, mutual, in both side
+    assignments. If A really strikes first the smaller stack should fare
+    measurably better holding the A slot, and the difference should be
+    predictable in advance from the two-engagement law rather than merely
+    present.
+    """
+    def go(tag: str, a_unit: str, a_n: int, a_target: str,
+           b_unit: str, b_n: int, b_target: str) -> dict | None:
+        ov = settings(1)
+        ov.update(duel(1, a_unit, a_n, b_unit, b_n))
+        ov["A.1.target"] = a_target
+        ov["B.1.target"] = b_target
+        try:
+            p.submit(ov)
+        except (BareFormReturned, ValueError) as e:
+            print(f"    {tag}: {e}"[:92]); return None
+        d = dict(p.last_details)
+        record("mutual_order", {"tag": tag, "a_unit": a_unit, "a_n": a_n,
+                                "b_unit": b_unit, "b_n": b_n,
+                                "a_target": a_target, "b_target": b_target,
+                                "detail": d,
+                                "summary": dict(p.last_summary)},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        return d
+
+    print("\n  1. the mirror, done properly: same battle, stacks swapped "
+          "between armies\n")
+    print(f"  {'configuration':40}{'inf lost':>10}{'st lost':>10}")
+    got = {}
+    for tag, au, an, at, bu, bn, bt in (
+            ("A=inf attacks / B=st defends", "inf", 10, "B.1", "st", 10, "0"),
+            ("A=st defends  / B=inf attacks", "st", 10, "0", "inf", 10, "A.1")):
+        d = go(tag, au, an, at, bu, bn, bt)
+        if not d:
+            continue
+        a = (d.get("A.1.1") or {}).get("lost")
+        b = (d.get("B.1.1") or {}).get("lost")
+        inf_lost, st_lost = (a, b) if au == "inf" else (b, a)
+        got[tag] = (inf_lost, st_lost)
+        f = lambda v: "-" if v is None else f"{v:.2f}"
+        print(f"  {tag:40}{f(inf_lost):>10}{f(st_lost):>10}")
+    if len(got) == 2:
+        (i1, s1), (i2, s2) = got.values()
+        if None not in (i1, s1, i2, s2):
+            same = abs(i1 - i2) < 0.05 and abs(s1 - s2) < 0.05
+            verdict = ("identical — the side letter IS inert when only one side "
+                       "attacks, as the page says."
+                       if same else
+                       "they differ, so the side letter matters even one-sided.")
+            print(f"\n  VERDICT: {verdict}")
+
+    print("\n  2. the asymmetry: the same mutual battle, both ways round\n")
+    print(f"  {'configuration':40}{'inf lost':>10}{'pred':>9}"
+          f"{'st lost':>10}{'pred':>9}")
+    for tag, au, an, bu, bn in (("100 inf on A, 10 st on B", "inf", 100, "st", 10),
+                                ("10 st on A, 100 inf on B", "st", 10, "inf", 100)):
+        pa, pb, _ = predict_mutual(au, an, bu, bn)
+        d = go(tag, au, an, "B.1", bu, bn, "A.1")
+        if not d:
+            continue
+        a = (d.get("A.1.1") or {}).get("lost")
+        b = (d.get("B.1.1") or {}).get("lost")
+        inf_lost, st_lost = (a, b) if au == "inf" else (b, a)
+        p_inf, p_st = (pa, pb) if au == "inf" else (pb, pa)
+        f = lambda v: "-" if v is None else f"{v:.2f}"
+        print(f"  {tag:40}{f(inf_lost):>10}{p_inf:>9.2f}"
+              f"{f(st_lost):>10}{p_st:>9.2f}")
+    print("\n  Whichever stack holds the A slot fires into an undamaged enemy "
+          "and is\n  answered by a damaged one. That is the entire content of "
+          "\"A attacks first\".")
+
+
 EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "unit_stats": exp_unit_stats,
     "repair_cost": exp_repair_cost,
@@ -9790,6 +10214,9 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "bombardment_lucien": exp_bombardment_lucien,
     "bombardment_melee": exp_bombardment_melee,
     "togo_buff_clean": exp_togo_buff_clean,
+    "mutual": exp_mutual,
+    "mutual_law": exp_mutual_law,
+    "mutual_order": exp_mutual_order,
     "range_roster": exp_range_roster,
     "return_fire": exp_return_fire,
     "mixed_range": exp_mixed_range,

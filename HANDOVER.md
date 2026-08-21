@@ -48,6 +48,63 @@ What that session established, in one place:
   0.25, 0.5 and 0.75 all deliver one whole strike — while patrol genuinely
   does; whole rounds repeat in both.
 
+### 2026-08-21, third stretch: mutual attacks
+
+The help page said the side letter matters when both stacks attack, and that
+`duel()` is the only thing in this rig that has ever set a B-side target — it
+always sets `0`. So **every one of the ~2,400 readings on disk was one stack
+attacking a stack that was only defending**, and the app could not express the
+other half of what the form allows.
+
+**A mutual attack is two engagements, not one.**
+
+1. A attacks — an ordinary battle, A's **attack** column against B's **defence**
+   column, both from the pre-round state. This is the model the app already had.
+2. The stacks are updated: deaths, pools, effective counts.
+3. B attacks, **with what survived**, using its own attack column against A's
+   defence column.
+
+So each side fires twice per round in a mutual battle, once attacking and once
+defending. Ten infantry against ten lose 50.00 defending and **82.00** mutually.
+
+**Sixteen cells predicted before they were submitted.** The law was written from
+four readings, then used to predict a roster whose attack and defence columns
+disagree by up to four times *and in both directions* — a stormtrooper is
+25.0/6.3, an armoured car 6.0/12.0 — so a rule that merely inflated everything
+fails the armoured car on the first cell. Every one came back to the printed
+decimal, as did the two- and three-round ladders.
+
+**What the side letter is worth.** A stack destroyed in engagement 1 never
+fights engagement 2. Ten light artillery facing a hundred infantry lose their
+whole 100 HP pool and deal *nothing* — where a **defending** stack that is wiped
+still deals its full figure, which this project measured long ago and which is
+unchanged. That contrast is the single cleanest discriminator between "two
+engagements" and any simultaneous exchange, and it was predicted in advance.
+Short of death the advantage is smaller but real: a hundred infantry lose
+226.12 holding the A slot and 285.56 holding the B slot — a fifth of their
+losses decided by nothing but which army they are in.
+
+**The page's own control holds.** With only one side attacking, moving both
+stacks to the other army changes nothing: 63.00 and 40.00 either way.
+
+**And the first attempt at that control was broken, which is worth more than
+the result.** It compared `A=inf attacking / B=st defending` against
+`A=inf DEFENDING / B=st attacking` — two different battles, not a mirror — and
+the sweep duly printed *"the side letter matters even one-sided, which the page
+denies."* A confident false finding, from a control that controlled for
+nothing. The mirror keeps the **roles** and moves the stacks between armies.
+
+Shipped: `MUTUAL` in data.js with two provenance entries, engagement 2 in the
+engine's round loop (with an explicit caveat that fortresses, buildings and
+heroes are not modelled there, because no mutual reading on file carries one),
+a "Both stacks attacking" control wired into the page and the share link, and
+test section 22. One guard needed fixing on the way: the listener-wiring check
+asserted the literal id list `['terrain', 'def-terrain', 'distance']`, so it
+failed on a legitimate addition. It now **derives** the ids from
+`readDomToState()` and requires each to be wired — and it was verified by
+unwiring the new control and watching it fail. **2,835 engine checks**, 11
+offline probe suites, browser clean. 34 requests.
+
 ### 2026-08-21, second stretch: the THIRD inventory the server authors
 
 The previous stretch said the server authors two inventories — the fields it
@@ -733,6 +790,33 @@ believed, and it is the obvious next stretch.
 What the page is genuinely good for is EXPERIMENT DESIGN. "Put its position
 more than 5 km from the target and within 40 km" is the isolation that made
 everything else measurable, and nobody here had thought of it in five audits.
+
+**A twenty-fifth: a control that changes two things at once is not a control,
+and it will hand you a confident false finding.** Testing whether the side
+letter matters when only one stack attacks, the sweep compared
+`A=inf attacking / B=st defending` with `A=inf DEFENDING / B=st attacking` and
+concluded the site's own documentation was wrong. Those are two different
+battles — one with infantry attacking, one with stormtroopers attacking — so of
+course they disagreed. The mirror had to keep the **roles** fixed and move the
+stacks between armies, and done that way the two are identical to the printed
+decimal.
+
+This is §0's opening rule in a new costume. "Treat a null result as a defect in
+the rig" generalises to *treat a surprising result as a defect in the rig*, and
+"the documentation is wrong" is exactly the kind of surprising result that
+feels like a discovery. **Before believing a control, write down what differs
+between its two arms and check the list has one entry.**
+
+**A twenty-sixth, about guards rather than measurements: a guard that RESTATES
+is a guard that will be edited away.** The listener-wiring check — added after
+a control shipped rendered, read, and unwired — asserted the literal list
+`['terrain', 'def-terrain', 'distance']`. Adding a fourth control broke it, and
+a guard that fails on every legitimate addition trains its readers to edit the
+guard instead of reading it. It derives the ids from `readDomToState()` now and
+requires each to be wired, which is the property that actually matters. Same
+fix `coverageOf()` got, and the same fix the limits list got: **derive the
+claim, never restate it.** Then break it deliberately to check it still bites —
+unwiring the new control does fail it.
 
 **A tenth, of a different kind: a law can fit everything you have and still be
 wrong, if the scope of the fit was narrower than the claim.** "The stack

@@ -108,6 +108,9 @@
     </div>
     <div class="field field-distance">
       <label for="distance">Distance (km)</label>
+          <label class="ctl ctl-check" title="Both stacks attacking each other. Measured: this resolves as TWO engagements — A attacks, then B attacks with whatever survived — and the side letter is worth up to a whole stack.">
+            <input type="checkbox" id="mutual"> Both stacks attacking
+          </label>
       <input type="number" id="distance" name="distance" value="0" min="0" max="500" step="1" inputmode="numeric" aria-describedby="distance-note">
       <p class="field-note" id="distance-note">Range is a yes/no gate, not a falloff, and every unit's is measured by bisection: melee 5&nbsp;km, light artillery 30, artillery 50, cruiser 40, battleship 75, railgun 150. A row that cannot reach is inert. Past 5&nbsp;km the <em>defender does not fire back at all</em>.</p>
     </div>

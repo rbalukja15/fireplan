@@ -1385,6 +1385,68 @@ export const HERO_REACH = {
   lucien_g: { reach: 50, bound: 'fires at 50 km, silent at 75' },
 };
 
+// ---------------------------------------------------------------------------
+// MUTUAL ATTACKS -- the half of the form this project never submitted
+// ---------------------------------------------------------------------------
+// Every one of the ~2,400 readings on disk before this was one stack attacking
+// a stack that was only defending. duel() is the only thing in the rig that
+// ever set a B-side target and it always set "0". The form has offered the
+// other configuration since the first request, and the site's help page says
+// it is not cosmetic:
+//
+//     "There are always two armies or sides, A and B ... If two stacks are
+//      each attacking the other it makes a difference which side they are on.
+//      Army A will always attack first in such a scenario ... this only
+//      applies if both stacks are attacking each other. If, for example, a
+//      stack in one army is attacking a stack that is just defending, it will
+//      make no difference which side they are on."
+//
+// Both claims are true, and the first one is much stronger than it sounds.
+//
+// A MUTUAL ATTACK IS TWO ENGAGEMENTS, NOT ONE.
+//
+//   1. A attacks. Ordinary battle: A's ATTACK column against B's DEFENCE
+//      column, both from the pre-round state. This is the model the app
+//      already had.
+//   2. The stacks are updated -- deaths, pools, effective counts.
+//   3. B attacks, with what survived, using ITS attack column against A's
+//      DEFENCE column.
+//
+// So each side fires twice per round in a mutual battle: once with its attack
+// stat and once with its defence stat. That is why a mutual round costs both
+// sides far more than a one-sided one -- ten infantry against ten lose 50.00
+// defending and 82.00 mutually.
+//
+// SIXTEEN CELLS PREDICTED IN ADVANCE. The law was written down from four
+// readings and then used to predict every cell of a roster whose attack and
+// defence columns disagree by up to four times AND IN BOTH DIRECTIONS -- a
+// stormtrooper attacks land at 25.0 and defends at 6.3, an armoured car
+// attacks at 6.0 and defends at 12.0 -- before those cells were submitted.
+// Every one came back to the printed decimal. A rule that inflated everything
+// would have failed the armoured car immediately.
+//
+// WHAT THE SIDE LETTER IS WORTH. A stack destroyed in engagement 1 never
+// fights engagement 2. Ten light artillery facing a hundred infantry lose
+// their whole 100 HP pool in the first engagement and deal nothing at all --
+// where a DEFENDING stack that is wiped still deals its full figure, which
+// this project measured long ago and which is unchanged. Short of death the
+// advantage is smaller but real: a hundred infantry against ten stormtroopers
+// lose 226.12 holding the A slot and 285.56 holding the B slot, a fifth of
+// their losses decided by nothing but which army they are in.
+//
+// AND THE PAGE'S OWN CONTROL HOLDS. With only one side attacking, moving both
+// stacks to the other army changes nothing: 63.00 and 40.00 either way, to the
+// printed decimal. The side letter is inert unless both stacks are attacking.
+export const MUTUAL = {
+  engagements: 2,
+  order: 'A attacks first, then B with the survivors',
+  secondEngagementUses: "the attacker's attack column against the defender's defence column, roles swapped",
+  destroyedNeverFires: true,
+  aSlotAdvantageExample: { pair: '100 inf vs 10 st', onA: 226.12, onB: 285.56 },
+  cellsPredictedInAdvance: 16,
+  notModelledInEngagement2: ['fortress', 'buildings', 'heroes'],
+};
+
 export const NOT_MEASURED = [
     { key: 'bombardment_melee_split', what: 'How a HERO\u2019s bombardment ability divides its total when the attacker is standing ON its target, at 0 km.', why: 'Everything else about the ability is measured hard. Its total is 5 x level for T\u014dg\u014d and a three-level staircase for Lucien, read at a distance where the target is alone in the blast; it lasts 6 rounds and 9 rounds respectively; its radius is centred on the target, 40 km for T\u014dg\u014d and 20/30/40/50 km by level for Lucien; and from 10 km out to the radius it is divided by HP POOL SHARE, which reproduces every reading exactly \u2014 41.39 predicted against 41.39 printed, and a friendly stack 20 km away losing 12.40 against a predicted 12.50. At 0 km it is NOT pool share. A hundred submarines attacking fifty give the defender 0.2918 of the total where pool share says 0.3325, and a battleship stack against light cruisers goes the other way. Post-round pools, an attenuation term and a power law were each tried against both cells and each fits one and misses the other.', closedBy: 'a melee cell where the attacker cannot be hit back, which would separate "the split changed" from "the attacker\u2019s output attenuated". Nothing on the form provides one \u2014 melee is exactly where return fire exists \u2014 so the likelier route is a third stack: put a friendly stack of known pool inside the blast at 0 km and read its share directly, the way the friendly-fire cell did at 10 km.' },
 
@@ -1401,6 +1463,21 @@ export const NOT_MEASURED = [
 // measured, how well, and what it is NOT evidence for.
 
 export const PROVENANCE = {
+  'MUTUAL.law': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiments mutual / mutual_law / mutual_order / mutual_control / mutual_rounds \u2014 34 requests.',
+    method: 'Two-configuration decomposition, then prediction. The law was written from four readings and used to predict eight more BEFORE they were submitted, across units whose attack and defence columns differ by up to four times and in both directions \u2014 st is 25.0/6.3 and ac is 6.0/12.0, so a rule that merely inflated everything fails the armoured car on the first cell. All sixteen came back to the printed decimal, as did the two-round and three-round ladders.',
+    tolerance: 'Exact to the 0.01 the summary table prints.',
+    notEvidenceFor: 'Mutual attacks involving a fortress, a building or a hero. No mutual reading on record carries one, so engagement 2 applies none of them and says so.',
+  },
+  'MUTUAL.sideLetter': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=mutual_order.',
+    method: 'The mirror keeps the ROLES and moves the stacks between armies: A=inf attacking / B=st defending against A=st defending / B=inf attacking. Both print 63.00 and 40.00.',
+    tolerance: 'Identical to the printed decimal, so the page\u2019s claim that the side letter is inert one-sided is confirmed rather than assumed.',
+    notEvidenceFor: 'Mutual battles, where the side letter is worth up to a whole stack. An earlier version of this experiment compared A=inf-attacking against A=inf-DEFENDING, which are two different battles rather than a mirror, and reported that the page was wrong. That verdict was a defect in the rig, and it is recorded here because the rig produced a confident false finding from a control that did not control for anything.',
+  },
+
   'BOMBARDMENT.mechanism': {
     confidence: 'measured',
     source: 'results.jsonl, experiments bombardment / bombardment_law / bombardment_own / bombardment_finish / bombardment_lucien2 / bombardment_melee / bombardment_friendly / togo_buff_clean \u2014 about 100 requests.',

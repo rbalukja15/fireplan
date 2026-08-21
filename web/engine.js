@@ -1245,7 +1245,11 @@ function runSimulation(config, derivation, caveats) {
   // attacker's, so every existing single-terrain call behaves as before.
   const defenderTerrain = (config && typeof config.defenderTerrain === 'string')
     ? config.defenderTerrain : terrain;
-  const battle = { terrain, defenderTerrain, distance };
+  // MUTUAL: both stacks attacking each other. The form has always offered it
+  // (B.1.target = A.1) and this project never once submitted it, so until now
+  // the engine had no way to express half the configurations the page allows.
+  const mutual = !!config.mutual;
+  const battle = { terrain, defenderTerrain, distance, mutual };
   const atk = makeSide(config.attacker, 'attacker', derivation, caveats, battle);
   const def = makeSide(config.defender, 'defender', derivation, caveats, battle);
 
@@ -2150,6 +2154,105 @@ function runSimulation(config, derivation, caveats) {
         side.n = 0;
       } else {
         side.n = Math.max(0, side.n0 - side.deaths);
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // ENGAGEMENT 2 — mutual attacks only.
+    // ------------------------------------------------------------------
+    // Everything above this line is ONE engagement: A attacks with its attack
+    // column and B answers with its defence column, both from the pre-round
+    // state. That is the only configuration this project ever submitted --
+    // duel() is the only thing in the rig that ever set a B-side target and it
+    // always set 0 -- so for its whole life the app could not express a battle
+    // in which both stacks are attacking each other.
+    //
+    // The form has always offered it, and the site's help page says it is not
+    // cosmetic: "If two stacks are each attacking the other it makes a
+    // difference which side they are on. Army A will always attack first."
+    //
+    // Measured, that is exactly two engagements in order. A attacks; the
+    // stacks are updated; then B attacks with what survived, using ITS attack
+    // column against A's defence column. Sixteen cells across a roster whose
+    // attack and defence figures disagree by up to four times and in both
+    // directions were predicted from this before being submitted, and every
+    // one came back to the printed decimal.
+    //
+    // The side letter is worth a whole stack: ten light artillery facing a
+    // hundred infantry are destroyed in engagement 1 and never fire at all,
+    // where a DEFENDING stack that is wiped still deals its full figure
+    // (measured, and unchanged). Holding the A slot saves a hundred infantry
+    // 59.44 HP against ten stormtroopers -- 226.12 instead of 285.56.
+    if (battle.mutual && !outOfRange && !def.withheldLoss) {
+      refreshRound(atk);
+      refreshRound(def);
+      const bothAlive = def.pool > EPS && def.n > 0 && atk.pool > EPS && atk.n > 0;
+      if (!bothAlive) {
+        derivation.push({
+          label: `${tag}Engagement 2 does not happen`,
+          formula: (def.pool <= EPS || def.n <= 0)
+            ? 'The B stack was destroyed in engagement 1, so it never fires. '
+              + 'A DEFENDING stack that is wiped still deals its full figure; '
+              + 'one that was attacking and died first deals nothing. That is '
+              + 'what the side letter buys.'
+            : 'The A stack is gone, so there is nothing left for B to fire at.',
+          value: null,
+        });
+      } else {
+        // B attacks now, so the coefficients swap sides with the roles.
+        const e2Atk = stackOutput(def, (u) => attackCoefficient(
+          u, atk.unit, battle.terrain, battle.defenderTerrain).value, 1);
+        const e2Def = stackOutput(atk, (u) => defenceCoefficient(
+          u, def.unit, battle.terrain, battle.defenderTerrain).value, 1);
+        const e2AtkOut = e2Atk.total === null ? null : e2Atk.total;
+        const e2DefOut = e2Def.total === null ? null : e2Def.total;
+        if (e2AtkOut === null || e2DefOut === null) {
+          atk.withheldLoss = true;
+          derivation.push({
+            label: `${tag}Engagement 2 withheld`,
+            formula: 'One of the two columns engagement 2 needs has no measured '
+              + 'value for this pairing, so its damage is unknown — not zero.',
+            value: null,
+          });
+        } else {
+          const aLost = Math.min(e2AtkOut, atk.pool);
+          const bLost = Math.min(e2DefOut, def.pool);
+          derivation.push({
+            label: `${tag}Engagement 2: B attacks`,
+            formula: `B fires with what survived engagement 1 — `
+              + `${round4(e2AtkOut)} against A, answered by A's DEFENCE column `
+              + `for ${round4(e2DefOut)}. Measured: this is a second whole `
+              + 'engagement, not a return volley.',
+            value: aLost,
+          });
+          for (const [side, amount] of [[atk, aLost], [def, bLost]]) {
+            const alloc = allocate(side, amount);
+            let died = 0;
+            for (const pt of alloc.parts) {
+              const d2 = deathsFromShare(pt.row, pt.share);
+              pt.row.hpLost += pt.share;
+              pt.row.deaths += d2;
+              died += d2;
+            }
+            side.hpLost += amount;
+            side.pool -= amount;
+            side.deaths += died;
+          }
+          atk.damageDealt += bLost;
+          atk.outputRaw += e2DefOut;
+          def.damageDealt += aLost;
+          def.outputRaw += e2AtkOut;
+          for (const side of [atk, def]) {
+            if (side.pool <= EPS) { side.pool = 0; side.wiped = true; side.n = 0; }
+            else side.n = Math.max(0, side.n0 - side.deaths);
+          }
+        }
+      }
+      if (fort || def.buildings.length || atk.hero || def.hero) {
+        caveats.push('Engagement 2 of a mutual attack is modelled from the unit '
+          + 'columns only. No mutual reading on record carries a fortress, a '
+          + 'building or a hero, so what those do in the second engagement is '
+          + 'not measured and is not applied there.');
       }
     }
 
