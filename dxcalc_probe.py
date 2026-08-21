@@ -10227,6 +10227,11 @@ def exp_real_army(p: Probe) -> None:
     tooltip says "hit points of this unit TYPE". The game shows the same
     totals. So the figures go in exactly as read.
     """
+    # Corrected by the player: the fortress is level 3, not 4. That matters
+    # twice over -- it is 150 HP rather than 200, and its damage reduction is
+    # 0.15 x (150/50 + 1) = 60% rather than 75%, which is far closer to the
+    # 62% their own in-game panel reads.
+    FORT_LVL = "3"
     ATK = [("inf", 35, "453.6"), ("ac", 6, "318.1"), ("cav", 17, "378.1")]
     DEF = [("ac", 12, "677.5")]
     abb, lvl, hhp = HERO_FIELDS          # the hero is on the DEFENDING side
@@ -10243,7 +10248,7 @@ def exp_real_army(p: Probe) -> None:
             ov[f"B.1.{i}.count"] = str(n)
             ov[f"B.1.{i}.hp"] = hp
         ov.update({abb: "kangal", lvl: str(hero_level), hhp: "83.1"})
-        ov.update({"B.1.bldg.1.abb": "fortress", "B.1.bldg.1.lvl": "4",
+        ov.update({"B.1.bldg.1.abb": "fortress", "B.1.bldg.1.lvl": FORT_LVL,
                    "B.1.bldg.1.hp": "100%"})
         return ov
 
@@ -10252,8 +10257,8 @@ def exp_real_army(p: Probe) -> None:
 
     # The hero badge reads a star and a 9; the "Level 1" beside every unit is
     # the TECH level. Both readings are submitted rather than guessed between.
-    for hero_level in (9, 1):
-        for rounds in (1, 2, 3, 5, 100):
+    for hero_level, ladder in ((9, (1, 3, 5, 100)), (1, (1, 100))):
+        for rounds in ladder:
             ov = build(rounds, hero_level)
             try:
                 p.submit(ov, create=fields)
@@ -10263,7 +10268,7 @@ def exp_real_army(p: Probe) -> None:
             d = dict(p.last_details)
             record("real_army",
                    {"hero_level": hero_level, "rounds": rounds,
-                    "attacker": ATK, "defender": DEF, "fortress": "lvl4 100%",
+                    "attacker": ATK, "defender": DEF, "fortress": f"lvl{FORT_LVL} 100%",
                     "detail": d, "summary": dict(p.last_summary)},
                    {k: (v or {}).get("lost") for k, v in d.items()})
             print(f"\n  === Kangal level {hero_level}, {rounds} round(s)")

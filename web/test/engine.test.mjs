@@ -4185,10 +4185,14 @@ console.log('\n23. a real army');
     { unit: 'ac', count: 6, hpPct: (318.1 / 360) * 100 },
     { unit: 'cav', count: 17, hpPct: (378.1 / 425) * 100 },
   ] });
-  const DEF = (lv) => ({
+  // The fortress level comes from the record, not from a literal: the player
+  // first said level 4 and then corrected it to 3, and both sets of readings
+  // are on file. A hard-coded 4 would have replayed the level-3 rows against
+  // the wrong building and blamed the engine.
+  const DEF = (lv, fortLevel = 4) => ({
     rows: [{ unit: 'ac', count: 12, hpPct: (677.5 / 720) * 100 }],
     hero: { code: 'kangal', level: lv, hpPct: (83.1 / 90) * 100 },
-    buildings: [{ code: 'fortress', level: 4, hpPct: 100 }],
+    buildings: [{ code: 'fortress', level: fortLevel, hpPct: 100 }],
   });
 
   check('the roster maxima match the game\'s own display',
@@ -4196,6 +4200,13 @@ console.log('\n23. a real army');
     && UNITS.cav.maxHP * 17 === 425 && UNITS.ac.maxHP * 12 === 720
     && HEROES.kangal.pool === 90,
     'these were measured from scratch; the game shows 700/360/425/720/90');
+
+
+  check('a full level-3 fortress reduces damage by exactly 60%, as the site says',
+    Math.abs(fortressDR(BUILDINGS.fortress.poolAtLevel[3]) - 0.60) < 1e-9,
+    `${fortressDR(BUILDINGS.fortress.poolAtLevel[3])}`);
+  check('...and a full level-4 one by 75%',
+    Math.abs(fortressDR(BUILDINGS.fortress.poolAtLevel[4]) - 0.75) < 1e-9);
 
   // Replay every reading of this battle that is on file, at the tolerance the
   // comparison actually supports: exact for one round, then a drift that is
@@ -4208,41 +4219,50 @@ console.log('\n23. a real army');
     const wantA = (s['A.1'] || {}).hp_lost;
     const wantB = (s['B.1'] || {}).hp_lost;
     if (wantA == null || wantB == null) continue;
-    const r = simulate({ attacker: ATK(), defender: DEF(m.hero_level),
-      rounds: m.rounds });
+    const fortLevel = Number((/lvl(\d)/.exec(m.fortress || '') || [])[1]) || 4;
+    const r = simulate({ attacker: ATK(),
+      defender: DEF(m.hero_level, fortLevel), rounds: m.rounds });
     replayed += 1;
     // "Fought out" is not a round number -- rounds 6, 7 and 8 are still
     // running. It is whether the recorded battle ENDED, which the defender's
     // total tells you: 760.6 is its whole pool.
     const foughtOut = wantB >= 760;
-    const tight = m.rounds <= 5;
+    // "Early" is not a round number either. A level-3 fortress falls sooner, so
+    // its round 5 sits as deep into the battle as a level-4's round 7 -- and
+    // keying the tolerance to the round number made the same model look exact
+    // at one fortress level and wrong at the other. What actually governs the
+    // agreement is how far the loser has been ground down: the two track
+    // closely while both sides are healthy and compound apart as one nears
+    // death. DEF_POOL is the defender's full 677.5 + 83.1.
+    const DEF_POOL = 760.6;
+    const tight = wantB < DEF_POOL * 0.65;
     if (tight) {
-      check(`real army, ${m.rounds} round(s), hero lv${m.hero_level}: attacker ${wantA}`,
+      check(`real army (fort ${fortLevel}), ${m.rounds} rd, hero lv${m.hero_level}: attacker ${wantA}`,
         Math.abs(r.attacker.hpLost - wantA) <= Math.max(0.05, wantA * 0.01),
         `got ${r.attacker.hpLost.toFixed(2)}`);
-      check(`real army, ${m.rounds} round(s), hero lv${m.hero_level}: defender ${wantB}`,
+      check(`real army (fort ${fortLevel}), ${m.rounds} rd, hero lv${m.hero_level}: defender ${wantB}`,
         Math.abs(r.defender.hpLost - wantB) <= Math.max(0.05, wantB * 0.01),
         `got ${r.defender.hpLost.toFixed(2)}`);
     } else if (foughtOut) {
       // What IS right about a battle fought to the end: the winner, and the
       // loser's exact total.
-      check(`real army fought out, hero lv${m.hero_level}: the DEFENDER is the one wiped`,
+      check(`real army fought out (fort ${fortLevel}, hero lv${m.hero_level}): the DEFENDER is wiped`,
         r.defender.wiped && !r.attacker.wiped
         && Math.abs(r.defender.hpLost - wantB) < 0.05,
         `defender lost ${r.defender.hpLost.toFixed(2)} of ${wantB}, `
           + `attacker wiped=${r.attacker.wiped}`);
-      cannotReproduce(`real army fought out (hero lv${m.hero_level}), attacker total`,
+      cannotReproduce(`real army fought out (fort ${fortLevel}, hero lv${m.hero_level}), attacker total`,
         wantA, r.attacker.hpLost,
         'tracks to 1% through round 5 then compounds — REAL_ARMY.endgameDrift');
-      cannotReproduce(`real army fought out (hero lv${m.hero_level}), fortress total`,
-        200.0, r.defender.buildings[0].hpLost,
+      cannotReproduce(`real army fought out (fort ${fortLevel}, hero lv${m.hero_level}), fortress total`,
+        BUILDINGS.fortress.poolAtLevel[fortLevel], r.defender.buildings[0].hpLost,
         'the site finishes the fortress; this model leaves it at 97-100%');
     } else {
       // Rounds 6-8: mid-drift. Reported with the actual figures rather than
       // asserted at a tolerance chosen to make them pass.
-      cannotReproduce(`real army, ${m.rounds} rounds (hero lv${m.hero_level}), attacker`,
+      cannotReproduce(`real army, ${m.rounds} rd (fort ${fortLevel}, hero lv${m.hero_level}), attacker`,
         wantA, r.attacker.hpLost, 'endgame drift, 1-3% here');
-      cannotReproduce(`real army, ${m.rounds} rounds (hero lv${m.hero_level}), defender`,
+      cannotReproduce(`real army, ${m.rounds} rd (fort ${fortLevel}, hero lv${m.hero_level}), defender`,
         wantB, r.defender.hpLost, 'endgame drift, 1-4% here');
     }
   }
