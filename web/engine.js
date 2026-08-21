@@ -1548,15 +1548,35 @@ function runSimulation(config, derivation, caveats) {
     }
   }
 
-  const bdRate = BUILDING_DAMAGE_PER_EFFECTIVE_UNIT[atk.unit.code];
+  // BUILDING DAMAGE IS PER ROW, not per stack. Every building sweep this
+  // project ran used a SINGLE-TYPE stack, and on a single-type stack "one rate
+  // times the stack's effective units" and "each row's rate times its own
+  // effective units, summed" are the same number -- so nothing in the record
+  // could tell them apart, and the cheaper one went in. A real mixed army
+  // separates them at once: 35 infantry at 0.30, 6 armoured cars at 1.00 and
+  // 17 cavalry at 2.00 deal 38.06 by the row sum, against the 10.41 a single
+  // infantry rate gives, and the site prints 38.1.
+  //
+  // The consequence was not cosmetic. Under-reporting building damage by 3.7x
+  // kept a level-4 fortress alive for the whole battle, its damage reduction
+  // never decayed, and the engine handed the defender a win the site gives to
+  // the attacker.
+  const bdRates = atk.rows.map((r) => (r.unit
+    ? BUILDING_DAMAGE_PER_EFFECTIVE_UNIT[r.unit.code] : undefined));
+  // One unmeasured row makes the whole total unknown. Summing the rest would
+  // silently under-report, which is the failure this block already guards
+  // against for a single-type stack.
+  const bdMissing = atk.rows.filter((r, i) => bdRates[i] === undefined);
+  const bdRate = bdMissing.length ? undefined : true;
   if (def.buildings.length && bdRate === undefined) {
-    const floor = BUILDING_DAMAGE_FLOOR[atk.unit.code];
+    const bdGap = bdMissing[0] && bdMissing[0].unit ? bdMissing[0].unit : atk.unit;
+    const floor = BUILDING_DAMAGE_FLOOR[bdGap.code];
     caveats.push(floor
-      ? `Damage to buildings from ${atk.unit.label} is CENSORED, not unknown: it `
+      ? `Damage to buildings from ${bdGap.label} is CENSORED, not unknown: it `
         + `dealt exactly the fortress's whole pool, so ${floor} per effective unit `
         + 'is a floor and not a value. Building damage is withheld rather than '
         + 'quoted as if the reading were complete.'
-      : `Damage to buildings has no reading for ${atk.unit.label}, and nothing in `
+      : `Damage to buildings has no reading for ${bdGap.label}, and nothing in `
         + 'the model predicts it — the per-unit figures range from 0.30 to 6.00 '
         + 'with no relation to the unit\'s attack value. Building damage is withheld.');
   }
@@ -1651,7 +1671,20 @@ function runSimulation(config, derivation, caveats) {
     // Rounds after the first fight with what is left: fewer units, and those
     // units damaged. Both change the output and neither used to.
     if (r > 1) { refreshRound(atk); refreshRound(def); }
-    if (atk.n <= 0 || def.n <= 0 || atk.pool <= EPS || def.pool <= EPS) {
+    // A SIDE IS FINISHED WHEN ITS POOL IS GONE, NOT WHEN ITS UNIT COUNT HITS
+    // ZERO. `n` counts units and a hero is not one of them, so a stack whose
+    // last unit had died while its hero was still standing was called finished
+    // and the battle stopped early. On a real army that decided the winner: the
+    // defender's twelve armoured cars died in round 9 with Kangal still holding
+    // 24.2 HP, this engine stopped there and reported the defender alive, and
+    // the site fights on and destroys it.
+    //
+    // Testing the pool alone is also strictly safe: if every unit is dead and
+    // there is no hero, the pool is zero by construction. And a hero with no
+    // troops at all is a configuration the source's help page documents --
+    // "to use a hero without any troops just keep one unit and give it a count
+    // of zero" -- so a stack that is only a hero must be able to fight.
+    if (atk.pool <= EPS || def.pool <= EPS) {
       derivation.push({
         label: `${tag}round skipped`,
         formula: 'One side has no surviving HP; the battle is over.',
@@ -2106,11 +2139,33 @@ function runSimulation(config, derivation, caveats) {
         && (attenuated || patrol.applies))
         ? attenuationFactor(atk, atkLostThis, patrol.applies ? patrol.c : 1)
         : 1;
-      const bDmg = bdRate * atkE * hpMultiplier(atkF) * bdScale;
+      // Each row at its OWN rate, its OWN effective units and its OWN HP
+      // fraction. The stack-level figures are wrong for a mixture on all three.
+      const bdParts = atk.rows.map((r) => {
+        const rate = BUILDING_DAMAGE_PER_EFFECTIVE_UNIT[r.unit.code];
+        const frac = (r.liveFrac === undefined)
+          // liveFrac IS the absolute fraction already -- refreshRound computes it as
+      // (pool - hpLost) / (survivors x maxHP), and `pool` is the row's pool
+      // AFTER hpPct was applied. Multiplying by hpPct/100 again charged a
+      // damaged stack for its opening damage a second time, every round after
+      // the first.
+      //
+      // Invisible in the whole record: every multi-round sweep this project
+      // ran started at 100% HP, where hpPct/100 is 1 and the two are the same
+      // number. It took a real army -- 35 infantry at 453.6 of 700 -- to
+      // separate them. The engine had infantry firing at m=0.438 in round 2
+      // where the site gives 0.649.
+      ? r.hpPct / 100 : r.liveFrac;
+        return { row: r, rate, out: rate * r.effective * hpMultiplier(frac) };
+      });
+      const bDmg = bdParts.reduce((t, x) => t + x.out, 0) * bdScale;
       const target = def.buildings[0];
       derivation.push({
         label: `${tag}Damage to ${target.label}`,
-        formula: `${bdRate} per effective unit x E(${atk.n})=${round4(atkE)}`
+        formula: (atk.rows.length > 1
+          ? `per row: ${bdParts.map((x) => `${x.row.unit.code} ${x.rate}`
+            + ` x ${round4(x.row.effective)}`).join(' + ')}`
+          : `${bdParts[0].rate} per effective unit x E(${atk.n})=${round4(atkE)}`)
           + `${bdScale !== 1 ? ` x post-fire ${round4(bdScale)}` : ''} = ${round4(bDmg)} — `
           + 'additive, not carved out of the damage to units, and not reduced by fortress DR (measured)',
         value: bDmg,
@@ -2345,7 +2400,18 @@ function stackOutput(side, coefFor, scale, mulEach) {
       : coefFor(r.unit);
     if (c === null || c === undefined) return { total: null, parts: [] };
     const frac = (r.liveFrac === undefined)
-      ? r.hpPct / 100 : r.liveFrac * (r.hpPct / 100);
+      // liveFrac IS the absolute fraction already -- refreshRound computes it as
+      // (pool - hpLost) / (survivors x maxHP), and `pool` is the row's pool
+      // AFTER hpPct was applied. Multiplying by hpPct/100 again charged a
+      // damaged stack for its opening damage a second time, every round after
+      // the first.
+      //
+      // Invisible in the whole record: every multi-round sweep this project
+      // ran started at 100% HP, where hpPct/100 is 1 and the two are the same
+      // number. It took a real army -- 35 infantry at 453.6 of 700 -- to
+      // separate them. The engine had infantry firing at m=0.438 in round 2
+      // where the site gives 0.649.
+      ? r.hpPct / 100 : r.liveFrac;
     const mm = mulEach ? mulEach(r) : hpMultiplier(frac);
     // The stack-level multipliers (trench output, patrol duration) must be
     // carried onto the ROWS as well, or the rows no longer sum to the stack.

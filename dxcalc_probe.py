@@ -10202,6 +10202,84 @@ def exp_mutual_order(p: Probe) -> None:
           "\"A attacks first\".")
 
 
+def exp_real_army(p: Probe) -> None:
+    """A real battle, read off a player's screen, against the live site.
+
+    Everything measured so far has been a configuration this rig invented to
+    isolate one law. This is the opposite: two armies as a player actually has
+    them, mixed types at awkward HP, a hero, and a fortress. It is the only
+    kind of test that catches a law that is individually right and wrongly
+    combined.
+
+    ATTACKER   35 infantry   453.6 / 700.0
+               6 armoured cars 318.1 / 360.0
+               17 cavalry    378.1 / 425.0
+    DEFENDER   12 armoured cars 677.5 / 720.0
+               Orhan "Kangal" Demir, 83.1 / 90.0
+               level 4 fortress, full
+
+    Every one of those maxima -- 700, 360, 425, 720, and the hero's 90 -- is
+    what this project measured from scratch, and all five match the game's own
+    display exactly.
+
+    HP HERE IS THE ROW TOTAL. The site's field carries 1375.1 against a count
+    of 75, which cannot be per unit when an infantryman caps at 20, and its
+    tooltip says "hit points of this unit TYPE". The game shows the same
+    totals. So the figures go in exactly as read.
+    """
+    ATK = [("inf", 35, "453.6"), ("ac", 6, "318.1"), ("cav", 17, "378.1")]
+    DEF = [("ac", 12, "677.5")]
+    abb, lvl, hhp = HERO_FIELDS          # the hero is on the DEFENDING side
+
+    def build(rounds, hero_level):
+        ov = settings(rounds)
+        ov.update(duel(1, "inf", 35, "ac", 12))       # blanks rows 2-15 both sides
+        for i, (u, n, hp) in enumerate(ATK, start=1):
+            ov[f"A.1.{i}.unit"] = u
+            ov[f"A.1.{i}.count"] = str(n)
+            ov[f"A.1.{i}.hp"] = hp
+        for i, (u, n, hp) in enumerate(DEF, start=1):
+            ov[f"B.1.{i}.unit"] = u
+            ov[f"B.1.{i}.count"] = str(n)
+            ov[f"B.1.{i}.hp"] = hp
+        ov.update({abb: "kangal", lvl: str(hero_level), hhp: "83.1"})
+        ov.update({"B.1.bldg.1.abb": "fortress", "B.1.bldg.1.lvl": "4",
+                   "B.1.bldg.1.hp": "100%"})
+        return ov
+
+    fields = HERO_FIELDS + ("B.1.bldg.1.abb", "B.1.bldg.1.lvl", "B.1.bldg.1.hp") \
+        + composite_fields("A", 1, 3) + composite_fields("B", 1, 1)
+
+    # The hero badge reads a star and a 9; the "Level 1" beside every unit is
+    # the TECH level. Both readings are submitted rather than guessed between.
+    for hero_level in (9, 1):
+        for rounds in (1, 2, 3, 5, 100):
+            ov = build(rounds, hero_level)
+            try:
+                p.submit(ov, create=fields)
+            except (BareFormReturned, ValueError) as e:
+                print(f"  hero lv{hero_level}, {rounds} round(s): {e}"[:96])
+                continue
+            d = dict(p.last_details)
+            record("real_army",
+                   {"hero_level": hero_level, "rounds": rounds,
+                    "attacker": ATK, "defender": DEF, "fortress": "lvl4 100%",
+                    "detail": d, "summary": dict(p.last_summary)},
+                   {k: (v or {}).get("lost") for k, v in d.items()})
+            print(f"\n  === Kangal level {hero_level}, {rounds} round(s)")
+            for slot in sorted(d):
+                v = d[slot] or {}
+                extra = ""
+                if v.get("dr_before") is not None:
+                    extra = (f"   fortress DR {v.get('dr_before')}% -> "
+                             f"{v.get('dr_after')}%")
+                print(f"    {slot:16} lost {str(v.get('lost')):>9}"
+                      f"  ({v.get('pct')}%)  died {v.get('died')}{extra}")
+            for stack, s in (p.last_summary or {}).items():
+                print(f"    {stack} summary: {s.get('hp_lost')} HP lost, "
+                      f"{s.get('hours')} h to repair, ${s.get('cash')}")
+
+
 EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "unit_stats": exp_unit_stats,
     "repair_cost": exp_repair_cost,
@@ -10217,6 +10295,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "mutual": exp_mutual,
     "mutual_law": exp_mutual_law,
     "mutual_order": exp_mutual_order,
+    "real_army": exp_real_army,
     "range_roster": exp_range_roster,
     "return_fire": exp_return_fire,
     "mixed_range": exp_mixed_range,

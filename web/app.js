@@ -536,19 +536,34 @@ function fmtHpPct(pct) {
 }
 
 /**
- * A row's maximum HP per unit, including a hero HP buff if one applies to that
- * type. Marco raises a Tank's max by 1.12 at level 10, and an absolute HP
- * figure typed while Marco is in the stack is out of THAT maximum.
+ * A row's maximum HP -- for the WHOLE ROW, not per unit.
+ *
+ * This is the semantics the game and the source form both use, and getting it
+ * per-unit made the app unable to accept the figure a player actually has in
+ * front of them. Supremacy's army panel shows "453.6 / 700.0" for 35 infantry,
+ * and dxcalc's own field carries "1375.1" against a count of 75 -- which
+ * cannot be per unit, since an infantryman caps at 20. Its tooltip agrees:
+ * "current hit points of this unit TYPE".
+ *
+ * Includes a hero HP buff where one applies. Marco raises a Tank's max by 1.12
+ * at level 10, and an absolute figure read off the game while Marco is in the
+ * stack is out of THAT maximum -- the source's help page documents exactly
+ * this trap.
  */
-function rowMaxHP(side, unitCode) {
+function rowMaxHP(side, row) {
+  const unitCode = typeof row === 'string' ? row : (row && row.unit);
+  const count = typeof row === 'string' ? 1 : ((row && row.count) || 1);
   const base = (UNITS[unitCode] || {}).maxHP;
   if (!base) return null;
+  let per = base;
   const hero = state[side] && state[side].hero;
-  if (!hero || !ENGINE || !ENGINE.heroHpBuff) return base;
-  try {
-    const b = ENGINE.heroHpBuff(hero.code, hero.level, unitCode);
-    return b && typeof b.m === 'number' ? base * b.m : base;
-  } catch { return base; }
+  if (hero && ENGINE && ENGINE.heroHpBuff) {
+    try {
+      const b = ENGINE.heroHpBuff(hero.code, hero.level, unitCode);
+      if (b && typeof b.m === 'number') per = base * b.m;
+    } catch { /* fall back to the base max */ }
+  }
+  return per * count;
 }
 
 /** Both hero tables, at module scope. `defOf` inside renderHero is local. */
@@ -1130,7 +1145,7 @@ function readDomToState() {
         // Keep what was typed, so the field does not reformat under the
         // cursor, and derive the percentage the engine wants from it.
         r.hpText = hp.value;
-        const parsed = parseHp(hp.value, rowMaxHP(key, r.unit));
+        const parsed = parseHp(hp.value, rowMaxHP(key, r));
         // An unparseable box leaves the last good value in place rather than
         // silently becoming 100%.
         if (parsed) r.hpPct = parsed.pct;
@@ -2051,14 +2066,16 @@ function updateRowNotes(side) {
         ];
         // Both forms of the HP entry, so typing "17.3" confirms itself as a
         // percentage and typing "85%" confirms itself as hit points.
-        const maxHP = rowMaxHP(side, r.unit) || u.maxHP;
+        // The row total, so it reads back in the same units the game shows.
+        const rowMax = rowMaxHP(side, r) || (u.maxHP * r.count);
+        const buffed = Math.abs(rowMax - u.maxHP * r.count) > 1e-9;
         if (r.hpBad) {
           bits.push('HP not a number — last value kept');
         } else if (r.hpPct !== 100 && m !== null) {
-          const abs = Math.round((r.hpPct / 100) * maxHP * 100) / 100;
-          const buffed = Math.abs(maxHP - u.maxHP) > 1e-9;
-          bits.push(`at ${fmtLoose(abs)} HP${buffed ? ' of a hero-buffed '
-            + fmtLoose(Math.round(maxHP * 100) / 100) : ''} `
+          const abs = Math.round((r.hpPct / 100) * rowMax * 100) / 100;
+          bits.push(`at ${fmtLoose(abs)} of `
+            + `${fmtLoose(Math.round(rowMax * 100) / 100)} HP`
+            + `${buffed ? ' (hero-buffed)' : ''} `
             + `(${fmtHpPct(r.hpPct)}%): pool ×${(r.hpPct / 100).toFixed(2)}, `
             + `output ×${fmtStat(m, 2)}`);
         }

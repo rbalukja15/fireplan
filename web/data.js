@@ -1463,6 +1463,26 @@ export const NOT_MEASURED = [
 // measured, how well, and what it is NOT evidence for.
 
 export const PROVENANCE = {
+  'REAL_ARMY.validation': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=real_army \u2014 two armies read off a player\u2019s own screen, submitted to the live site at 1, 2, 3, 5, 6, 7, 8, 10, 20 and 100 rounds.',
+    method: 'End-to-end rather than isolating: 35 infantry at 453.6/700 plus 6 armoured cars and 17 cavalry, all damaged, attacking 12 armoured cars with Orhan \u201cKangal\u201d Demir behind a full level-4 fortress. Every other measurement in this project isolates ONE law, which is exactly what makes a law that is individually right and wrongly COMBINED invisible.',
+    tolerance: 'Round 1 exact to the printed 0.01 on both sides, both hero levels, and on the fortress. Within 0.3% at round 3 and 1% at round 5. Past that the two compound apart \u2014 see REAL_ARMY.endgameDrift.',
+    notEvidenceFor: 'Anything about the live GAME. The site\u2019s own fortification figure for a full level-4 fortress is 75%, and the player\u2019s in-game panel reads 62% for what they describe as the same fortress. This engine models the site, and matches it; whether the site still matches the game is a separate question and not one this project can answer.',
+  },
+  'REAL_ARMY.endgameDrift': {
+    confidence: 'measured',
+    source: 'The same ladder, round by round.',
+    note: 'The attacker\u2019s cumulative loss runs 0.0% out at round 1, 0.1% at round 2, 0.3% at 3, 0.8% at 5, 1.2% at 6, 1.7% at 7, 2.4% at 8 and 5.0% by round 10, and the defender\u2019s mirrors it in the other direction. That shape is a compounding loop rather than a separate law: a defender that takes slightly too little keeps a slightly higher m(f), so it deals slightly more, so the attacker takes more still. The seed is about 0.5 HP in the defender\u2019s ROUND TWO output \u2014 164.84 against the site\u2019s 164.34 \u2014 and where that half-point comes from is not known. What the model does still get right at the end is the outcome: the defender is the side destroyed, at exactly its 760.60, with the fortress at 97-100%.',
+  },
+  'BUILDING_DAMAGE.perRow': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=real_army, round 1.',
+    method: 'Every building sweep before this used a SINGLE-TYPE stack, where \u201cone rate times the stack\u2019s effective units\u201d and \u201ceach row\u2019s rate times its own effective units, summed\u201d are the same number, so nothing in the record could separate them. A mixed army separates them at once: 35 infantry at 0.30 (12.15 effective), 6 armoured cars at 1.00 (5.85) and 17 cavalry at 2.00 (17) give 38.06 by the row sum against 10.41 for a single infantry rate, and the site prints 38.1.',
+    tolerance: 'Exact to the 0.1 the building row prints.',
+    notEvidenceFor: 'A mixture containing a unit whose rate was never read. One unmeasured row makes the whole total unknown and it is withheld, not summed over the rest.',
+  },
+
   'MUTUAL.law': {
     confidence: 'measured',
     source: 'results.jsonl, experiments mutual / mutual_law / mutual_order / mutual_control / mutual_rounds \u2014 34 requests.',

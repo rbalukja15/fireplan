@@ -3157,7 +3157,8 @@ console.log('\n14. coverage of the record itself');
   const replayedLater = ['repair_cost', 'repair_damaged', 'bombardment',
     'bombardment_law', 'bombardment_own', 'bombardment_finish',
     'bombardment_lucien2', 'togo_buff_clean',
-    'mutual', 'mutual_law', 'mutual_order', 'mutual_control', 'mutual_rounds'];
+    'mutual', 'mutual_law', 'mutual_order', 'mutual_control', 'mutual_rounds',
+    'real_army'];
   const notReplayed = Object.keys(counts).filter(
     (e) => !replayed.includes(e) && !replayedLater.includes(e));
   console.log(`  note  replayed: ${replayed.map((e) => `${e} ${counts[e] || 0}`).join(', ')}`);
@@ -4150,6 +4151,134 @@ console.log('\n22. mutual attacks');
   }
   check('the mutual readings were actually replayed', replayed >= 14,
     String(replayed));
+}
+
+
+// ===========================================================================
+// 23. A REAL ARMY — the end-to-end check every synthetic sweep cannot be
+// ===========================================================================
+// Two armies read off a player's own screen: mixed types at awkward HP, a
+// hero, and a level-4 fortress. Everything else in this suite isolates one law
+// at a time, which is what makes a law that is individually right and wrongly
+// COMBINED invisible. This battle found three such defects in one afternoon,
+// and every one of them was hidden by the shape of the existing record rather
+// than by any weakness in it.
+//
+//   1. Building damage used ONE rate times the stack's effective units. Every
+//      building sweep used a single-type stack, where that and a per-row sum
+//      are the same number. A mixed army separates them 3.7x.
+//   2. A damaged row's HP fraction was multiplied in twice from round two on.
+//      Every multi-round sweep started at 100% HP, where the second factor is
+//      1 and the bug cannot show.
+//   3. A stack was called finished when its unit COUNT hit zero, so a defender
+//      whose last vehicle died with its hero still standing was declared alive
+//      and the battle stopped. Every measured multi-round battle ended with a
+//      pool at zero, not a hero alone.
+//
+// The armies' maxima are also an outside check on constants recovered purely
+// by black-box measurement: 35x20=700, 6x60=360, 17x25=425, 12x60=720 and
+// Kangal's 90 are exactly what the game itself displays.
+console.log('\n23. a real army');
+{
+  const ATK = () => ({ rows: [
+    { unit: 'inf', count: 35, hpPct: (453.6 / 700) * 100 },
+    { unit: 'ac', count: 6, hpPct: (318.1 / 360) * 100 },
+    { unit: 'cav', count: 17, hpPct: (378.1 / 425) * 100 },
+  ] });
+  const DEF = (lv) => ({
+    rows: [{ unit: 'ac', count: 12, hpPct: (677.5 / 720) * 100 }],
+    hero: { code: 'kangal', level: lv, hpPct: (83.1 / 90) * 100 },
+    buildings: [{ code: 'fortress', level: 4, hpPct: 100 }],
+  });
+
+  check('the roster maxima match the game\'s own display',
+    UNITS.inf.maxHP * 35 === 700 && UNITS.ac.maxHP * 6 === 360
+    && UNITS.cav.maxHP * 17 === 425 && UNITS.ac.maxHP * 12 === 720
+    && HEROES.kangal.pool === 90,
+    'these were measured from scratch; the game shows 700/360/425/720/90');
+
+  // Replay every reading of this battle that is on file, at the tolerance the
+  // comparison actually supports: exact for one round, then a drift that is
+  // documented rather than tuned away.
+  let replayed = 0;
+  for (const rec of rows) {
+    if (rec.experiment !== 'real_army') continue;
+    const m = rec.meta;
+    const s = m.summary || {};
+    const wantA = (s['A.1'] || {}).hp_lost;
+    const wantB = (s['B.1'] || {}).hp_lost;
+    if (wantA == null || wantB == null) continue;
+    const r = simulate({ attacker: ATK(), defender: DEF(m.hero_level),
+      rounds: m.rounds });
+    replayed += 1;
+    // "Fought out" is not a round number -- rounds 6, 7 and 8 are still
+    // running. It is whether the recorded battle ENDED, which the defender's
+    // total tells you: 760.6 is its whole pool.
+    const foughtOut = wantB >= 760;
+    const tight = m.rounds <= 5;
+    if (tight) {
+      check(`real army, ${m.rounds} round(s), hero lv${m.hero_level}: attacker ${wantA}`,
+        Math.abs(r.attacker.hpLost - wantA) <= Math.max(0.05, wantA * 0.01),
+        `got ${r.attacker.hpLost.toFixed(2)}`);
+      check(`real army, ${m.rounds} round(s), hero lv${m.hero_level}: defender ${wantB}`,
+        Math.abs(r.defender.hpLost - wantB) <= Math.max(0.05, wantB * 0.01),
+        `got ${r.defender.hpLost.toFixed(2)}`);
+    } else if (foughtOut) {
+      // What IS right about a battle fought to the end: the winner, and the
+      // loser's exact total.
+      check(`real army fought out, hero lv${m.hero_level}: the DEFENDER is the one wiped`,
+        r.defender.wiped && !r.attacker.wiped
+        && Math.abs(r.defender.hpLost - wantB) < 0.05,
+        `defender lost ${r.defender.hpLost.toFixed(2)} of ${wantB}, `
+          + `attacker wiped=${r.attacker.wiped}`);
+      cannotReproduce(`real army fought out (hero lv${m.hero_level}), attacker total`,
+        wantA, r.attacker.hpLost,
+        'tracks to 1% through round 5 then compounds — REAL_ARMY.endgameDrift');
+      cannotReproduce(`real army fought out (hero lv${m.hero_level}), fortress total`,
+        200.0, r.defender.buildings[0].hpLost,
+        'the site finishes the fortress; this model leaves it at 97-100%');
+    } else {
+      // Rounds 6-8: mid-drift. Reported with the actual figures rather than
+      // asserted at a tolerance chosen to make them pass.
+      cannotReproduce(`real army, ${m.rounds} rounds (hero lv${m.hero_level}), attacker`,
+        wantA, r.attacker.hpLost, 'endgame drift, 1-3% here');
+      cannotReproduce(`real army, ${m.rounds} rounds (hero lv${m.hero_level}), defender`,
+        wantB, r.defender.hpLost, 'endgame drift, 1-4% here');
+    }
+  }
+  check('the real-army readings were replayed', replayed >= 4, String(replayed));
+
+  // The three defects, asserted directly so none can quietly return.
+  {
+    // 1. Per-row building damage. One rate for the stack gives 10.41.
+    const r = simulate({ attacker: ATK(), defender: DEF(9), rounds: 1 });
+    check('building damage sums the rows, not one rate x the stack',
+      Math.abs(r.defender.damageToBuildings - 38.06) < 0.1,
+      `${r.defender.damageToBuildings.toFixed(2)} — a single infantry rate gives 10.41`);
+  }
+  {
+    // 2. A damaged stack must not be charged for its opening damage twice.
+    // Two rounds at 50% HP: round two's output must use the CURRENT fraction.
+    const half = simulate({ attacker: { rows: [{ unit: 'inf', count: 20, hpPct: 50 }] },
+      defender: { rows: [{ unit: 'inf', count: 20 }] }, rounds: 2 });
+    const line = half.derivation.find((d) => /^R2 Attacker output/.test(d.label));
+    const mm = line && /m\(([\d.]+)\)=([\d.]+)/.exec(String(line.formula));
+    check('a damaged row\'s m() argument and its value agree in later rounds',
+      !mm || Math.abs((0.05 + 0.95 * Number(mm[1])) - Number(mm[2])) < 1e-3,
+      mm ? `m(${mm[1]}) printed as ${mm[2]}, but 0.05+0.95x${mm[1]} = `
+        + `${(0.05 + 0.95 * Number(mm[1])).toFixed(4)}` : 'no R2 line');
+  }
+  {
+    // 3. A hero alone is still a live stack.
+    const heroOnly = simulate({
+      attacker: { rows: [{ unit: 'ht', count: 40 }] },
+      defender: { rows: [{ unit: 'inf', count: 2 }], hero: { code: 'kangal', level: 9 } },
+      rounds: 20 });
+    check('a stack whose units are dead but whose hero lives keeps fighting',
+      heroOnly.defender.wiped,
+      `defender pool left ${(heroOnly.defender.pool || 0).toFixed(2)} — the loop `
+        + 'used to stop the moment the unit count hit zero');
+  }
 }
 
 // ===========================================================================
