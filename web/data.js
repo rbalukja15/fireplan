@@ -876,7 +876,6 @@ export const HEROES = {
                   // so the column is scaled to match it rather than contradict it.
                   atkByTargetClass: { land: 8.0, air: 6.74, naval: 1.27 },
                   defByAttackerClass: { land: 8, air: 2, naval: 6 },
-                  atkAttackingBand: { lo: 8.0, hi: 37.94, measuredAt: 'level 10; 8.00 on a six-type stack, 36.44-37.94 on single-type stacks' },
                   pool: 40, sits: 'first', maxLevel: 15 },
   // atkAttacking was 62.0 and is 8.0. The old figure was this hero's own
   // attack plus an ATTACK-ONLY buff, added together because the stack it was
@@ -1018,38 +1017,49 @@ export const HEROES_OTHER_TERRAIN = {
             buffs: { bb: { channel: 'both', curve: { 1: 1.00, 2: 1.00, 3: 1.15, 4: 1.15, 5: 1.20, 6: 1.20, 7: 1.25, 8: 1.25, 9: 1.30, 10: 1.30, 11: 1.34, 12: 1.34, 13: 1.38, 14: 1.38, 15: 1.42, 16: 1.42, 17: 1.46, 18: 1.46, 19: 1.50, 20: 1.50 } } },
             why: "Can't have Tōgō Heihachirō on land." },
   togo_b: { label: 'Tōgō Heihachirō w/bombardment', terrain: 'sea', maxLevel: 20, sits: 'first',
-            atkAttacking: 64.90, atkDefending: 15.0, pool: 120.6,
-            // ITS ATTACKING CONTRIBUTION IS NOT A CONSTANT, and 34 requests
-            // did not find what it is. Everything else in this table is flat:
-            // plain Tōgō, which shares the hull, the pool and the level cap
-            // and differs only in the bombardment, contributes exactly 15.00
-            // in every one of the same cells.
+            // CORRECTED. This read 64.90, and 64.90 was never this hero's own
+            // attack: it is 15.00 plus the whole of its bombardment, measured
+            // at a pool ratio where the target absorbed all of it. Plain Tōgō
+            // -- same hull, same pool, same cap, differing only in the ability
+            // -- reads 15.00, and so does this hero once the ability expires
+            // in round 7. The ladders that used to sit here as evidence of an
+            // "unstable coefficient" were the ability's total being divided
+            // among everything standing in its blast, which is why they moved
+            // with the counts on BOTH sides. See BOMBARDMENT.
             //
-            //   defender count, attacker 10:  37.99 50.43 56.92 60.80 62.85 63.91
-            //                       at n =       10    20    30    50   100    200
-            //   attacker count, defender 200: 64.90 63.91 61.58 57.47
-            //                       at n =        5    10    20    40
+            // Those ladders are NOT reproduced cell-by-cell by the new law and
+            // are not asserted to be: every one of them was taken in melee, so
+            // each figure is a subtraction of a no-hero baseline from a total
+            // that also contains the stack's own damage -- and a hero takes a
+            // slot in the saturating stack, so the two sides of that
+            // subtraction do not have the same E(n). The BAND's endpoints do
+            // come out exactly: pool share 0.46 gives 37.99 and share 1.00
+            // gives 64.90.
+            atkAttacking: 15.0, atkDefending: 15.0, pool: 120.6,
+            // Kept as DATA under a name that says what it is. These were
+            // real readings; they were labelled an own-attack curve. Each is
+            // 15.00 plus the ability at that level, seen through one pool
+            // ratio, and reading them at 50 km against a lone target recovers
+            // the ability outright: 10, 15, 15, 20, 25 ... 5 x level.
+            supersededSumCurve: { 1: 24.98, 2: 29.97, 3: 29.97, 4: 34.96, 5: 39.95, 6: 44.94, 7: 49.93, 8: 54.92, 9: 59.91, 10: 64.90, 11: 69.89, 12: 74.88, 13: 79.87, 14: 84.86, 15: 89.85, 16: 94.84, 17: 99.83, 18: 104.82, 19: 109.81, 20: 114.80 },
+            // THIS USED TO CARRY TWO CURVES, one per side: an attacking
+            // battleship buff of 1.2944 at level 10 against a defending 1.30 —
+            // identical to plain Tōgō — and a note saying no other hero in
+            // either table needed such a thing. It was the same artifact as
+            // the 64.90. The attacking curve was fitted to readings that had
+            // the ability folded into them, so it absorbed the ability's
+            // shortfall as a slightly smaller multiplier.
             //
-            // Ruled out: target TYPE (a battleship and a submarine at the same
-            // count read 64.34 and 64.32); INCOMING DAMAGE (identical at
-            // defender 50, 100 and 200 -- E(n) caps at 35 -- while the
-            // contribution still climbs 60.80, 62.85, 63.91); the hero's own
-            // HP loss (13.80, 13.70 and 13.60 against contributions of 60.80,
-            // 62.85 and 63.91, moving the wrong way); and the hero's share of
-            // the stack's HP (constant down the whole defender ladder).
-            //
-            // So the engine reports a BAND for this hero attacking, and says
-            // so, rather than a single number that is right at one stack size
-            // and 41% high at another. Defending it is clean: 15.00 flat.
-            atkAttackingBand: { lo: 37.99, hi: 64.90, measuredAt: 'level 10, cl control' },
-            atkAttackingCurve: { 1: 24.98, 2: 29.97, 3: 29.97, 4: 34.96, 5: 39.95, 6: 44.94, 7: 49.93, 8: 54.92, 9: 59.91, 10: 64.90, 11: 69.89, 12: 74.88, 13: 79.87, 14: 84.86, 15: 89.85, 16: 94.84, 17: 99.83, 18: 104.82, 19: 109.81, 20: 114.80 },
-            // TWO CURVES, one per side. Attacking, the battleship buff reads
-            // 1.2944 at level 10; defending, the same hero at the same level
-            // on the same unit reads exactly 1.30 -- identical to plain Tōgō.
-            // No other hero in either table needs this.
+            // The clean cell settles it. A battleship reaches 75 km and the
+            // ability's radius is 40, so at 50 km the stack still fires while
+            // the attacker sits OUTSIDE its own blast and the target absorbs
+            // the ability whole. Then the togo_b reading minus the plain-Tōgō
+            // reading is the ability and nothing else, and it comes out at
+            // 10.00, 25.00, 50.00, 75.00 and 100.00 at levels 1, 5, 10, 15 and
+            // 20 — exactly 5 x level, to the printed decimal, five times.
+            // The buffs are the same buff. One curve, both sides.
             buffs: { bb: { channel: 'both',
-                     curve: { 1: 0.9989, 2: 0.9983, 3: 1.1483, 4: 1.1478, 5: 1.1972, 6: 1.1966, 7: 1.2461, 8: 1.2455, 9: 1.2949, 10: 1.2944, 11: 1.3337, 12: 1.3332, 13: 1.3726, 14: 1.3720, 15: 1.4115, 16: 1.4109, 17: 1.4504, 18: 1.4498, 19: 1.4892, 20: 1.4886 },
-                     curveDefending: { 1: 1.00, 2: 1.00, 3: 1.15, 4: 1.15, 5: 1.20, 6: 1.20, 7: 1.25, 8: 1.25, 9: 1.30, 10: 1.30, 11: 1.34, 12: 1.34, 13: 1.38, 14: 1.38, 15: 1.42, 16: 1.42, 17: 1.46, 18: 1.46, 19: 1.50, 20: 1.50 } } },
+                     curve: { 1: 1.00, 2: 1.00, 3: 1.15, 4: 1.15, 5: 1.20, 6: 1.20, 7: 1.25, 8: 1.25, 9: 1.30, 10: 1.30, 11: 1.34, 12: 1.34, 13: 1.38, 14: 1.38, 15: 1.42, 16: 1.42, 17: 1.46, 18: 1.46, 19: 1.50, 20: 1.50 } } },
             why: "Can't have Tōgō Heihachirō w/bombardment on land." },
   ivan:   { label: 'Ivan “Vedmid” Kovalenko', terrain: 'sea', maxLevel: 10, sits: 'first',
             atkAttacking: 1.0, atkDefending: 1.0, pool: 10,
@@ -1237,11 +1247,150 @@ export const REPAIR_HOURS = {
 // infantry, while the hero bled.
 export const HERO_REPAIR = { hours: 72.14, bracket: [71.87, 72.41], heroesMeasured: 'all 22' };
 
+// ---------------------------------------------------------------------------
+// BOMBARDMENT -- the "unstable hero" that was never a hero coefficient
+// ---------------------------------------------------------------------------
+// This project recorded two heroes whose own contribution would not settle:
+// Togo-with-bombardment read anywhere from 37.99 to 64.90 "depending on how
+// many units are on each side", and Lucien-with-gas 8.00 on a mixed stack but
+// 36-38 on a single-type one. Thirty-four requests failed to find a rule, and
+// it went into NOT_MEASURED as needing "a mechanism nobody has proposed yet".
+//
+// The mechanism was written down by the site's author the whole time. Every
+// control on the form links to share/s1914.info.html, and two of that page's
+// section anchors are #togo and #lucien:
+//
+//     "the bombardment ability will be in effect for 6 rounds. This is in
+//      additional to the normal damage that the stack inflicts. Any stack
+//      (enemy or your own) within 40 km of the target stack will take
+//      bombardment damage."
+//
+// So it is not an own-attack coefficient at all. It is a SECOND damage source,
+// centred on the target, and the "instability" was its total being divided
+// among everything standing in the blast -- which is exactly why it moved with
+// the unit counts on BOTH sides.
+//
+// Nothing here is recorded because the page says it; the page is prose written
+// by a person about software that changes. Every line below is a number the
+// server was made to produce, using the isolation the page suggested:
+// submarines are melee, so at 10-50 km the stack cannot reach and every point
+// of damage the target takes is the ability alone.
+//
+//   OWN ATTACK. Plain Togo reads 15.00 at every level from 1 to 20, and plain
+//   Lucien 8.00 at every level from 1 to 15 -- flat. The recorded
+//   atkAttackingCurve (24.98, 29.97, 29.97, 34.96 ...) was never the hero: it
+//   is 15.00 plus a bombardment share, and it climbed because the ABILITY
+//   climbs. The old atkAttacking of 64.90 was the top of that sum.
+//
+//   THE SPLIT. Five attacker sizes against a fixed defender, all at 10 km:
+//   1/share is linear in the attacker's pool with slope 0.00020005 where
+//   1/poolB is 0.00020000 -- a 0.025% match. So each stack in the blast takes
+//   the ability in proportion to its share of the HP pool standing in it. The
+//   intercept says there is one more participant worth ~39 HP; the hero's own
+//   row is it, and its printed losses track that share at all five sizes.
+//
+//   THE RADIUS is centred on the TARGET, not the attacker, and the target is
+//   always hit however far away it is. What the radius decides is who ELSE is
+//   caught -- including the attacker's own stack, which is why moving the
+//   target from 40 km to 50 km RAISES its losses from 56.39 to 65.00: past 40
+//   the attacker steps out of its own blast and the target absorbs the lot.
+//
+//   FRIENDLY FIRE is real. A second stack of ours, 20 km from the target, 25
+//   km outside any melee range and attacked by nobody, lost 12.40 HP against
+//   a predicted 12.50. With plain Togo aboard instead it lost exactly zero.
+//
+//   DURATION. Togo's ability contributes for 6 rounds and Lucien's for 9,
+//   exactly as the page says: round 7 of a Togo strike drops from 56.39 to
+//   14.77, and rounds 10 and 11 of a Lucien strike deliver 8.00 -- the hero's
+//   own attack and nothing else.
+export const BOMBARDMENT = {
+  togo_b: {
+    label: 'Togo Heihachiro w/bombardment',
+    ownAttack: 15.00,
+    rounds: 6,
+    radius: 40,
+    radiusMeasuredAt: 'level 10 only',
+    // RANGE is not RADIUS. Range is how far the ability can be aimed; radius
+    // is how far it splashes once it lands. Measured floor only: it strikes at
+    // 50 km and nothing beyond that was submitted for Tōgō.
+    range: 50,
+    rangeNote: 'measured floor — it fires at 50 km; no upper bound submitted',
+    // The extra pool standing in the blast besides the two unit stacks. From
+    // the intercept of 1/share against attacker pool over five sizes.
+    extraPool: 39.2,
+    // Measured directly at 50 km, where the target is alone in the blast and
+    // the reading is the whole ability. 5 x level from level 3 up; levels 1
+    // and 2 sit above that line and are quoted as read.
+    totalByLevel: {
+      1: 10, 2: 15, 3: 15, 4: 20, 5: 25, 6: 30, 7: 35, 8: 40, 9: 45, 10: 50,
+      15: 75, 20: 100,
+    },
+    rule: '5 x level for level >= 3',
+  },
+  lucien_g: {
+    label: 'Lucien Laroche w/gas',
+    ownAttack: 8.00,
+    rounds: 9,
+    // The page says Lucien's radius varies with level and it does: every rung
+    // below was read off the distance at which the attacker stops sharing its
+    // own blast.
+    radiusByLevel: { 1: 20, 5: 30, 10: 40, 15: 50 },
+    radiusBracketAtCap: [50, 75],
+    // And its RANGE grows too, which is the second half of the page's "ranges
+    // and radii are different for Lucien depending on the level". At level 15
+    // it strikes a target 75 km away for the full 40.00; at levels 4 through
+    // 12 the same request returns no result rows at all. Levels 13 and 14 were
+    // never sent, so the table steps at the measured rungs and says so.
+    rangeByLevel: { 1: 50, 12: 50, 15: 75 },
+    // Lucien's extra participant is a different size from Tōgō's, which is
+    // itself the evidence that it is the HERO's row and not a constant of the
+    // ability: 16.1 here against 39.2 there. Fitted twice independently and
+    // agreeing to 0.05 — level 10 inside its 40 km radius gives 16.05, level
+    // 15 inside its 50 km radius gives 16.2. Lucien's recorded pool is 40 and
+    // Tōgō's 120.6, so neither extra is the pool itself; Lucien's is 0.40 of
+    // it, which is exactly the weight a hero row carries in this game's damage
+    // allocation, and Tōgō's is 0.33 of it, which is not. Recorded as fitted
+    // numbers rather than dressed up as a rule.
+    extraPool: 16.1,
+    rangeNote: 'floors: 50 km measured up to level 12, 75 km at level 15, silent at 150',
+    // All fifteen levels measured. Steps every three levels; the cap takes an
+    // extra step.
+    totalByLevel: {
+      1: 15, 2: 15, 3: 15, 4: 20, 5: 20, 6: 20, 7: 25, 8: 25, 9: 25,
+      10: 30, 11: 30, 12: 30, 13: 35, 14: 35, 15: 40,
+    },
+    rule: '5 x (floor((level-1)/3) + 3), except the level-15 cap which is 40',
+  },
+};
+
+// The blast is shared in proportion to pool, over every stack inside it plus
+// one more participant of about this size -- the hero's own row.
+export const BOMBARDMENT_SPLIT = {
+  by: 'HP pool share',
+  extraPool: 39.2,
+  extraPoolNote: 'From the intercept of 1/share against the attacker pool over five sizes. It is NOT the hero pool this project recorded for Togo (120.6), and that disagreement is unexplained; the hero row is nonetheless the only other participant present, and its own printed losses match this share at all five sizes to within the 0.1 the spans print.',
+  fortressDR: 'NOT MEASURED against bombardment. The engine does not reduce it, by analogy with building damage, which IS measured as unreduced by fortress DR. Flagged wherever both appear.',
+};
+
+// A HERO FIRES WHEN ITS STACK CANNOT. Measured, and it overturns a claim this
+// file used to make flatly. Ten submarines at 0 km against a target at 10-50
+// km produce NO result rows at all -- until a hero is aboard, and then the
+// target loses 15.00 a round. So "out of range means no battle" is true only
+// of a stack with no hero in it. Heroes have their own reach: plain Lucien
+// still fires at 50 km and is silent at 75.
+export const HERO_REACH = {
+  togo: { reach: 50, bound: 'at least 50 km; no upper bound measured' },
+  togo_b: { reach: 50, bound: 'at least 50 km; no upper bound measured' },
+  lucien: { reach: 50, bound: 'fires at 50 km, silent at 75' },
+  lucien_g: { reach: 50, bound: 'fires at 50 km, silent at 75' },
+};
+
 export const NOT_MEASURED = [
+    { key: 'bombardment_melee_split', what: 'How a HERO\u2019s bombardment ability divides its total when the attacker is standing ON its target, at 0 km.', why: 'Everything else about the ability is measured hard. Its total is 5 x level for T\u014dg\u014d and a three-level staircase for Lucien, read at a distance where the target is alone in the blast; it lasts 6 rounds and 9 rounds respectively; its radius is centred on the target, 40 km for T\u014dg\u014d and 20/30/40/50 km by level for Lucien; and from 10 km out to the radius it is divided by HP POOL SHARE, which reproduces every reading exactly \u2014 41.39 predicted against 41.39 printed, and a friendly stack 20 km away losing 12.40 against a predicted 12.50. At 0 km it is NOT pool share. A hundred submarines attacking fifty give the defender 0.2918 of the total where pool share says 0.3325, and a battleship stack against light cruisers goes the other way. Post-round pools, an attenuation term and a power law were each tried against both cells and each fits one and misses the other.', closedBy: 'a melee cell where the attacker cannot be hit back, which would separate "the split changed" from "the attacker\u2019s output attenuated". Nothing on the form provides one \u2014 melee is exactly where return fire exists \u2014 so the likelier route is a third stack: put a friendly stack of known pool inside the blast at 0 km and read its share directly, the way the friendly-fire cell did at 10 km.' },
+
 
     { key: 'air_to_air_mechanism', what: 'WHY an air stack is attenuated against surface targets and not against other aircraft.', why: 'The scope is measured hard and modelled. Attacking land or naval, an air stack fires with what survives the round; attacking air it does not \u2014 twenty fighters lose 58% of their pool to two hundred fighters and still deal the full 20.0 x E(20) = 400.00. Embarkation is seen by every attacker including air, which is what the discriminating cell showed: against two hundred EMBARKED fighters the same stack deals 98.61, the naval column attenuated. What no black-box reading can reach is the mechanism \u2014 whether air-to-air resolves simultaneously or whether something else exempts it.', closedBy: 'nothing available. The obvious experiment is an air stack whose target cannot shoot back, and there is no such configuration: every air unit bisects to a range of 5 km and 5 km is exactly where return fire stops, so an aircraft is never out of reach of what it is attacking' },
     { key: 'return_fire_generality', what: 'Whether the 5 km return-fire cut-off is a constant or every unit\u2019s own melee reach.', why: 'Past 5 km a bombarded defender deals exactly zero while still taking the attacker\u2019s full figure. That is measured hard \u2014 lart at 4 and 5 km loses 20.00, at 6, 7 and 8 km loses nothing, and three defenders that could easily shoot back (lart reaching 30, cruiser 40, battleship 75) are all silent at 8 km, as is a mixed inf+lart defender at 6. But every unit in the roster ALSO bisected to a melee attack range of exactly 5, so "the cut-off is the constant 5" and "the cut-off is the defender\u2019s own melee reach" predict the identical number everywhere. The two are indistinguishable in this game and the engine uses the constant.', closedBy: 'nothing available \u2014 it would need a unit whose melee reach is not 5, and there is none' },
-    { key: 'togo_b_unstable', what: 'Two heroes\u2019 own contribution is not a constant, and neither is explained. Both are \u201cwith something\u201d variants.', why: 'T\u014dg\u014d-with-bombardment ATTACKING contributes between 37.99 and 64.90 depending on how many units are on each side. Every other hero in both tables is flat, and so is plain T\u014dg\u014d \u2014 same hull, same pool, same level cap, differing only in the bombardment \u2014 which reads exactly 15.00 in the identical cells. Ruled out by two crossed sweeps: target TYPE (a battleship and a submarine at the same count read 64.34 and 64.32), INCOMING DAMAGE (identical at defender 50, 100 and 200 because E(n) caps at 35, while the contribution still climbs 60.80, 62.85, 63.91), the hero\u2019s own HP loss (13.80, 13.70 and 13.60 against contributions of 60.80, 62.85 and 63.91 \u2014 moving the wrong way), and its share of the stack\u2019s HP (constant down the whole defender ladder). The engine reports the band and says so rather than quoting one end of it. Defending is clean at 15.00 flat. LUCIEN LAROCHE W/GAS is the same family and was found the same week: on a six-type stack it contributes 8.00, exactly what plain Lucien does, and on a single-type stack 36.44 to 37.94 \u2014 with the extra close to a flat 29 whatever the stack\u2019s coefficient (29.94 on light artillery totalling 50, 28.44 on heavy tanks totalling 450). Not a multiplier, not an own attack, and absent from the mixed stack entirely. That both anomalies are \u201cw/\u201d variants and nothing else in either table behaves this way is the only pattern on offer.', closedBy: 'a mechanism nobody has proposed yet \u2014 the two obvious axes are both crossed and both flat, so the next step is a different KIND of variable: rounds, distance, or the hero\u2019s own HP percentage set explicitly rather than left at 100' },
 
   ];
 
@@ -1252,6 +1401,33 @@ export const NOT_MEASURED = [
 // measured, how well, and what it is NOT evidence for.
 
 export const PROVENANCE = {
+  'BOMBARDMENT.mechanism': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiments bombardment / bombardment_law / bombardment_own / bombardment_finish / bombardment_lucien2 / bombardment_melee / bombardment_friendly / togo_buff_clean \u2014 about 100 requests.',
+    method: 'Isolation by RANGE. Submarines are melee, so with the target at 10-50 km the stack cannot reach it and every point of damage the target takes is the hero and its ability, with no subtraction of a baseline. That is what the earlier sweeps could not do: all 191 T\u014dg\u014d and Lucien readings on file were taken in melee, so each was a subtraction of a no-hero control from a total that also contained the stack\u2019s own damage \u2014 and a hero takes a slot in the saturating stack, so the two sides of that subtraction do not even have the same E(n).',
+    tolerance: 'Exact. The radius sweep reproduces to 0.01 (56.39 and 65.00), the split across five attacker sizes to 0.06, the twelve-rung level ladder to the printed decimal, and the buff cell returns the ability total to 0.00 at five levels.',
+    notEvidenceFor: 'The melee split at 0 km, which is measurably NOT pool share and is declared in NOT_MEASURED. Nor for any hero outside these two.',
+  },
+  'BOMBARDMENT.discovery': {
+    confidence: 'measured',
+    source: 'share/s1914.info.html \u2014 the site author\u2019s own help page, linked from every control on the form under thirteen distinct anchors, two of which are #togo and #lucien.',
+    method: 'Read it. Five audits had gone by on the premise that the server authors two inventories \u2014 the fields it accepts and the columns it prints \u2014 and that both were now swept. There is a third, and it is the only one that describes INTENT rather than shape.',
+    tolerance: 'The page is prose written by a person about software that changes, so nothing here is recorded because the page says it. Every claim it makes was turned into a number the server had to produce, and the page\u2019s own suggestion \u2014 "put its position more than 5 km from the target and within 40 km" \u2014 is what made the isolation possible.',
+    notEvidenceFor: 'Anything the page says that was not then measured. It also documents an "Army A attacks first" ordering rule for mutual attacks, and NO mutual attack has ever been submitted by this project: duel() is the only thing that ever sets a B-side target and it always sets 0.',
+  },
+  'BOMBARDMENT.corrections': {
+    confidence: 'measured',
+    source: 'The same sweeps.',
+    note: 'Two constants that were in this file and wrong, both artifacts of the same conflation. T\u014dg\u014d-with-bombardment\u2019s own attack was 64.90; it is 15.00, and 64.90 was 15.00 plus the whole ability at a pool ratio where the target absorbed all of it. And it carried TWO battleship buff curves, one per side \u2014 1.2944 attacking against 1.30 defending \u2014 with a note saying no other hero in either table needed such a thing. It does not either: the attacking curve had been fitted to readings with the ability folded in, so it absorbed the shortfall as a smaller multiplier. Measured at 50 km, where battleships still reach 75 but the attacker sits outside the 40 km blast, the togo_b minus togo difference is 10.00, 25.00, 50.00, 75.00 and 100.00 at levels 1, 5, 10, 15 and 20 \u2014 the ability exactly, five times, so the buffs are the same buff.',
+  },
+  'HERO_REACH': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=bombardment and bombardment_lucien2.',
+    method: 'Ten submarines at 0 km against a target at 10-50 km return NO result rows at all with no hero aboard \u2014 the server does not fight an out-of-range battle. Put a hero in the same stack and the target loses 15.00 a round at every one of those distances.',
+    tolerance: 'Floors, not values. T\u014dg\u014d fires at 50 km and nothing further was submitted. Lucien fires at 50 and is SILENT at 75, which is what proved the ability has a range of its own: at level 15 the ability lands its full 40.00 at 75 km where the hero itself contributes nothing.',
+    notEvidenceFor: 'Any other hero. Only these four were put out of range.',
+  },
+
   'REPAIR.law': {
     confidence: 'measured',
     source: "results.jsonl, experiment=repair_cost (17 wipes, one per unit, n=100) and repair_damaged (2). Plus 256 complete resource rows and 2,719 'hours' readings already in the corpus from sweeps aimed at other things -- the scraper stored them from the start and nothing ever read them back.",

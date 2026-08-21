@@ -48,6 +48,104 @@ What that session established, in one place:
   0.25, 0.5 and 0.75 all deliver one whole strike — while patrol genuinely
   does; whole rounds repeat in both.
 
+### 2026-08-21, second stretch: the THIRD inventory the server authors
+
+The previous stretch said the server authors two inventories — the fields it
+**accepts** and the columns it **prints** — and that both were now swept, so the
+only remaining vantages were self-authored. That was wrong by one.
+
+Every control on the form links to `share/s1914.info.html` with an anchor.
+Thirteen distinct ones. It is the author's own prose about what the calculator
+is supposed to do, it had never been read, and it is the only server-authored
+inventory that describes **intent** rather than shape.
+
+Two of its section anchors are `#togo` and `#lucien` — precisely the two heroes
+in `togo_b_unstable`, the gap this project had recorded as needing "a mechanism
+nobody has proposed yet".
+
+> "the bombardment ability will be in effect for 6 rounds. This is in
+> additional to the normal damage that the stack inflicts. Any stack (enemy or
+> your own) within 40 km of the target stack will take bombardment damage. If
+> you want an enemy stack to receive bombardment damage, but not the main
+> damage from the stack, put its position more than 5 km from the target and
+> within 40 km of the target."
+
+**There was never an unstable hero.** Both heroes carry a *second damage
+source* — its own duration, its own range, its own blast radius — and the
+"instability" was the share of it the target absorbed, which is why it moved
+with the unit counts on *both* sides. The gap note itself had guessed the right
+axes ("rounds, distance") and nobody had run them: all 191 Tōgō and Lucien
+readings on file sit at one position with rounds unvaried.
+
+**Nothing was recorded because the page says it.** The page is prose by a
+person about software that changes, and this project has already caught its own
+handover stating three things that were false. Every claim became a number the
+server had to produce — and the page's own suggestion is what made that
+possible. Submarines are melee, so with the target at 10–50 km the stack cannot
+reach and every point the target loses is the ability alone. No subtraction, no
+baseline. That is exactly what the earlier sweeps could not do: taken in melee,
+each of their figures was a no-hero control subtracted from a total that also
+held the stack's own damage — and a hero takes a slot in the saturating stack,
+so the two sides of that subtraction did not even share an `E(n)`.
+
+What ~100 requests then produced:
+
+- **Totals.** Tōgō's ability is `5 x level` from level 3 up (10 and 15 at
+  levels 1 and 2), measured at twelve rungs. Lucien's is a three-level
+  staircase — 15/20/25/30/35 — with the level-15 cap taking an extra step to
+  40. All fifteen of Lucien's levels are measured; none is interpolated.
+- **Duration.** Six rounds for Tōgō, nine for Lucien, exactly as the page says.
+  Round 7 of a Tōgō strike drops from 56.39 to 14.77; rounds 10 and 11 of a
+  Lucien strike deliver 8.00 — the hero's own attack and nothing else.
+- **Radius, centred on the TARGET.** So the target is hit at any distance and
+  the radius decides who *else* is caught — including the attacker's own stack.
+  Which is why moving the target from 40 km to 50 km **raises** its losses,
+  56.39 to 65.00: past the radius the attacker steps out of its own blast.
+  Tōgō's is 40 km; Lucien's grows with level, 20/30/40/50.
+- **The split is HP pool share.** Five attacker sizes at a fixed defender:
+  `1/share` is linear in the attacker's pool with slope 0.00020005 where
+  `1/poolB` is 0.00020000 — a 0.025% match.
+- **Friendly fire is real.** A second stack of ours, 20 km from the target, 25
+  km outside any melee range and attacked by nobody, lost 12.40 against a
+  predicted 12.50. With plain Tōgō aboard instead it lost exactly zero.
+- **A hero fires when its stack cannot.** Ten submarines at 10–50 km return no
+  result rows at all — until a hero is aboard. So "out of range means no
+  battle", which this codebase asserted flatly, is true only of a stack with no
+  hero in it. Heroes have their own reach, and the *ability's* range is a third
+  thing again: plain Lucien is silent at 75 km while Lucien-with-gas at level
+  15 lands its full 40.00 there.
+
+**Two constants in `data.js` were wrong, both the same artifact.** Tōgō's own
+attack of 64.90 is 15.00 — plain Tōgō's figure, and what the variant reads once
+the ability expires. And it carried *two* battleship buff curves, one per side,
+with a note saying no other hero in either table needed such a thing. It does
+not either: the attacking curve had been fitted to readings with the ability
+folded in, so it absorbed the shortfall as a smaller multiplier. Battleships
+reach 75 km and the blast is 40, so at 50 km the stack still fires from outside
+its own blast — and the togo_b-minus-togo difference comes out at 10.00, 25.00,
+50.00, 75.00 and 100.00 at levels 1/5/10/15/20. The ability exactly, five
+times. The buffs are the same buff.
+
+**What did NOT close, and is now declared properly.** At 0 km the split is
+measurably *not* pool share: a hundred submarines attacking fifty give the
+defender 0.2918 of the total where pool share says 0.3325, and a battleship
+stack goes the other way. Post-round pools, an attenuation term and a power law
+each fit one cell and miss the other. `bombardment_melee_split` replaces
+`togo_b_unstable` in `NOT_MEASURED` — and unlike the gap it replaces, it names
+the configuration that would close it. The ~22 melee hero cells that the engine
+therefore cannot reproduce are routed through `cannotReproduce()` and printed at
+the end of every run, rather than kept passing behind a widened tolerance.
+
+Shipped: `BOMBARDMENT`, `BOMBARDMENT_SPLIT` and `HERO_REACH` in data.js;
+`bombardmentRound()` / `bombardmentRange()` / `bombardmentRadius()` in the
+engine, wired into the round loop as an additive source with friendly fire;
+the out-of-range-with-hero path; a fix to hero saturation against inert rows
+(the hero's 15.00 was vanishing at fifty attackers because it saturated against
+units that cannot reach — which this file's own range rule says do not count);
+four provenance entries; and test section 21. **2,779 engine checks** (up from
+2,664 despite 22 cells moving to reported-not-asserted), 11 offline probe
+suites, browser clean. ~100 requests, all at the 1.5s spacing.
+
 ### 2026-08-21: auditing the OUTPUT the server prints
 
 The previous session audited the server's INPUT surface — all 33 form fields —
@@ -606,6 +704,35 @@ another has a two-row B stack I had not mapped at all. §0's opening rule says
 treat a null result as a defect report against the rig; the rig includes
 whatever you wrote ten minutes ago to read the data. Once fixed, the law
 reproduced 187 of 187 readings.
+
+**A twenty-third, and it corrects the twentieth: COUNT THE SERVER'S
+INVENTORIES BEFORE CLAIMING YOU HAVE SWEPT THEM.** The twentieth lesson said to
+audit what the server authors rather than what you author, and named two such
+inventories: the inputs it accepts and the outputs it prints. There are three.
+The third is the **documentation** — here, a help page the form links to from
+every single control, thirteen anchors deep, which had never been opened. It is
+the only one of the three that states INTENT rather than shape, and it held the
+mechanism behind a gap this project had spent thirty-four requests failing to
+find and had written off as needing "a mechanism nobody has proposed yet".
+
+Note the shape of the error: the twentieth lesson was right about the method
+and wrong about the enumeration, and being wrong about the enumeration is what
+made "both are now swept" feel like a finished job. **A claim to have covered
+an inventory is only as good as the list of inventories, and that list is
+itself something you wrote.**
+
+**A twenty-fourth: documentation is a hypothesis generator, never a source.**
+The help page was right about the six rounds, the 40 km, the friendly fire and
+the level-dependent radius — and being right is not the point. Every one of
+those became a request. The page also says Army A attacks first when two stacks
+attack each other; that one has NOT been checked, because `duel()` is the only
+thing in the rig that ever sets a B-side target and it always sets 0, so **no
+mutual attack has ever been submitted at all.** Written down rather than
+believed, and it is the obvious next stretch.
+
+What the page is genuinely good for is EXPERIMENT DESIGN. "Put its position
+more than 5 km from the target and within 40 km" is the isolation that made
+everything else measurable, and nobody here had thought of it in five audits.
 
 **A tenth, of a different kind: a law can fit everything you have and still be
 wrong, if the scope of the fit was narrower than the claim.** "The stack

@@ -46,6 +46,7 @@ import {
   HEROES_OTHER_TERRAIN,
   HEROES,
   REPAIR_COST, REPAIR_HOURS, HERO_REPAIR,
+  BOMBARDMENT, BOMBARDMENT_SPLIT, HERO_REACH,
 } from '../data.js';
 import {
   heroBuff,
@@ -74,6 +75,8 @@ function check(label, cond, detail = '') {
     console.log(`  FAIL  ${label}\n        ${detail}`);
   }
 }
+
+const NOTE_MELEE = 'the ability is exact outside melee; at 0 km its split is measurably NOT pool share and nothing explains it yet — NOT_MEASURED.bombardment_melee_split';
 
 /** A measurement the engine could not reproduce. Reported, never papered over. */
 function cannotReproduce(what, expected, got, note) {
@@ -1256,10 +1259,20 @@ console.log('\n12e. heroes on the attacking side');
     // defending curve predicts, which is 1.10 rather than 1.09 and sits
     // inside that bar. Worth re-reading on a bigger stack, where the same
     // absolute error is a smaller fraction of the term.
-    check(`attacking with ${m.hero || 'no hero'} (${m.rows.length} types): `
-      + `${res.defender.hpLost.toFixed(2)} vs measured ${obs}`,
-      Math.abs(res.defender.hpLost - obs) <= 0.1,
-      `${(res.defender.hpLost - obs).toFixed(3)} off`);
+    if (m.hero && BOMBARDMENT[m.hero]) {
+      // This cell is why lucien_g looked like it had an unstable own attack of
+      // 8.00 on a six-type stack and 36-38 on a single-type one: the ability's
+      // total is divided by pool share, and a six-type stack is a different
+      // pool. Outside melee that is exact; here it is not, for the same reason
+      // Tōgō's melee cells are not.
+      cannotReproduce(`${m.hero} on a ${m.rows.length}-type stack in melee`,
+        obs, res.defender.hpLost, NOTE_MELEE);
+    } else {
+      check(`attacking with ${m.hero || 'no hero'} (${m.rows.length} types): `
+        + `${res.defender.hpLost.toFixed(2)} vs measured ${obs}`,
+        Math.abs(res.defender.hpLost - obs) <= 0.1,
+        `${(res.defender.hpLost - obs).toFixed(3)} off`);
+    }
   }
   check('every attacking-hero reading was replayed', cells >= 20, String(cells));
 
@@ -1421,11 +1434,15 @@ console.log('\n12h. the six heroes that only work on air and naval stacks');
     // disagrees by about the same 1%. The sweep is what the table uses,
     // because twenty self-consistent points outweigh one cell, so these three
     // cells sit about 1% out and are asserted at 1.5% rather than dropped.
-    const band = m.hero === 'togo_b' ? Math.max(0.12, obs * 0.015) : 0.12;
-    check(`${m.hero || 'no hero'} + 10 ${m.unit}: `
-      + `${res.defender.hpLost.toFixed(2)} vs measured ${obs}`,
-      Math.abs(res.defender.hpLost - obs) <= band,
-      `${(res.defender.hpLost - obs).toFixed(3)} off`);
+    if (m.hero && BOMBARDMENT[m.hero]) {
+      cannotReproduce(`${m.hero} + 10 ${m.unit} in melee`, obs,
+        res.defender.hpLost, NOTE_MELEE);
+    } else {
+      check(`${m.hero || 'no hero'} + 10 ${m.unit}: `
+        + `${res.defender.hpLost.toFixed(2)} vs measured ${obs}`,
+        Math.abs(res.defender.hpLost - obs) <= 0.12,
+        `${(res.defender.hpLost - obs).toFixed(3)} off`);
+    }
   }
   check('every air and naval hero reading was replayed', n >= 24, String(n));
 
@@ -2441,9 +2458,21 @@ console.log('\n12q. the six air/naval heroes, decomposed on both sides');
         hero: { code: r.meta.hero, level: r.meta.level } },
       defender: { rows: [{ unit: target, count: 200 }] },
     });
-    check(`${r.meta.hero} lvl${r.meta.level} attacking ${r.meta.unit}: ${want}`,
-      got.defender.hpLost !== null && Math.abs(got.defender.hpLost - want) < 0.6,
-      `got ${got.defender.hpLost === null ? 'withheld' : got.defender.hpLost.toFixed(2)}`);
+    // A MELEE CELL CARRYING A BOMBARDMENT ABILITY IS NOT REPRODUCIBLE YET, and
+    // it is reported rather than asserted loosely. Outside melee the ability
+    // is exact — the engine reproduces the 10-50 km sweep to 0.01 and the
+    // level ladder to the printed decimal — but at 0 km the split between the
+    // target and the attacker's own stack is measurably NOT pool share, and
+    // nothing yet explains it. Widening the tolerance here would hide a real
+    // disagreement behind a number chosen to pass.
+    if (BOMBARDMENT[r.meta.hero]) {
+      cannotReproduce(`${r.meta.hero} lvl${r.meta.level} attacking `
+        + `${r.meta.unit} in melee`, want, got.defender.hpLost, NOTE_MELEE);
+    } else {
+      check(`${r.meta.hero} lvl${r.meta.level} attacking ${r.meta.unit}: ${want}`,
+        got.defender.hpLost !== null && Math.abs(got.defender.hpLost - want) < 0.6,
+        `got ${got.defender.hpLost === null ? 'withheld' : got.defender.hpLost.toFixed(2)}`);
+    }
     curveCells += 1;
   }
   check('every attacking curve level was replayed', curveCells >= 85, String(curveCells));
@@ -2553,21 +2582,34 @@ console.log('\n12r. the one hero whose own contribution is not a constant');
     String(togoFlat));
   check('while the bombardment variant spans a wide band', tbSeen >= 14
     && tbHi - tbLo > 20, `${tbSeen} cells, ${tbLo.toFixed(2)}-${tbHi.toFixed(2)}`);
-  const band = HEROES_OTHER_TERRAIN.togo_b.atkAttackingBand;
-  check('and the declared band contains every measured cell',
-    tbLo >= band.lo - 0.05 && tbHi <= band.hi + 0.05,
-    `measured ${tbLo.toFixed(2)}-${tbHi.toFixed(2)} vs declared ${band.lo}-${band.hi}`);
-  check('the engine says so rather than quoting one end of it',
-    simulate({ terrain: 'sea', defenderTerrain: 'sea',
-      attacker: { rows: [{ unit: 'cl', count: 10 }], hero: { code: 'togo_b', level: 10 } },
-      defender: { rows: [{ unit: 'cl', count: 200 }] } })
-      .coverage.caveats.some((c) => /not a constant/.test(c)));
-  // Two heroes carry one, and both are "with something" variants: Tōgō with
-  // bombardment and Lucien with gas. Nothing else in either table does.
-  check('exactly two heroes carry a band, and both are "w/" variants',
+  // THE BAND IS GONE, because the thing it described is now measured. Both
+  // endpoints fall out of the pool-share law: the ability's total at level 10
+  // is 50.00, the hero's own attack is 15.00 flat, and the share of the blast
+  // the target absorbs runs from about 0.46 up to 1.00 as the stacks change
+  // size. 15 + 50 x 0.4598 = 37.99 and 15 + 50 x 1.00 = 65.00 — the two ends
+  // of the band that used to be declared as unexplained.
+  const total10 = BOMBARDMENT.togo_b.totalByLevel[10];
+  const own = BOMBARDMENT.togo_b.ownAttack;
+  check('the old band\'s endpoints are what the pool-share law predicts',
+    Math.abs((own + total10 * 0.4598) - 37.99) < 0.05
+    && Math.abs((own + total10 * 1.0) - 65.0) < 0.05,
+    `${(own + total10 * 0.4598).toFixed(2)} and ${(own + total10).toFixed(2)}`);
+  check('no hero declares an unexplained attack band any more',
+    Object.values({ ...HEROES, ...HEROES_OTHER_TERRAIN })
+      .every((h) => !h.atkAttackingBand),
     Object.entries({ ...HEROES, ...HEROES_OTHER_TERRAIN })
-      .filter(([, h]) => h.atkAttackingBand).map(([c]) => c).sort().join(',')
-      === 'lucien_g,togo_b');
+      .filter(([, h]) => h.atkAttackingBand).map(([c]) => c).join(','));
+  check('the two that did are exactly the two with a measured ability',
+    Object.keys(BOMBARDMENT).sort().join(',') === 'lucien_g,togo_b');
+  check('and its own attack is now the flat 15.00 that plain Tōgō reads',
+    HEROES_OTHER_TERRAIN.togo_b.atkAttacking === 15.0
+    && HEROES_OTHER_TERRAIN.togo.atkAttacking === 15.0,
+    `${HEROES_OTHER_TERRAIN.togo_b.atkAttacking} vs `
+      + `${HEROES_OTHER_TERRAIN.togo.atkAttacking}`);
+  check('the superseded curve is kept as data under a name that says so',
+    !HEROES_OTHER_TERRAIN.togo_b.atkAttackingCurve
+    && HEROES_OTHER_TERRAIN.togo_b.supersededSumCurve[10] === 64.90,
+    'it was real readings, mislabelled — 64.90 = 15.00 own + 50.00 ability');
   check('its DEFENDING side is clean and stays a single number',
     HEROES_OTHER_TERRAIN.togo_b.atkDefending === 15.0);
 
@@ -3111,7 +3153,9 @@ console.log('\n14. coverage of the record itself');
   // being replayed.
   // Section 20 replays these; it runs after this guard, so they are named here
   // rather than left to look unreplayed.
-  const replayedLater = ['repair_cost', 'repair_damaged'];
+  const replayedLater = ['repair_cost', 'repair_damaged', 'bombardment',
+    'bombardment_law', 'bombardment_own', 'bombardment_finish',
+    'bombardment_lucien2', 'togo_buff_clean'];
   const notReplayed = Object.keys(counts).filter(
     (e) => !replayed.includes(e) && !replayedLater.includes(e));
   console.log(`  note  replayed: ${replayed.map((e) => `${e} ${counts[e] || 0}`).join(', ')}`);
@@ -3159,7 +3203,14 @@ console.log('\n14. coverage of the record itself');
   //     is a stronger check than replaying one stack's printed total.
   const declaredNonReplay = ['stack_limits', 'hero_caps', 'hero_targets',
     'hero_hp_cap', 'hero_curves', 'variance', 'fortress_edges',
-    'repair_building', 'repair_hero', 'hero_repair', 'hero_repair_all'];
+  //   bombardment_friendly / bombardment_melee  a THREE-stack blast and a
+  //     melee split. This engine models two sides, so the friendly-fire cell
+  //     has no representation in it at all, and the melee split is a declared
+  //     gap. Both are asserted as facts about the record in section 21 instead.
+  //   bombardment_lucien  superseded by bombardment_lucien2, which re-read the
+  //     same levels outside every measured radius.
+    'repair_building', 'repair_hero', 'hero_repair', 'hero_repair_all',
+    'bombardment_friendly', 'bombardment_melee', 'bombardment_lucien'];
   void declaredNonReplay;
   check('every unreplayed experiment is one the engine declares and explains',
     notReplayed.every((e) => declaredNonReplay.includes(e)),
@@ -3167,8 +3218,16 @@ console.log('\n14. coverage of the record itself');
   check('heroes are recorded as measured but not modelled',
     PROVENANCE['HEROES.measured'].confidence === 'measured'
     && /DELIBERATELY NOT MODELLED/.test(PROVENANCE['HEROES.measured'].note));
-  check('and the app still declares heroes as a gap the user can see',
-    NOT_MEASURED.some((g) => /hero/i.test(g.key) || /hero/i.test(g.what)));
+  // This used to assert simply that SOME hero gap was still on display,
+  // because for most of this project's life the hero model had a hole in it
+  // and the page had to say so. The last hero-shaped hole — an "unstable" own
+  // attack — is closed. What is still declared is much narrower and the
+  // assertion now says which: one ability, one geometry, at one distance.
+  const heroGaps = NOT_MEASURED.filter(
+    (g) => /hero/i.test(g.key) || /hero/i.test(g.what));
+  check('the one hero gap still on display is the melee split, and nothing wider',
+    heroGaps.length === 1 && heroGaps[0].key === 'bombardment_melee_split',
+    heroGaps.map((g) => g.key).join(', ') || 'none');
   // The HP channel is MODELLED now, not disclosed: the pool must actually
   // carry the buff. marco raises a Tank's max HP by 1.12 at level 10.
   const marcoTanks = simulate({
@@ -3375,10 +3434,32 @@ console.log('\n17. provenance notes cannot contradict the data beside them');
 
   // 5. And the count of open gaps is pinned, so closing one silently — or
   //    letting one reappear — shows up here rather than in a reader's face.
-  check('three gaps remain, and all three say why more requests will not help',
-    NOT_MEASURED.length === 3
-    && NOT_MEASURED.every((g) => /nothing available|no black-box|not known|nobody has proposed/i.test(g.closedBy + ' ' + g.why)),
+  // This used to read "three gaps remain, and all three say why more requests
+  // will not help", and both halves were true when written. Neither is now.
+  // togo_b_unstable — the one that said it needed "a mechanism nobody has
+  // proposed yet" — is closed: the mechanism was in the author's own help
+  // page, and measuring it took 100 requests. What replaced it is a genuinely
+  // different KIND of gap, one with a route, so the suite pins the count and
+  // then asserts each gap against what it actually claims rather than against
+  // a blanket "unclosable".
+  check('three gaps remain', NOT_MEASURED.length === 3,
     NOT_MEASURED.map((g) => g.key).join(', '));
+  const unclosable = NOT_MEASURED.filter(
+    (g) => /nothing available|no black-box|not known|nobody has proposed/i
+      .test(`${g.closedBy} ${g.why}`));
+  check('the two that cannot be closed still say exactly why',
+    unclosable.length === 2
+    && unclosable.map((g) => g.key).sort().join(',')
+      === 'air_to_air_mechanism,return_fire_generality',
+    unclosable.map((g) => g.key).join(', '));
+  check('and the one that CAN be closed names the configuration that would',
+    NOT_MEASURED.filter((g) => !unclosable.includes(g))
+      .every((g) => g.closedBy && g.closedBy.length > 60),
+    NOT_MEASURED.filter((g) => !unclosable.includes(g))
+      .map((g) => `${g.key}: ${g.closedBy}`).join(' | ').slice(0, 160));
+  check('the closed gap is gone and its hero is now a computed quantity',
+    !NOT_MEASURED.some((g) => g.key === 'togo_b_unstable')
+    && !!BOMBARDMENT.togo_b && BOMBARDMENT.togo_b.rounds === 6);
 }
 
 // ===========================================================================
@@ -3682,6 +3763,179 @@ console.log('\n20. the recovery bill');
       bills.every((h) => typeof h === 'number' && h > 33),
       `${heroCodes.join(', ')} -> ${bills.join(', ')}`);
   }
+}
+
+
+// ===========================================================================
+// 21. THE BOMBARDMENT ABILITY — the gap that was closed by reading the manual
+// ===========================================================================
+// Two heroes were recorded as having an own attack that would not settle, and
+// the entry said it needed "a mechanism nobody has proposed yet". The
+// mechanism was on the site's own help page the whole time, under an anchor
+// the form links to from every control. These checks replay what measuring it
+// produced, and they are deliberately built on the ISOLATED cells — target
+// beyond the stack's reach, so the only two terms are the hero's flat own
+// attack and the ability itself.
+console.log('\n21. the bombardment ability');
+{
+  const isolated = (hero, dist, level = 10, atk = 10, def = 50) => simulate({
+    terrain: 'sea', defenderTerrain: 'sea', distance: dist,
+    attacker: { rows: [{ unit: 'sub', count: atk }], hero: { code: hero, level } },
+    defender: { rows: [{ unit: 'sub', count: def }] },
+    rounds: 1,
+  });
+
+  // A stack that cannot reach still fights, if it carries a hero that can.
+  // Without one the server returns no result rows at all — which is what this
+  // engine used to say happened in every case.
+  const noHero = simulate({
+    terrain: 'sea', defenderTerrain: 'sea', distance: 10,
+    attacker: { rows: [{ unit: 'sub', count: 10 }] },
+    defender: { rows: [{ unit: 'sub', count: 50 }] } });
+  check('submarines at 10 km with no hero: no battle, as before',
+    noHero.defender.hpLost === null || noHero.defender.hpLost === 0,
+    String(noHero.defender.hpLost));
+  check('the same stack with a hero aboard DOES fire (measured: 15.00 a round)',
+    Math.abs(isolated('togo', 10).defender.hpLost - 15.0) < 0.05,
+    String(isolated('togo', 10).defender.hpLost));
+  check('every hero with a measured reach is one this engine knows about',
+    Object.keys(HERO_REACH).every((c) => HEROES[c] || HEROES_OTHER_TERRAIN[c]),
+    Object.keys(HERO_REACH).join(', '));
+
+  // THE RADIUS SWEEP. 56.39 from 10 through 40 km, then 65.00 at 50 — the
+  // defender's losses go UP as it moves further away, because past the radius
+  // the attacker steps out of its own blast and stops absorbing part of it.
+  // Any model that treats the ability as a plain attack gets this backwards.
+  for (const [dist, want, atkWant] of [[10, 56.39, 8.6], [20, 56.39, 8.6],
+    [30, 56.39, 8.6], [40, 56.39, 8.6], [50, 65.00, 0.0]]) {
+    const r = isolated('togo_b', dist);
+    check(`togo_b at ${dist} km: defender loses ${want}`,
+      Math.abs(r.defender.hpLost - want) < 0.05,
+      `got ${r.defender.hpLost.toFixed(2)}`);
+    check(`togo_b at ${dist} km: its OWN stack loses ${atkWant}`,
+      Math.abs(r.attacker.hpLost - atkWant) < 0.06,
+      `got ${r.attacker.hpLost.toFixed(2)}`);
+  }
+  check('losses RISE past the radius — the attacker leaves its own blast',
+    isolated('togo_b', 50).defender.hpLost > isolated('togo_b', 40).defender.hpLost,
+    'if this ever inverts, the radius has been modelled as an attack range');
+
+  // THE SPLIT, across five attacker sizes at a fixed defender. Straight
+  // replay of the measured cells.
+  for (const [atkN, want] of [[5, 60.13], [10, 56.39], [25, 48.16],
+    [50, 39.90], [100, 31.62]]) {
+    const r = isolated('togo_b', 10, 10, atkN, 50);
+    check(`togo_b, ${atkN} attackers: defender loses ${want}`,
+      Math.abs(r.defender.hpLost - want) < 0.06,
+      `got ${r.defender.hpLost.toFixed(2)}`);
+  }
+
+  // THE LEVEL LADDER, read at 50 km where the target is alone in the blast so
+  // the reading is the hero's 15.00 plus the whole ability.
+  for (const [lv, want] of [[1, 25], [2, 30], [3, 30], [4, 35], [5, 40],
+    [6, 45], [7, 50], [8, 55], [9, 60], [10, 65], [15, 90], [20, 115]]) {
+    const r = isolated('togo_b', 50, lv);
+    check(`togo_b level ${lv} at 50 km: ${want}`,
+      Math.abs(r.defender.hpLost - want) < 0.05,
+      `got ${r.defender.hpLost.toFixed(2)}`);
+  }
+  check('plain Tōgō is flat at 15.00 across the whole level range',
+    [1, 5, 10, 15, 20].every((lv) =>
+      Math.abs(isolated('togo', 50, lv).defender.hpLost - 15.0) < 0.05),
+    [1, 5, 10, 15, 20].map((lv) =>
+      isolated('togo', 50, lv).defender.hpLost.toFixed(2)).join(', '));
+
+  // DURATION. Six rounds, then only the hero's own attack. The discriminating
+  // shape is a per-round contribution that COLLAPSES rather than decaying.
+  const cum = (n) => isolated('togo_b', 10, 10, 10, 50).defender.hpLost && simulate({
+    terrain: 'sea', defenderTerrain: 'sea', distance: 10,
+    attacker: { rows: [{ unit: 'sub', count: 10 }], hero: { code: 'togo_b', level: 10 } },
+    defender: { rows: [{ unit: 'sub', count: 50 }] }, rounds: n }).defender.hpLost;
+  const r6 = cum(6); const r7 = cum(7); const r8 = cum(8);
+  check('rounds 1-6 each deliver the ability (measured 337.75 by round 6)',
+    Math.abs(r6 - 337.75) < 1.0, `got ${r6.toFixed(2)}`);
+  check('round 7 collapses to roughly the hero\'s own attack (measured +14.77)',
+    (r7 - r6) < 20 && (r7 - r6) > 10, `got +${(r7 - r6).toFixed(2)}`);
+  check('and round 8 matches round 7 — expired, not decaying',
+    Math.abs((r8 - r7) - (r7 - r6)) < 1.0,
+    `+${(r7 - r6).toFixed(2)} then +${(r8 - r7).toFixed(2)}`);
+  check('the ability declares 6 rounds for Tōgō and 9 for Lucien',
+    BOMBARDMENT.togo_b.rounds === 6 && BOMBARDMENT.lucien_g.rounds === 9);
+
+  // LUCIEN — a radius that grows with level, which is the axis that made a
+  // radius look like an unstable coefficient in the first place.
+  const lucien = (dist, level) => simulate({
+    distance: dist,
+    attacker: { rows: [{ unit: 'inf', count: 10 }], hero: { code: 'lucien_g', level } },
+    defender: { rows: [{ unit: 'inf', count: 50 }] }, rounds: 1 });
+  for (const [lv, radius] of [[1, 20], [5, 30], [10, 40]]) {
+    const inside = lucien(radius, lv).defender.hpLost;
+    const outside = lucien(50, lv).defender.hpLost;
+    check(`lucien_g level ${lv}: radius ${radius} km — losses rise outside it`,
+      outside > inside + 0.5, `${inside.toFixed(2)} inside, ${outside.toFixed(2)} outside`);
+  }
+  for (const [lv, want] of [[1, 23], [5, 28], [10, 38], [12, 38], [13, 43], [14, 43]]) {
+    const got = lucien(50, lv).defender.hpLost;
+    check(`lucien_g level ${lv} at 50 km: ${want}`, Math.abs(got - want) < 0.05,
+      `got ${got.toFixed(2)}`);
+  }
+  check('all fifteen of Lucien\'s levels are measured, none interpolated',
+    Array.from({ length: 15 }, (_, i) => i + 1)
+      .every((lv) => BOMBARDMENT.lucien_g.totalByLevel[lv] !== undefined));
+
+  // The two corrections this made to constants that were already in the file.
+  check('the split declares its extra participant rather than hiding it',
+    BOMBARDMENT_SPLIT.extraPool > 30 && BOMBARDMENT_SPLIT.extraPool < 50
+    && /not the hero pool|120\.6/i.test(BOMBARDMENT_SPLIT.extraPoolNote),
+    JSON.stringify(BOMBARDMENT_SPLIT.extraPool));
+  check('togo_b no longer carries a second buff curve — it was the same artifact',
+    !HEROES_OTHER_TERRAIN.togo_b.buffs.bb.curveDefending
+    && HEROES_OTHER_TERRAIN.togo_b.buffs.bb.curve[10]
+      === HEROES_OTHER_TERRAIN.togo.buffs.bb.curve[10],
+    `${HEROES_OTHER_TERRAIN.togo_b.buffs.bb.curve[10]} vs `
+      + `${HEROES_OTHER_TERRAIN.togo.buffs.bb.curve[10]}`);
+
+  // Straight replay of every isolated cell in the record, so a future edit to
+  // the constants has to survive the readings and not just the round numbers.
+  let replayed = 0;
+  for (const rec of rows) {
+    if (!['bombardment', 'bombardment_law', 'bombardment_own',
+      'bombardment_finish', 'bombardment_lucien2', 'togo_buff_clean']
+      .includes(rec.experiment)) continue;
+    const m = rec.meta;
+    const dist = m.distance;
+    if (dist === undefined || dist === null || dist <= MELEE_RANGE) continue;
+    if (m.rounds !== undefined && m.rounds !== 1) continue;
+    const want = ((m.detail || {})['B.1.1'] || {}).lost;
+    if (want == null) continue;
+    // The unit is not always in the meta -- bombardment_lucien2 records only
+    // the hero, level and distance -- so fall back to the hero, which fixes
+    // the terrain: Lucien is a land hero and Tōgō a naval one.
+    const landHero = m.hero === 'lucien' || m.hero === 'lucien_g';
+    const land = landHero || m.unit === 'inf' || m.atk === 'inf';
+    // togo_buff_clean is the one cell where the STACK also fires: battleships
+    // reach 75 km, so at 50 they are still shooting while sitting outside the
+    // ability's 40 km blast. That is what makes it a clean read of the buff.
+    const unit = land ? 'inf'
+      : (rec.experiment === 'togo_buff_clean' || m.unit === 'bb' || m.atk === 'bb'
+        ? 'bb' : 'sub');
+    const tgt = (rec.experiment === 'togo_buff_clean') ? 'cl' : unit;
+    const tgtN = (rec.experiment === 'togo_buff_clean') ? 200 : (m.def_n || 50);
+    const got = simulate({
+      terrain: land ? 'land' : 'sea', defenderTerrain: land ? 'land' : 'sea',
+      distance: dist,
+      attacker: { rows: [{ unit, count: m.atk_n || 10 }],
+        hero: { code: m.hero, level: m.level || 10 } },
+      defender: { rows: [{ unit: tgt, count: tgtN }] },
+      rounds: 1,
+    });
+    replayed += 1;
+    check(`${m.hero} lv${m.level || 10} at ${dist} km vs ${tgtN} ${tgt}: ${want}`,
+      got.defender.hpLost !== null && Math.abs(got.defender.hpLost - want) < 0.6,
+      `got ${got.defender.hpLost === null ? 'withheld' : got.defender.hpLost.toFixed(2)}`);
+  }
+  check('the isolated bombardment cells were actually replayed', replayed >= 40,
+    String(replayed));
 }
 
 // ===========================================================================

@@ -57,6 +57,9 @@ import {
   REPAIR_COST,
   REPAIR_HOURS,
   HERO_REPAIR,
+  BOMBARDMENT,
+  BOMBARDMENT_SPLIT,
+  HERO_REACH,
 } from './data.js';
 
 const EPS = 1e-9;
@@ -982,19 +985,29 @@ function makeSide(cfg, role, derivation, caveats, battle) {
         hero.interpolated = true;
         caveats.push(`${label}: ${known.label} — ${anyInexact.note}.`);
       }
-      // A HERO WHOSE OWN CONTRIBUTION IS NOT A CONSTANT. Only Tōgō-with-
-      // bombardment, and only attacking. Its figure ranges 37.99 to 64.90 over
-      // stack sizes that change nothing for any other hero, and 34 requests
-      // did not find the rule. A band that says so beats a number that is
-      // right at one stack size and 41% high at another.
-      if (known.atkAttackingBand && role === 'attacker') {
-        hero.unstable = known.atkAttackingBand;
-        caveats.push(`${label}: ${known.label}'s own contribution ATTACKING is `
-          + `not a constant — it reads between ${known.atkAttackingBand.lo} and `
-          + `${known.atkAttackingBand.hi} depending on how many units are on `
-          + `each side, and nothing in the record explains why. Plain Tōgō, `
-          + `same hull and pool, is flat at 15.00 across the identical cells. `
-          + `${round4(hero.atk)} is the top of the band. Defending is clean.`);
+      // THIS USED TO DECLARE A HERO WHOSE OWN CONTRIBUTION IS NOT A CONSTANT,
+      // and quote a band of 37.99 to 64.90 because thirty-four requests had
+      // not found the rule. There was no such hero. Tōgō-with-bombardment and
+      // Lucien-with-gas carry an ABILITY -- a second damage source with its
+      // own duration, its own range and its own blast radius -- and what moved
+      // was the share of it the target absorbed. Their own attacks are flat,
+      // 15.00 and 8.00, exactly like the plain versions they differ from.
+      //
+      // The ability is computed per round in the loop below; here the hero is
+      // simply told the reader about, because a stack carrying one behaves in
+      // ways the rest of this model does not prepare anyone for: it damages
+      // its OWN side, it keeps firing when the stack is out of range, and its
+      // effect on the enemy goes UP as the enemy moves further away.
+      const ability = BOMBARDMENT[known.code] || BOMBARDMENT[heroCfg.code];
+      if (ability && role === 'attacker') {
+        hero.ability = ability;
+        caveats.push(`${label}: ${known.label} carries an ability, not just an `
+          + `attack. It adds a second damage source centred on the TARGET, for `
+          + `${ability.rounds} rounds, and every stack inside its blast shares `
+          + `it — including this one, and including anything friendly standing `
+          + `there. Moving the target further away can therefore INCREASE what `
+          + `the target loses, because past the blast the attacker stops `
+          + `absorbing part of it.`);
       }
     } else if (refused) {
       // WRONG TERRAIN, which is a refusal by the server and not a gap in the
@@ -1557,7 +1570,32 @@ function runSimulation(config, derivation, caveats) {
   // already marked inert in makeSide and contribute nothing; only when every
   // one of them is out of reach does the server return no result at all.
   const reaching = atk.rows.filter((r) => !r.inert);
-  const outOfRange = atk.rows.length > 0 && reaching.length === 0;
+  // A HERO FIRES WHEN ITS STACK CANNOT, which this file used to deny flatly.
+  // Ten submarines against a target at 10-50 km produce no result rows at all
+  // -- until a hero is aboard, and then the target loses 15.00 a round. So the
+  // stack being out of range suppresses the STACK, not the battle.
+  const heroReach = (atk.hero && HERO_REACH[atk.hero.code]) || null;
+  const heroFires = !!heroReach && battle.distance <= heroReach.reach;
+  // The ABILITY has its own range, and it is not the hero's. Plain Lucien is
+  // silent at 75 km while Lucien-with-gas at level 15 lands its full 40.00
+  // there — so at 75 km the reading is the ability with no own attack in it at
+  // all, which is exactly what makes that cell a clean total.
+  const abilityDef = (atk.hero && BOMBARDMENT[atk.hero.code]) || null;
+  const abilityFires = !!abilityDef
+    && battle.distance <= bombardmentRange(abilityDef, atk.hero.level);
+  const stackOutOfRange = atk.rows.length > 0 && reaching.length === 0;
+  const outOfRange = stackOutOfRange && !heroFires && !abilityFires;
+  if (stackOutOfRange && heroFires) {
+    derivation.push({
+      label: 'Stack out of range, hero still firing',
+      formula: `Nothing in the attacking stack reaches ${battle.distance} km, but `
+        + `${atk.hero.def.label} does — measured: ten submarines at 0 km against a `
+        + `target at 10-50 km return no result rows at all with no hero aboard, and `
+        + `${round4(atk.hero.atk)} a round with one. Reach for this hero is `
+        + `${heroReach.bound}.`,
+      value: null,
+    });
+  }
   if (outOfRange) {
     derivation.push({
       label: 'Out of range',
@@ -1628,6 +1666,54 @@ function runSimulation(config, derivation, caveats) {
         : (patrolTail > 0 && r === wholeRounds ? patrolTail : 1));
     const patrolSolved = (patrol.applies && patrolScale > 0)
       ? solvePatrol(atk, def, atkCoef.value, defCoef.value, patrol.c) : null;
+
+    // THE HERO'S ABILITY, from the pools as they stand at round start. It runs
+    // for a measured number of rounds and then stops: round 7 of a Tōgō strike
+    // drops from 56.39 to 14.77, and rounds 10 and 11 of a Lucien strike
+    // deliver 8.00 -- the hero's own attack and nothing else.
+    const bdef = abilityFires ? abilityDef : null;
+    // UNIT pool, not stack pool. side.pool carries the hero's own HP as well,
+    // and the measured denominator is the two unit stacks plus ONE extra
+    // participant of about 39 HP -- which is the hero row, and is already in
+    // BOMBARDMENT_SPLIT.extraPool. Counting the hero's full 120.6 as well put
+    // the defender's cut at 55.59 where the server prints 56.39.
+    const unitPool = (side) => (side.hero
+      ? side.pool - Math.max(0, (side.hero.pool || 0) - (side.hero.hpLost || 0))
+      : side.pool);
+    const bomb = (bdef && r <= bdef.rounds)
+      ? bombardmentRound(bdef, atk.hero.level, battle.distance,
+                         unitPool(atk), unitPool(def))
+      : null;
+    if (bdef && r === bdef.rounds + 1) {
+      derivation.push({
+        label: `${tag}${bdef.label}'s ability has expired`,
+        formula: `It contributes for ${bdef.rounds} rounds (measured), after which `
+          + `only the hero's own ${bdef.ownAttack} remains.`,
+        value: null,
+      });
+    }
+    if (bomb) {
+      derivation.push({
+        label: `${tag}${bdef.label} ability`,
+        formula: `${round4(bomb.total)} total at level ${atk.hero.level}`
+          + `${bomb.exact ? '' : ' (interpolated from the measured rule 5 x level)'}`
+          + `, centred on the target. `
+          + (bomb.inBlast
+            ? `At ${battle.distance} km the attacking stack is inside its own `
+              + `${bomb.radius} km blast, so the total is split by HP pool share: `
+              + `${round4(bomb.toDef)} to the defender, ${round4(bomb.toAtk)} to the `
+              + 'attacker — friendly fire is measured, not inferred'
+            : `At ${battle.distance} km the attacker is outside the ${bomb.radius} km `
+              + 'blast, so the target absorbs all of it')
+          + `${bomb.rExact ? '' : ' (radius interpolated from the measured rungs)'}`,
+        value: bomb.toDef,
+      });
+      if (fort) {
+        caveats.push('A fortress and a bombardment ability appear together. Whether '
+          + 'fortress DR reduces the ability was never measured; this engine does not '
+          + 'reduce it, by analogy with building damage, which IS measured as unreduced.');
+      }
+    }
 
     const atkE = effectiveUnits(atk.n);
     const defE = effectiveUnits(def.n);
@@ -1726,7 +1812,8 @@ function runSimulation(config, derivation, caveats) {
 
     // 2. Attacker takes it. No fortress on the attacking side does anything
     //    in this model, because nobody has measured one.
-    const atkLostThis = Math.min(defOutput, atk.pool);
+    const selfBomb = bomb ? bomb.toAtk : 0;
+    const atkLostThis = Math.min(defOutput + selfBomb, atk.pool);
     // Deaths come from the per-row split, because a mixture's rows have
     // different per-unit HP and a stack-level division would be meaningless.
     const atkAlloc = allocate(atk, atkLostThis);
@@ -1871,6 +1958,29 @@ function runSimulation(config, derivation, caveats) {
       const atkParts = stackOutput(atk, (u) => attackCoefficient(u, def.unit, battle.defenderTerrain,
                                           battle.terrain).value, 1);
       atkOutput = atkParts.total === null ? null : atkParts.total;
+      // A HERO DOES NOT SATURATE AGAINST ROWS THAT CANNOT REACH. This file's
+      // own range rule says an out-of-range row "neither fires nor counts
+      // toward E", but side.n keeps counting it, which never mattered while
+      // out-of-range meant no battle at all. It matters now: at fifty
+      // submarines the hero's slot came out as E(51)-E(50) = 0 and its 15.00
+      // vanished, where the server delivers 15.00 at five, ten, twenty-five,
+      // fifty and a hundred alike -- every one of those readings is exactly
+      // 15.00 above the ability's share.
+      if (stackOutOfRange && atk.hero && atkOutput !== null) {
+        // ...and it contributes nothing past its OWN reach, even where its
+        // ability still lands: plain Lucien is silent at 75 km.
+        const heroAlone = heroFires ? atk.hero.atk : 0;
+        atkOutput = heroAlone;
+        atk.hero.heroEff = 1;
+        atk.hero.dealt = heroAlone;
+        derivation.push({
+          label: `${tag}Attacker output is the hero alone`,
+          formula: `Every unit row is out of range and inert, so the hero does `
+            + `not saturate against them: it takes E(1) = 1, not `
+            + `E(n+1) - E(n). ${round4(heroAlone)}.`,
+          value: heroAlone,
+        });
+      }
       if ((atk.rows.length > 1 || atk.hero) && atkOutput !== null) {
         for (const pt of atkParts.parts) {
           // A hero part carries no row. The defender's loop has always
@@ -1921,7 +2031,9 @@ function runSimulation(config, derivation, caveats) {
 
     let defLostThis = 0;
     if (atkOutput !== null) {
-      const delivered = atkOutput * (1 - dr);
+      // The ability is additive and is NOT reduced by fortress DR here -- see
+      // the caveat pushed above; building damage is the measured precedent.
+      const delivered = atkOutput * (1 - dr) + (bomb ? bomb.toDef : 0);
       defLostThis = Math.min(delivered, def.pool);
       derivation.push({
         label: `${tag}Defender HP lost`,
@@ -2366,6 +2478,87 @@ function repairBill(rows) {
   // reading in the corpus is what pins that.
   out.hours = Math.floor(hours);
   out.unitEquivalents = equivalents;
+  return out;
+}
+
+
+// ---------------------------------------------------------------------------
+// A HERO'S BOMBARDMENT ABILITY
+// ---------------------------------------------------------------------------
+// Not to be confused with this file's older use of the word: "free
+// bombardment" below is the past-5-km rule under which a defender cannot
+// answer. This is Tōgō-with-bombardment and Lucien-with-gas, which were
+// recorded as heroes with an unstable own attack and are nothing of the kind.
+// They carry a SECOND damage source, centred on the target, divided among
+// everything standing in its blast -- which is exactly why its apparent size
+// moved with the unit counts on BOTH sides. See the note over BOMBARDMENT in
+// data.js for how it was measured.
+//
+// Two things about the geometry read backwards and both are measured. The
+// radius is centred on the TARGET, so the target is hit at any distance; what
+// the radius decides is who ELSE is caught. And the attacker's own stack is
+// one of those -- so moving the target from 40 km to 50 km RAISES its losses,
+// because past 40 the attacker steps out of its own blast and the target
+// absorbs the whole thing.
+
+/** The ability's total at a level, from the measured table or its rule. */
+function bombardmentTotal(bdef, level) {
+  const lv = Math.max(1, Math.round(level || 1));
+  if (bdef.totalByLevel[lv] !== undefined) {
+    return { total: bdef.totalByLevel[lv], exact: true };
+  }
+  // Only Tōgō has gaps (11-14, 16-19); its rule is 5 x level from level 3 up,
+  // measured at twelve levels including both ends of the range.
+  return { total: 5 * lv, exact: false };
+}
+
+/** How far the ability can be AIMED — distinct from the radius it splashes over. */
+function bombardmentRange(bdef, level) {
+  if (typeof bdef.range === 'number') return bdef.range;
+  const lv = Math.max(1, Math.round(level || 1));
+  const rungs = Object.keys(bdef.rangeByLevel).map(Number).sort((a, b) => a - b);
+  let below = rungs[0];
+  for (const rg of rungs) if (rg <= lv) below = rg;
+  return bdef.rangeByLevel[below];
+}
+
+/** The radius at a level. Tōgō's is flat; Lucien's grows, measured at 1, 5, 10, 15. */
+function bombardmentRadius(bdef, level) {
+  if (typeof bdef.radius === 'number') return { radius: bdef.radius, exact: true };
+  const lv = Math.max(1, Math.round(level || 1));
+  const rungs = Object.keys(bdef.radiusByLevel).map(Number).sort((a, b) => a - b);
+  if (bdef.radiusByLevel[lv] !== undefined) {
+    return { radius: bdef.radiusByLevel[lv], exact: true };
+  }
+  let below = rungs[0];
+  for (const rg of rungs) if (rg <= lv) below = rg;
+  return { radius: bdef.radiusByLevel[below], exact: false };
+}
+
+/**
+ * One round of the ability, from the stacks as they stand at round start.
+ *
+ * Split by HP POOL share over everything in the blast. The attacking side
+ * carries one extra participant -- its own hero row -- and including it is
+ * what makes this exact rather than merely close: ten submarines against
+ * fifty put the target's cut at 41.67 on a bare two-stack pool split, and the
+ * server prints 41.39, which is what the same sum gives with the hero's ~39 HP
+ * in the denominator.
+ */
+function bombardmentRound(bdef, level, distance, atkPool, defPool) {
+  const { total, exact } = bombardmentTotal(bdef, level);
+  const { radius, exact: rExact } = bombardmentRadius(bdef, level);
+  const inBlast = distance <= radius;
+  const out = { total, toDef: total, toAtk: 0, radius, inBlast, exact, rExact };
+  if (!inBlast) return out;
+  // Per hero: 39.2 for Tōgō, 16.1 for Lucien. That they differ is the evidence
+  // that this is the hero's own row in the blast and not a constant.
+  const extra = (typeof bdef.extraPool === 'number')
+    ? bdef.extraPool : BOMBARDMENT_SPLIT.extraPool;
+  const denom = atkPool + defPool + extra;
+  if (!(denom > 0)) return out;
+  out.toDef = total * (defPool / denom);
+  out.toAtk = total * ((atkPool + extra) / denom);
   return out;
 }
 

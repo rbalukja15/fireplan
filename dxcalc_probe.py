@@ -9177,11 +9177,619 @@ def exp_hero_repair_all(p: Probe) -> None:
         print(f"\n  NO SINGLE RATE covers every hero — the rate is PER HERO.")
 
 
+def exp_bombardment(p: Probe) -> None:
+    """The togo_b gap, closed by reading the author's own help page.
+
+    HOW THIS WAS FOUND. Five audits in, the claim was that the server authors
+    two inventories -- the fields it accepts and the columns it prints -- and
+    that both had now been swept. That was wrong by one. Every control on the
+    form links to share/s1914.info.html with an anchor, thirteen distinct ones,
+    and that page is a THIRD server-authored inventory: the author's own prose
+    describing what the calculator is supposed to do. It had never been read.
+
+    Two of its section anchors are #togo and #lucien -- precisely the two
+    heroes in this project's togo_b_unstable gap, the one recorded as needing
+    "a mechanism nobody has proposed yet".
+
+    WHAT THE PAGE SAYS.
+
+        "If you are using the bombardment version of Togo Heihachiro the
+         bombardment ability will be in effect for 6 rounds. This is in
+         additional to the normal damage that the stack inflicts. Any stack
+         (enemy or your own) within 40 km of the target stack will take
+         bombardment damage. If you want an enemy stack to receive bombardment
+         damage, but not the main damage from the stack, put its position more
+         than 5 km from the target and within 40 km of the target."
+
+        "The gas version of Lucien will last 9 rounds. Comments above for Togo
+         also apply to Lucien except that ranges and radii are different for
+         Lucien depending on the level."
+
+    So the "unstable own contribution" was never an own contribution at all. It
+    is a SECOND DAMAGE SOURCE with its own radius and its own duration, and the
+    decomposition that produced the 37.99-64.90 band was subtracting a baseline
+    from a total that had two terms in it. The gap note says the next step is
+    "a different KIND of variable: rounds, distance, or the hero's own HP
+    percentage". It named the right two and nobody ran them: all 191 togo and
+    lucien readings in results.jsonl sit at one position with rounds unvaried.
+
+    WHY THE AUTHOR'S PROSE IS A HYPOTHESIS, NOT AN ANSWER. It is documentation,
+    written by a person, about software that has changed; it can be stale or
+    simply wrong, and this project has already caught its own handover saying
+    three things that were false. So nothing here is recorded because the page
+    says it. Every claim below is turned into a number the server has to
+    produce, and the isolation the page suggests is exactly what makes that
+    possible:
+
+      1. RADIUS. Submarines are melee (range 5). Put the target at 10 km and
+         the attacking stack cannot reach it at all, so ANY damage the target
+         takes is bombardment and nothing else. No subtraction, no baseline.
+         Sweep 0, 3, 10, 20, 30, 40, 50 against three attackers -- no hero,
+         plain Togo, Togo w/bombardment -- and the plain-Togo row is the
+         control that says the effect belongs to the bombardment and not to
+         "a hero being present".
+      2. DURATION. Same isolation, rounds 1 through 8. If the ability really
+         stops after 6, cumulative damage rises to round 6 and is then flat,
+         which no ordinary attack does.
+      3. FRIENDLY FIRE. "enemy or your own" is the strangest claim on the page
+         and the easiest to check: a SECOND FRIENDLY stack, 20 km from the
+         target and 30 km from its own flagship, with nothing attacking it.
+         Under every model this project has ever held, that stack cannot take
+         damage.
+      4. LUCIEN, whose radius the page says varies with LEVEL -- the one axis
+         that would make a radius look like an unstable coefficient.
+    """
+    abb, lvl, hhp = HERO_ATK_FIELDS
+    POSITIONS = [0, 3, 10, 20, 30, 40, 50]
+
+    def strike(hero: str | None, dist: int, rounds: str | float = 1,
+               level: int = 10, atk_unit: str = "sub", tgt_unit: str = "sub",
+               terrain: str = "sea", tag: str = "bombardment") -> dict | None:
+        ov = settings(rounds)
+        ov.update(duel(1, atk_unit, 10, tgt_unit, 50,
+                       atk_terrain=terrain, def_terrain=terrain))
+        ov["B.1.position"] = str(dist)          # attacker stays at 0
+        fields: tuple[str, ...] = ()
+        if hero:
+            ov.update({abb: hero, lvl: str(level), hhp: "100%"})
+            fields = HERO_ATK_FIELDS
+        try:
+            p.submit(ov, create=fields) if fields else p.submit(ov)
+        except (BareFormReturned, ValueError) as e:
+            print(f"    refused ({hero}, {dist} km): {e}"[:96])
+            return None
+        d = dict(p.last_details)
+        record(tag, {"hero": hero, "level": level, "distance": dist,
+                     "rounds": rounds, "atk": atk_unit, "target": tgt_unit,
+                     "terrain": terrain, "detail": d,
+                     "summary": dict(p.last_summary)},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        return d
+
+    print("\n  1. RADIUS — target beyond melee, so any damage at all is "
+          "bombardment\n")
+    header = "  " + f"{'km':>4}" + "".join(f"{h:>14}" for h in
+                                           ("no hero", "togo", "togo w/bomb"))
+    print(header)
+    radius: dict[int, dict[str, float | None]] = {}
+    for dist in POSITIONS:
+        row: dict[str, float | None] = {}
+        for key, hero in (("no hero", None), ("togo", "togo"),
+                          ("togo w/bomb", "togo_b")):
+            d = strike(hero, dist)
+            b = (d or {}).get("B.1.1") or {}
+            row[key] = b.get("lost")
+        radius[dist] = row
+        cells = "".join(("%14s" % ("-" if row[k] is None else f"{row[k]:.2f}"))
+                        for k in ("no hero", "togo", "togo w/bomb"))
+        print(f"  {dist:>4}{cells}")
+
+    reach = [d for d, r in radius.items()
+             if (r.get("togo w/bomb") or 0) > 0 and (r.get("togo") or 0) == 0]
+    silent = [d for d, r in radius.items()
+              if (r.get("togo w/bomb") or 0) == 0]
+    print(f"\n  bombardment reaches: {reach or 'nowhere'} km")
+    print(f"  silent at:           {silent or 'nowhere'} km")
+    if reach:
+        print(f"  VERDICT: a SECOND damage source, not an own-attack "
+              f"coefficient. It reaches {max(reach)} km where the stack "
+              f"itself stops at 5 km (submarines are melee).")
+
+    print("\n  2. DURATION — does it stop after 6 rounds?\n")
+    print(f"  {'rounds':>7}{'cumulative':>13}{'this round':>13}")
+    prev = 0.0
+    seen: list[tuple[int, float]] = []
+    for rounds in range(1, 9):
+        d = strike("togo_b", 10, rounds=rounds)
+        b = (d or {}).get("B.1.1") or {}
+        cum = b.get("lost")
+        if cum is None:
+            print(f"  {rounds:>7}            -            -"); continue
+        seen.append((rounds, cum))
+        print(f"  {rounds:>7}{cum:>13.2f}{cum - prev:>13.2f}")
+        prev = cum
+    if len(seen) >= 7:
+        deltas = {r: c - (dict(seen).get(r - 1, 0.0)) for r, c in seen}
+        stops = [r for r in range(2, 9) if abs(deltas.get(r, 0.0)) < 0.005]
+        first_stop = min(stops) if stops else None
+        print(f"\n  first round contributing nothing: {first_stop}")
+        if first_stop:
+            print(f"  VERDICT: the ability lasts {first_stop - 1} rounds.")
+
+    print("\n  3. FRIENDLY FIRE — a second stack of OURS, nothing attacking "
+          "it\n")
+    print("     A.1 subs + hero at 0 km, attacking B.1 at 10 km.")
+    print("     A.2 subs at 30 km: 20 km from the target, 25 km outside any")
+    print("     melee range, and not attacking or attacked by anything.\n")
+    A2 = ("A.2.target", "A.2.terrain", "A.2.position", "A.2.trench",
+          "A.2.1.unit", "A.2.1.count", "A.2.1.hp")
+    print(f"  {'hero':14}{'B.1 (enemy)':>14}{'A.2 (ours)':>14}")
+    for hero in ("togo", "togo_b"):
+        ov = settings(1)
+        ov.update(duel(1, "sub", 10, "sub", 50,
+                       atk_terrain="sea", def_terrain="sea"))
+        ov["B.1.position"] = "10"
+        ov.update({abb: hero, lvl: "10", hhp: "100%"})
+        ov.update({"A.2.target": "0", "A.2.terrain": "sea",
+                   "A.2.position": "30", "A.2.trench": "0",
+                   "A.2.1.unit": "sub", "A.2.1.count": "20",
+                   "A.2.1.hp": "100%"})
+        try:
+            p.submit(ov, create=HERO_ATK_FIELDS + A2)
+        except (BareFormReturned, ValueError) as e:
+            print(f"  {hero:14} refused: {e}"[:96]); continue
+        d = dict(p.last_details)
+        record("bombardment_friendly",
+               {"hero": hero, "detail": d, "summary": dict(p.last_summary)},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        enemy = ((d.get("B.1.1") or {}).get("lost"))
+        ours = ((d.get("A.2.1") or {}).get("lost"))
+        f = lambda v: "-" if v is None else f"{v:.2f}"
+        print(f"  {hero:14}{f(enemy):>14}{f(ours):>14}")
+
+    print("\n  4. LUCIEN W/GAS — the page says its radius varies with LEVEL\n")
+    print(f"  {'km':>4}" + "".join(f"{('lv ' + str(l)):>12}"
+                                   for l in (1, 5, 10, 20)))
+    for dist in (0, 3, 10, 20, 30, 40, 50):
+        cells = ""
+        for level in (1, 5, 10, 20):
+            d = strike("lucien_g", dist, level=level, atk_unit="inf",
+                       tgt_unit="inf", terrain="land", tag="bombardment_lucien")
+            b = (d or {}).get("B.1.1") or {}
+            v = b.get("lost")
+            cells += "%12s" % ("-" if v is None else f"{v:.2f}")
+        print(f"  {dist:>4}{cells}")
+
+
+def exp_bombardment_law(p: Probe) -> None:
+    """Pin the two constants the radius sweep only sketched.
+
+    exp_bombardment established the mechanism: Togo-with-bombardment adds a
+    SECOND damage source, centred on the target, lasting 6 rounds, splashing
+    every stack within 40 km including friendly ones. Three configurations put
+    its total at 50.00 and its split close to each stack's share of the HP pool
+    in the blast. Close is not measured, and two things are still guesses:
+
+      SPLIT. Three points, all with the same 10-vs-50 shape, sit 0.3-0.5%
+      below a strict pool-proportional split. That is more than the printed
+      precision, so either the rule is not exactly pool share or something
+      small is also in the blast -- the hero's own row is the obvious
+      candidate, and it does take damage (0.3 where its stack takes 8.3).
+      Five attacker sizes against a fixed defender separate a pool split from
+      a count split from anything with a fixed extra participant.
+
+      LEVEL. The recorded atkAttackingCurve for this hero -- 24.98, 29.97,
+      29.97, 34.96, ... -- was read as an own-attack curve. It cannot be: the
+      own attack is 15.00 flat, measured after the ability expires. Every one
+      of those numbers is 15.00 plus a bombardment SHARE, so the curve is the
+      shape of the bombardment as seen through one particular pool ratio.
+      Read at 50 km, where the target is the only stack in the blast, the
+      share is 1.0 and the reading is the total outright.
+
+    ISOLATION. 50 km, submarines, one round. The stack cannot reach, so the
+    only two terms are the hero's flat 15.00 and the whole bombardment.
+    """
+    abb, lvl, hhp = HERO_ATK_FIELDS
+    OWN = 15.00
+
+    def read(level: int, dist: int, atk_n: int, def_n: int) -> float | None:
+        ov = settings(1)
+        ov.update(duel(1, "sub", atk_n, "sub", def_n,
+                       atk_terrain="sea", def_terrain="sea"))
+        ov["B.1.position"] = str(dist)
+        ov.update({abb: "togo_b", lvl: str(level), hhp: "100%"})
+        try:
+            p.submit(ov, create=HERO_ATK_FIELDS)
+        except (BareFormReturned, ValueError) as e:
+            print(f"    refused (lv{level}, {dist} km, {atk_n}v{def_n}): {e}"[:92])
+            return None
+        d = dict(p.last_details)
+        record("bombardment_law",
+               {"hero": "togo_b", "level": level, "distance": dist,
+                "atk_n": atk_n, "def_n": def_n, "detail": d,
+                "summary": dict(p.last_summary)},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        return d
+
+    print("\n  1. THE SPLIT — fixed defender, five attacker sizes, at 10 km\n")
+    print(f"  {'atk':>5}{'poolA':>8}{'B lost':>9}{'bombard':>9}"
+          f"{'share':>8}{'pool share':>12}{'diff':>8}")
+    pts: list[tuple[float, float]] = []
+    for atk_n in (5, 10, 25, 50, 100):
+        d = read(10, 10, atk_n, 50)
+        if d is None:
+            continue
+        b = (d.get("B.1.1") or {}).get("lost")
+        if b is None:
+            print(f"  {atk_n:>5}  no reading"); continue
+        bomb = b - OWN
+        share = bomb / 50.0
+        poolA, poolB = atk_n * 100.0, 5000.0
+        expect = poolB / (poolA + poolB)
+        pts.append((poolA, share))
+        print(f"  {atk_n:>5}{poolA:>8.0f}{b:>9.2f}{bomb:>9.2f}"
+              f"{share:>8.4f}{expect:>12.4f}{(share - expect):>8.4f}")
+    if len(pts) >= 3:
+        # If the split is pool-proportional over a blast that also contains an
+        # extra participant of pool X, then 1/share = 1 + (poolA + X)/poolB, so
+        # 1/share is LINEAR in poolA and the intercept gives X.
+        n = len(pts)
+        sx = sum(a for a, _ in pts); sy = sum(1.0 / s for _, s in pts)
+        sxx = sum(a * a for a, _ in pts); sxy = sum(a * (1.0 / s) for a, s in pts)
+        slope = (n * sxy - sx * sy) / (n * sxx - sx * sx)
+        icept = (sy - slope * sx) / n
+        poolB = 5000.0
+        print(f"\n  1/share against poolA:  slope {slope:.8f} "
+              f"(1/poolB would be {1/poolB:.8f})")
+        extra = (icept - 1.0) * poolB
+        print(f"  intercept {icept:.5f} -> an extra {extra:.1f} HP of pool in "
+              f"the blast besides the two unit stacks")
+        print(f"  (the hero's own row is the candidate; a strict two-stack "
+              f"pool split predicts an intercept of exactly 1.0)")
+
+    print("\n  2. THE TOTAL BY LEVEL — read at 50 km, share = 1.0\n")
+    print(f"  {'level':>6}{'B lost':>9}{'bombardment total':>20}")
+    for level in (1, 2, 3, 5, 10, 15, 20):
+        d = read(level, 50, 10, 50)
+        if d is None:
+            continue
+        b = (d.get("B.1.1") or {}).get("lost")
+        if b is None:
+            print(f"  {level:>6}  no reading"); continue
+        print(f"  {level:>6}{b:>9.2f}{b - OWN:>20.2f}")
+
+
+def exp_bombardment_own(p: Probe) -> None:
+    """Separate the hero's own attack from its bombardment, level by level.
+
+    At 50 km with submarines the stack cannot reach, so a togo_b reading is
+    exactly (own attack + whole bombardment) and a togo reading is exactly
+    (own attack), because the two heroes are the same hull differing only in
+    the ability. Subtracting one from the other at matched level is the same
+    two-configuration decomposition this project used for the trench and the
+    fortress, and it is what the original hero sweep could not do: it never
+    moved the target out of melee, so every reading had the STACK's damage in
+    it as well and the subtraction had three terms instead of two.
+
+    This is what makes the recorded atkAttackingCurve wrong rather than
+    imprecise. 24.98, 29.97, 29.97, 34.96 ... was recorded as an own-attack
+    curve. It is the SUM, seen through one pool ratio.
+    """
+    abb, lvl, hhp = HERO_ATK_FIELDS
+    LEVELS = (1, 2, 3, 5, 10, 15, 20)
+    got: dict[str, dict[int, float]] = {"togo": {}, "togo_b": {}}
+    for hero in ("togo", "togo_b"):
+        for level in LEVELS:
+            ov = settings(1)
+            ov.update(duel(1, "sub", 10, "sub", 50,
+                           atk_terrain="sea", def_terrain="sea"))
+            ov["B.1.position"] = "50"
+            ov.update({abb: hero, lvl: str(level), hhp: "100%"})
+            try:
+                p.submit(ov, create=HERO_ATK_FIELDS)
+            except (BareFormReturned, ValueError) as e:
+                print(f"  {hero} lv{level}: {e}"[:92]); continue
+            d = dict(p.last_details)
+            record("bombardment_own",
+                   {"hero": hero, "level": level, "distance": 50,
+                    "detail": d, "summary": dict(p.last_summary)},
+                   {k: (v or {}).get("lost") for k, v in d.items()})
+            b = (d.get("B.1.1") or {}).get("lost")
+            if b is not None:
+                got[hero][level] = b
+    print(f"\n  {'level':>6}{'togo':>9}{'togo w/bomb':>13}"
+          f"{'bombardment':>13}{'5 x level':>11}")
+    for level in LEVELS:
+        a, b = got["togo"].get(level), got["togo_b"].get(level)
+        if a is None or b is None:
+            print(f"  {level:>6}  incomplete"); continue
+        print(f"  {level:>6}{a:>9.2f}{b:>13.2f}{b - a:>13.2f}{5.0 * level:>11.2f}")
+    own = sorted(set(round(v, 2) for v in got["togo"].values()))
+    print(f"\n  plain Togo's own attack across levels: {own}")
+    print("  (flat means the recorded per-level curve was the ABILITY moving, "
+          "not the hero)")
+
+
+def exp_bombardment_finish(p: Probe) -> None:
+    """Fill the low levels, and do Lucien the same way.
+
+    Three things left. The togo_b total is 5 x level from level 3 up but reads
+    10 and 15 at levels 1 and 2, and level 4 was never sent -- the only
+    evidence for it is the old atkAttackingCurve, recorded under the reading
+    this experiment just overturned, so it is not evidence at all. Lucien
+    w/gas is the same family and has never been decomposed. And the page says
+    Lucien lasts NINE rounds where Togo lasts six, which is the cheapest
+    possible check of whether the durations are really per-hero.
+
+    All at 50 km, where the stack cannot reach and the target is the only
+    thing in the blast, so every reading is (own attack + whole ability) and
+    the plain-hero control subtracts to the ability alone.
+    """
+    abb, lvl, hhp = HERO_ATK_FIELDS
+
+    def read(hero: str, level: int, rounds: str | float = 1,
+             unit: str = "sub", terrain: str = "sea") -> float | None:
+        ov = settings(rounds)
+        ov.update(duel(1, unit, 10, unit, 50,
+                       atk_terrain=terrain, def_terrain=terrain))
+        ov["B.1.position"] = "50"
+        ov.update({abb: hero, lvl: str(level), hhp: "100%"})
+        try:
+            p.submit(ov, create=HERO_ATK_FIELDS)
+        except (BareFormReturned, ValueError) as e:
+            print(f"    {hero} lv{level} r{rounds}: {e}"[:92]); return None
+        d = dict(p.last_details)
+        record("bombardment_finish",
+               {"hero": hero, "level": level, "rounds": rounds, "distance": 50,
+                "unit": unit, "detail": d, "summary": dict(p.last_summary)},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        return (d.get("B.1.1") or {}).get("lost")
+
+    print("\n  1. togo_b at the levels never sent (own attack is 15.00 flat)\n")
+    print(f"  {'level':>6}{'B lost':>9}{'ability':>10}{'5 x level':>11}")
+    for level in (4, 6, 7, 8, 9):
+        b = read("togo_b", level)
+        if b is None:
+            continue
+        print(f"  {level:>6}{b:>9.2f}{b - 15.0:>10.2f}{5.0 * level:>11.2f}")
+
+    print("\n  2. LUCIEN W/GAS, decomposed against plain Lucien\n")
+    print(f"  {'level':>6}{'lucien':>9}{'lucien w/gas':>14}{'ability':>10}"
+          f"{'3 x level':>11}")
+    for level in (1, 2, 3, 5, 10, 15):
+        a = read("lucien", level, unit="inf", terrain="land")
+        b = read("lucien_g", level, unit="inf", terrain="land")
+        if a is None or b is None:
+            print(f"  {level:>6}  incomplete"); continue
+        print(f"  {level:>6}{a:>9.2f}{b:>14.2f}{b - a:>10.2f}{3.0 * level:>11.2f}")
+
+    print("\n  3. DURATION — the page says Lucien lasts 9 rounds, Togo 6\n")
+    print(f"  {'rounds':>7}{'cumulative':>13}{'this round':>13}")
+    prev = 0.0
+    for rounds in range(7, 12):
+        b = read("lucien_g", 10, rounds=rounds, unit="inf", terrain="land")
+        if b is None:
+            continue
+        print(f"  {rounds:>7}{b:>13.2f}{b - prev:>13.2f}")
+        prev = b
+    print("\n  (a round contributing only the hero's own attack is a round "
+          "the ability\n   is no longer running)")
+
+
+def exp_bombardment_lucien(p: Probe) -> None:
+    """Two loose ends on Lucien, both of which would otherwise become bad data.
+
+    LEVEL 15 READ 32.89, and this project does not record a number like that
+    as a constant without asking why it is not round. Every other reading in
+    the family is: 10, 15, 20, 25, 30 ... The suspicion is that the reading is
+    not the total at all. The page says Lucien's radius GROWS with level, the
+    radius sweep measured it at 20 km (lv 1), 30 (lv 5) and 40 (lv 10), and at
+    level 15 it may simply have grown past the 50 km the reading was taken at
+    -- which would put the ATTACKER inside its own blast and make 32.89 a
+    share rather than a total. Re-reading at 75 and 150 km settles it: if the
+    number goes up and turns round, the radius is the explanation.
+
+    LEVELS 4 and 6-9 were never sent for Lucien, and the shape below level 5
+    is flat at 15 where the shape above it climbs, so the join is exactly
+    where a guess would be worst.
+    """
+    abb, lvl, hhp = HERO_ATK_FIELDS
+    OWN = 8.00
+
+    def read(level: int, dist: int) -> float | None:
+        ov = settings(1)
+        ov.update(duel(1, "inf", 10, "inf", 50,
+                       atk_terrain="land", def_terrain="land"))
+        ov["B.1.position"] = str(dist)
+        ov.update({abb: "lucien_g", lvl: str(level), hhp: "100%"})
+        try:
+            p.submit(ov, create=HERO_ATK_FIELDS)
+        except (BareFormReturned, ValueError) as e:
+            print(f"    lv{level} {dist}km: {e}"[:92]); return None
+        d = dict(p.last_details)
+        record("bombardment_lucien2",
+               {"hero": "lucien_g", "level": level, "distance": dist,
+                "detail": d, "summary": dict(p.last_summary)},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        return d
+
+    print("\n  1. is level 15's 32.89 a total, or a share of a bigger blast?\n")
+    print(f"  {'km':>5}{'B lost':>9}{'ability':>10}{'A.1 lost':>11}"
+          f"   A.1 inside its own blast?")
+    for dist in (50, 75, 150):
+        d = read(15, dist)
+        if d is None:
+            continue
+        b = (d.get("B.1.1") or {}).get("lost")
+        a = (d.get("A.1.1") or {}).get("lost")
+        if b is None:
+            print(f"  {dist:>5}  no reading"); continue
+        inside = "YES — it is sharing" if (a or 0) > 0 else "no — clean total"
+        print(f"  {dist:>5}{b:>9.2f}{b - OWN:>10.2f}"
+              f"{('-' if a is None else f'{a:.2f}'):>11}   {inside}")
+
+    # Does the hero's OWN attack even reach 75 km? Togo's reached 50, and the
+    # 32.00 above is only a total if the 8.00 is still in it. If plain Lucien
+    # is silent at 75 the subtraction is wrong and the total is 40.00.
+    print("\n  1b. is plain Lucien's own attack still firing at 75 km?\n")
+    ov = settings(1)
+    ov.update(duel(1, "inf", 10, "inf", 50,
+                   atk_terrain="land", def_terrain="land"))
+    ov["B.1.position"] = "75"
+    ov.update({abb: "lucien", lvl: "15", hhp: "100%"})
+    try:
+        p.submit(ov, create=HERO_ATK_FIELDS)
+        dd = dict(p.last_details)
+        record("bombardment_lucien2",
+               {"hero": "lucien", "level": 15, "distance": 75, "detail": dd,
+                "summary": dict(p.last_summary)},
+               {k: (v or {}).get("lost") for k, v in dd.items()})
+        bb = (dd.get("B.1.1") or {}).get("lost")
+        print(f"  plain lucien at 75 km: {bb}")
+    except (BareFormReturned, ValueError) as e:
+        print(f"  plain lucien at 75 km: SILENT — {e}"[:96])
+        print("  so the 32.00 above was a subtraction of an own attack that "
+              "was not there;\n  the level-15 total is 40.00.")
+
+    print("\n  2. the levels never sent, read at 50 km (75 is out of RANGE "
+          "below level 15)\n")
+    print(f"  {'level':>6}{'B lost':>9}{'A.1 lost':>10}{'ability':>10}"
+          f"{'clean?':>9}")
+    for level in (4, 6, 7, 8, 9, 11, 12, 13, 14):
+        d = read(level, 50)
+        if d is None:
+            continue
+        b = (d.get("B.1.1") or {}).get("lost")
+        a = (d.get("A.1.1") or {}).get("lost")
+        if b is None:
+            print(f"  {level:>6}  no reading"); continue
+        clean = "yes" if not (a or 0) else "SHARED"
+        print(f"  {level:>6}{b:>9.2f}{(a or 0):>10.2f}{b - OWN:>10.2f}"
+              f"{clean:>9}")
+
+
+def exp_bombardment_melee(p: Probe) -> None:
+    """Is the attacker inside its own blast when it is standing on the target?
+
+    The radius sweep answered this for 10-40 km: yes, and the split is by pool
+    share. At 0 km it did NOT answer it, because the attacking stack there was
+    ten submarines against fifty and was wiped outright -- pool 1000 of 1000 --
+    so whatever share it was owed is invisible.
+
+    That matters because every hero curve this project ever recorded was taken
+    in melee. If the defender absorbs the whole ability at 0 km, those curves
+    contain a different quantity from the ones at 10 km, and the engine cannot
+    be right about both with one rule.
+
+    THE FIX IS AN ATTACKER THAT SURVIVES. A hundred submarines against fifty
+    lose a small fraction instead of everything, and submarines carry no Togo
+    buff -- his is on battleships -- so the togo/togo_b difference is the
+    ability alone with nothing else moving.
+
+        pool share predicts   5000 / (10000 + 5000 + 39.2) = 0.3325 -> 16.63
+        whole ability to the defender                              -> 50.00
+
+    Three times apart. Nothing subtle to argue about.
+    """
+    abb, lvl, hhp = HERO_ATK_FIELDS
+    print(f"\n  {'km':>4}{'togo':>10}{'togo w/bomb':>14}{'difference':>13}"
+          f"{'A lost':>10}   reading")
+    for dist in (0, 3, 10):
+        vals = {}
+        alost = {}
+        for hero in ("togo", "togo_b"):
+            ov = settings(1)
+            ov.update(duel(1, "sub", 100, "sub", 50,
+                           atk_terrain="sea", def_terrain="sea"))
+            ov["B.1.position"] = str(dist)
+            ov.update({abb: hero, lvl: "10", hhp: "100%"})
+            try:
+                p.submit(ov, create=HERO_ATK_FIELDS)
+            except (BareFormReturned, ValueError) as e:
+                print(f"  {dist:>4} {hero}: {e}"[:92]); continue
+            d = dict(p.last_details)
+            record("bombardment_melee",
+                   {"hero": hero, "distance": dist, "atk_n": 100, "def_n": 50,
+                    "detail": d, "summary": dict(p.last_summary)},
+                   {k: (v or {}).get("lost") for k, v in d.items()})
+            vals[hero] = (d.get("B.1.1") or {}).get("lost")
+            alost[hero] = (d.get("A.1.1") or {}).get("lost")
+        if len(vals) == 2 and None not in vals.values():
+            diff = vals["togo_b"] - vals["togo"]
+            share = diff / 50.0
+            verdict = ("WHOLE ability to the defender" if abs(diff - 50.0) < 1.0
+                       else f"SHARED — share {share:.4f} "
+                            f"(pool share predicts 0.3325)")
+            print(f"  {dist:>4}{vals['togo']:>10.2f}{vals['togo_b']:>14.2f}"
+                  f"{diff:>13.2f}{(alost.get('togo_b') or 0):>10.2f}   {verdict}")
+
+
+def exp_togo_buff_clean(p: Probe) -> None:
+    """Does Togo w/bombardment really have a different buff curve, or was that
+    the same artifact?
+
+    data.js records something no other hero in either table needs: TWO
+    battleship buff curves for togo_b, one attacking (1.2944 at level 10) and
+    one defending (1.30, identical to plain Togo). An anomaly that exists on
+    one side only, for the one hero whose own attack turned out to be a sum,
+    is worth suspecting before it is worth believing.
+
+    THE CLEAN CELL. A battleship reaches 75 km and the ability's radius is 40,
+    so at 50 km the stack still fires while the attacker sits OUTSIDE its own
+    blast -- the target absorbs the ability whole, with no share to work out.
+    Then
+
+        togo_b reading - togo reading  =  T(level)   exactly, if the buffs match
+
+    because everything else on the two sides of that subtraction is identical:
+    same hull, same pool, same own attack of 15.00, same stack, same target.
+    If the buffs really do differ, the difference comes out wrong by the buff
+    gap times the stack's output, which at ten battleships is large and
+    obvious rather than a rounding argument.
+    """
+    abb, lvl, hhp = HERO_ATK_FIELDS
+    TOTAL = {1: 10, 5: 25, 10: 50, 15: 75, 20: 100}
+    print(f"\n  {'level':>6}{'togo':>10}{'togo w/bomb':>14}{'difference':>13}"
+          f"{'ability':>10}   verdict")
+    for level in (1, 5, 10, 15, 20):
+        vals = {}
+        for hero in ("togo", "togo_b"):
+            ov = settings(1)
+            ov.update(duel(1, "bb", 10, "cl", 200,
+                           atk_terrain="sea", def_terrain="sea"))
+            ov["B.1.position"] = "50"
+            ov.update({abb: hero, lvl: str(level), hhp: "100%"})
+            try:
+                p.submit(ov, create=HERO_ATK_FIELDS)
+            except (BareFormReturned, ValueError) as e:
+                print(f"  {level:>6} {hero}: {e}"[:92]); continue
+            d = dict(p.last_details)
+            record("togo_buff_clean",
+                   {"hero": hero, "level": level, "distance": 50,
+                    "detail": d, "summary": dict(p.last_summary)},
+                   {k: (v or {}).get("lost") for k, v in d.items()})
+            vals[hero] = (d.get("B.1.1") or {}).get("lost")
+        if len(vals) == 2 and None not in vals.values():
+            diff = vals["togo_b"] - vals["togo"]
+            want = TOTAL[level]
+            ok = abs(diff - want) < 0.6
+            print(f"  {level:>6}{vals['togo']:>10.2f}{vals['togo_b']:>14.2f}"
+                  f"{diff:>13.2f}{want:>10.0f}   "
+                  f"{'buffs MATCH — the second curve was the artifact' if ok else 'buffs really do differ'}")
+
+
 EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "unit_stats": exp_unit_stats,
     "repair_cost": exp_repair_cost,
     "hero_repair": exp_hero_repair,
     "hero_repair_all": exp_hero_repair_all,
+    "bombardment": exp_bombardment,
+    "bombardment_law": exp_bombardment_law,
+    "bombardment_own": exp_bombardment_own,
+    "bombardment_finish": exp_bombardment_finish,
+    "bombardment_lucien": exp_bombardment_lucien,
+    "bombardment_melee": exp_bombardment_melee,
+    "togo_buff_clean": exp_togo_buff_clean,
     "range_roster": exp_range_roster,
     "return_fire": exp_return_fire,
     "mixed_range": exp_mixed_range,
