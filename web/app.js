@@ -709,10 +709,12 @@ function renderRows(side) {
     hp.title = 'Either a percentage (85%) or the absolute hit points the game '
       + 'shows in Army Details (17.3).';
     hp.value = r.hpText === undefined ? `${fmtHpPct(r.hpPct)}%` : r.hpText;
-    const hpEcho = el('span', 'field-echo');
-    hpEcho.id = uid + '-hp-echo';
-    hp.setAttribute('aria-describedby', hpEcho.id);
-    hpField.append(hpLabel, hp, hpEcho);
+    // The conversion readout lives in the row's stats line below, NOT in this
+    // cell: .urow-grid is align-items:end over a 5.4em column, so anything
+    // added inside the field made it taller, pushed the input up off the
+    // baseline its neighbours sit on, and wrapped mid-phrase.
+    hp.setAttribute('aria-describedby', uid + '-stats');
+    hpField.append(hpLabel, hp);
 
     // --- remove -----------------------------------------------------------
     const rm = el('button', 'btn btn-small btn-icon', '×');
@@ -822,6 +824,25 @@ function maxLevelOf(code) {
  * are labelled with the server's own refusal and the engine withholds their
  * effect rather than treating the absence as a zero.
  */
+
+/**
+ * How the hero's own HP reads back, folded into the clause that already names
+ * its pool -- "with 60 HP of its own, currently on 34.2 of them (57%)".
+ * Pushed as a separate sentence it collided with the next clause and repeated
+ * the pool: "with 60 HP of its own currently 34.2 of 60 HP and multiplies...".
+ *
+ * A hero's output scales with its own HP by the same m(f) a unit obeys, so
+ * this is a figure that changes the answer, not decoration.
+ */
+function heroHpPhrase(hero, def) {
+  if (!hero || !def) return '';
+  if (hero.hpBad) return ' — HP not a number, last value kept';
+  const pct = hero.hpPct === undefined ? 100 : hero.hpPct;
+  if (pct === 100) return '';
+  const abs = Math.round((pct / 100) * def.pool * 100) / 100;
+  return `, currently on ${fmtLoose(abs)} of them (${fmtHpPct(pct)}%)`;
+}
+
 function renderHero(side) {
   const sel = $(side + '-hero');
   const lvlBox = $(side + '-hero-lvl');
@@ -899,6 +920,10 @@ function renderHero(side) {
         const parsed = parseHp(hpBox.value, heroMaxHP(cur2.code));
         if (parsed) cur2.hpPct = parsed.pct;
         cur2.hpBad = !parsed;
+        // Re-render the hero block too: its note is where the HP now reads
+        // back in both forms, and dropping this call left that line frozen.
+        // The box itself is safe -- renderHero skips it while it has focus.
+        renderHero(side);
         recompute();
       });
     }
@@ -930,7 +955,7 @@ function renderHero(side) {
     const pieces = [`Fights as one unit at attack ${mine} `
       + `(${side === 'attacker' ? 'attacking' : 'defending'}; it is ${other} `
       + `${side === 'attacker' ? 'defending' : 'attacking'})`
-      + `, with ${def.pool} HP of its own`];
+      + `, with ${def.pool} HP of its own${heroHpPhrase(cur, def)}`];
     // Per unit type. All nine land types were screened together, so a hero
     // with no entry here buffs no land type's OUTPUT — that is a measurement
     // now, not an untested gap. The HP channel is separate and unmodelled.
@@ -1198,67 +1223,20 @@ function currentConfig() {
 }
 
 
-/**
- * Under each HP box, show the same figure the other way round: type a
- * percentage and see the absolute hit points, type absolute and see the
- * percentage. This is also where a bad entry is reported -- the box keeps the
- * last good value, so without this the typo would be invisible.
- */
-function updateHpEchoes() {
-  for (const { key } of SIDES) {
-    rowsOf(key).forEach((r, i) => {
-      const echo = $(`${key}-r${i}-hp-echo`);
-      if (!echo) return;
-      const maxHP = rowMaxHP(key, r.unit);
-      if (r.hpBad) {
-        echo.textContent = 'not a number — last value kept';
-        echo.className = 'field-echo is-warn';
-        return;
-      }
-      echo.className = 'field-echo';
-      if (!maxHP) { echo.textContent = ''; return; }
-      const abs = (r.hpPct / 100) * maxHP;
-      const buffed = Math.abs(maxHP - (UNITS[r.unit] || {}).maxHP) > 1e-9;
-      echo.textContent = `${fmtLoose(Math.round(abs * 100) / 100)} of `
-        + `${fmtLoose(Math.round(maxHP * 100) / 100)} HP`
-        + (buffed ? ' (hero-buffed max)' : '')
-        + ` · ${fmtHpPct(r.hpPct)}%`;
-    });
-  }
-  const heroEcho = {};
-  for (const { key } of SIDES) {
-    const e = $(`${key}-hero-hp-echo`);
-    const h = state[key].hero;
-    if (!e) continue;
-    if (!h) { e.textContent = ''; continue; }
-    const maxHP = heroMaxHP(h.code);
-    if (h.hpBad) {
-      e.textContent = 'not a number — last value kept';
-      e.className = 'field-echo is-warn';
-      continue;
-    }
-    e.className = 'field-echo';
-    // A freshly chosen hero has no hpPct yet; it defaults to full, and reading
-    // it raw printed "NaN of 60 HP".
-    const pct = h.hpPct === undefined ? 100 : h.hpPct;
-    e.textContent = maxHP
-      ? `${fmtLoose(Math.round((pct / 100) * maxHP * 100) / 100)} of `
-        + `${fmtLoose(maxHP)} HP · ${fmtHpPct(pct)}%`
-      : `${fmtHpPct(pct)}%`;
-  }
-  void heroEcho;
-}
-
 function recompute() {
   // Wrapped, and the wrapping is the point. updateHpEchoes() only writes a
   // caption under each HP box, and when it threw -- heroMaxHP reached a `defOf`
   // that is local to renderHero -- it took recompute() with it, so every figure
   // on the page silently froze at its last value while the inputs kept
   // accepting edits. A cosmetic helper must not be able to do that.
-  try { updateHpEchoes(); } catch (err) { console.error('HP echo failed', err); }
   const config = currentConfig();
 
-  updateStackNotes();
+  // Wrapped, and the wrapping is the point. These only write captions, and
+  // when one threw -- heroMaxHP reached a `defOf` that is local to renderHero
+  // -- it took recompute() with it, so every figure on the page silently froze
+  // at its last value while the inputs went on accepting edits. A helper that
+  // writes a caption must not be able to stop the calculation.
+  try { updateStackNotes(); } catch (err) { console.error('stack notes failed', err); }
   syncHash(config);
 
   let result = null;
@@ -2071,11 +2049,21 @@ function updateRowNotes(side) {
           `atk ${fmtStat(u.atk)}`,
           `def ${fmtStat(u.def)}`,
         ];
-        if (r.hpPct !== 100 && m !== null) {
-          bits.push(`at ${r.hpPct}%: pool ×${(r.hpPct / 100).toFixed(2)}, output ×${fmtStat(m, 2)}`);
+        // Both forms of the HP entry, so typing "17.3" confirms itself as a
+        // percentage and typing "85%" confirms itself as hit points.
+        const maxHP = rowMaxHP(side, r.unit) || u.maxHP;
+        if (r.hpBad) {
+          bits.push('HP not a number — last value kept');
+        } else if (r.hpPct !== 100 && m !== null) {
+          const abs = Math.round((r.hpPct / 100) * maxHP * 100) / 100;
+          const buffed = Math.abs(maxHP - u.maxHP) > 1e-9;
+          bits.push(`at ${fmtLoose(abs)} HP${buffed ? ' of a hero-buffed '
+            + fmtLoose(Math.round(maxHP * 100) / 100) : ''} `
+            + `(${fmtHpPct(r.hpPct)}%): pool ×${(r.hpPct / 100).toFixed(2)}, `
+            + `output ×${fmtStat(m, 2)}`);
         }
         stats.textContent = bits.join(' · ');
-        stats.className = 'urow-stats';
+        stats.className = r.hpBad ? 'urow-stats is-warn' : 'urow-stats';
       }
     }
 

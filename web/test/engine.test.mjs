@@ -3410,12 +3410,23 @@ console.log('\n16. the page can express what the engine models');
   check('and the encoder emits the decimal',
     /fmtHpPct\(r\.hpPct\)\]\.join\('\.'\)/.test(app));
 
-  // A COSMETIC HELPER MUST NOT BE ABLE TO STOP THE CALCULATION. updateHpEchoes
+  // A COSMETIC HELPER MUST NOT BE ABLE TO STOP THE CALCULATION. The HP caption
   // threw on a scope slip and took recompute() with it: every figure on the
-  // page froze at its last value while the inputs went on accepting edits.
-  check('the HP echo cannot break recompute()',
-    /try \{ updateHpEchoes\(\); \} catch/.test(app),
-    'it only writes a caption; it must never be load-bearing');
+  // page froze at its last value while the inputs went on accepting edits. The
+  // caption now lives in the row's stats line, so it is updateStackNotes()
+  // that must be guarded -- the property is the same one either way.
+  check('the caption writer cannot break recompute()',
+    /try \{ updateStackNotes\(\); \} catch/.test(app),
+    'it only writes captions; it must never be load-bearing');
+  // And it must not sit inside the input grid. .urow-grid is align-items:end
+  // over a 5.4em column, so anything added inside .field-hp made that cell
+  // taller and lifted the input off the baseline its neighbours sit on.
+  check('the HP readout is not inside the input grid',
+    !/hpField\.append\(hpLabel, hp, /.test(app)
+    && /hpField\.append\(hpLabel, hp\);/.test(app),
+    'it belongs in the stats line below, which has the width for it');
+  check('and the HP box points at the stats line for screen readers',
+    /hp\.setAttribute\('aria-describedby', uid \+ '-stats'\)/.test(app));
 
   // The share link. It carried the stacks and dropped terrain, distance and
   // the hero, so "Copy link" handed out a link to a DIFFERENT battle.
