@@ -54,6 +54,9 @@ import {
   HEROES,
   HEROES_LAND_REFUSED,
   HEROES_OTHER_TERRAIN,
+  REPAIR_COST,
+  REPAIR_HOURS,
+  HERO_REPAIR,
 } from './data.js';
 
 const EPS = 1e-9;
@@ -2318,6 +2321,54 @@ function allocate(side, incoming) {
   return { parts: out, overflow: spare > EPS };
 }
 
+
+// ---------------------------------------------------------------------------
+// THE RECOVERY BILL
+// ---------------------------------------------------------------------------
+// The server prints eleven summary columns; the app modelled two of them. The
+// other nine are the cost and the time to put the stack back together, and
+// both are linear in UNIT EQUIVALENTS -- whole units' worth destroyed -- not in
+// HP lost. See the long note over REPAIR_COST in data.js for the two readings
+// that separate those (the trench sweep, and a 10%-HP stack billing the same
+// as a healthy one).
+//
+// A row that cannot report its loss, or its pool, contributes null rather than
+// zero: rule 2 of this module. A partial bill would read as a complete one.
+function repairBill(rows) {
+  const res = { food: 0, fish: 0, iron: 0, wood: 0, coal: 0, oil: 0, gas: 0, cash: 0 };
+  let hours = 0;
+  let unknown = false;
+  let equivalents = 0;
+  for (const r of rows) {
+    if (r.hpLost === null || r.hpLost === undefined) { unknown = true; continue; }
+    if (r.pool === null || r.pool === undefined || !(r.pool > 0)) {
+      if (r.hpLost > 0) unknown = true;
+      continue;
+    }
+    // ue = HP lost / current per-unit HP. For a hero the row IS one unit.
+    const ue = r.hpLost / (r.pool / (r.isHero ? 1 : (r.count || 1)));
+    equivalents += ue;
+    if (r.isHero) {
+      // Measured on two heroes; costs time but no resources.
+      hours += HERO_REPAIR.hours * ue;
+      continue;
+    }
+    const cost = REPAIR_COST[r.unit];
+    const t = REPAIR_HOURS[r.unit];
+    if (!cost || !t) { unknown = true; continue; }
+    for (const k of Object.keys(res)) res[k] += (cost[k] || 0) * ue;
+    hours += t.hours * ue;
+  }
+  if (unknown) return null;
+  const out = {};
+  for (const k of Object.keys(res)) out[k] = Math.round(res[k]);
+  // Floored ONCE over the stack total, not per row -- the two-row 62-hour
+  // reading in the corpus is what pins that.
+  out.hours = Math.floor(hours);
+  out.unitEquivalents = equivalents;
+  return out;
+}
+
 function sideResult(side, withheld) {
   const poolStart = side.poolFull === null ? null : side.poolFull * (side.hpPct / 100);
   if (withheld) {
@@ -2330,7 +2381,7 @@ function sideResult(side, withheld) {
         saturated: Math.abs(r.effective - r.count) > 0.01,
       })),
       pool: poolStart, hpLost: null, pctLost: null, deaths: null,
-      unitsLeft: null, damageDealt: null, wiped: false,
+      unitsLeft: null, damageDealt: null, wiped: false, repair: null,
       outputRaw: null, damageToBuildings: null,
       buildings: side.buildings,
     };
@@ -2384,6 +2435,7 @@ function sideResult(side, withheld) {
     ? null : [v * VARIANCE_BAND.lo, v * VARIANCE_BAND.hi]);
   return {
     rows: rowsOut,
+    repair: lossUnknown ? null : repairBill(rowsOut),
     pool: poolStart,
     hpLost: lossUnknown ? null : side.hpLost,
     hpLostBand: lossUnknown ? null : band(side.hpLost),

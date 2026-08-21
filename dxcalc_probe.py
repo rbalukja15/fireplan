@@ -215,7 +215,17 @@ STILL OPEN
       --run air_vs_ground, then --run land_matrix.
     - Terrain multipliers untouched.
     - Variance distribution (the +/-10% roll) never sampled.
-    - What 'hours' and the resource columns of the summary table mean.
+    - (CLOSED) What 'hours' and the resource columns of the summary table mean.
+      They are the recovery bill: resources and cash to replace what was
+      destroyed, and hours to do it in. Both are linear in UNIT EQUIVALENTS,
+      ue = HP lost / current per-unit HP, and NOT in HP lost -- the trench
+      sweep separates them (40.0 HP lost at every level, hours falling 6 to 4),
+      as does a 10%-HP stack that is billed identically to a healthy one.
+      Resources round; hours floor, once over the stack. Unit rows and hero
+      rows count, building rows do not. See --run repair_cost / hero_repair and
+      the REPAIR_COST note in web/data.js. This entry sat here unanswered for
+      the whole project while the numbers to answer it accumulated in
+      results.jsonl, which is the real lesson.
 
 ISOLATION TECHNIQUE
     Isolation is by the 'target' field, NOT by distance. A.n.target = B.n pairs
@@ -499,8 +509,11 @@ class StackSummaryScraper(HTMLParser):
     landed on 60.06 / 175.44 / 260.12 for what are plainly 60 / 175 / 260.
 
     SECOND, COLUMNS NOBODY HAS LOOKED AT. The resource columns and 'hours' are
-    unexplained; they are recorded rather than interpreted, so a later session
-    has the data without spending requests to get it.
+    recorded rather than interpreted, so a later session has the data without
+    spending requests to get it. That paid off exactly as intended: they went
+    unread for the whole project, and when they were finally looked at, 256
+    complete resource rows and 2,719 'hours' readings were already on disk and
+    the entire law fell out of them for free. See exp_repair_cost.
 
     ASSOCIATION RULE: the table belongs to the stack container most recently
     opened — <div id=A.1>, matched by STACK_ID_RE, not A.1.1 and not
@@ -8756,8 +8769,419 @@ def exp_unit_stats(p: "Probe") -> None:
                 "B.1.1": (r.get("detail", {}).get("B.1.1") or {}).get("lost")})
 
 
+def exp_repair_cost(p: Probe) -> None:
+    """The nine columns of the summary table that nobody ever read back.
+
+    THE AUDIT THAT FOUND THIS. Four earlier audits each worked from an
+    inventory this project wrote: the declared-gap list, the provenance table,
+    the engine's own outputs, and the server's input form. The form was the
+    first inventory the SERVER authored, and it found three live defects. Its
+    mirror image had never been looked at: the server also authors an OUTPUT
+    inventory -- every column it prints -- and StackSummaryScraper.COLUMNS
+    deliberately slugifies unknown headers "so a column dxter adds later shows
+    up as data instead of vanishing". It worked. Nine columns
+
+        food | fish | iron | wood | coal | oil | gas | cash | hours
+
+    have been accumulating in results.jsonl since the scraper was written --
+    2,719 hours readings and 256 complete resource rows -- and not one line of
+    code has ever read them back. The old module docstring listed "what 'hours'
+    and the resource columns mean" as open, and the gap list in web/data.js
+    had lost the entry entirely.
+
+    WHAT THEY ARE. Both are recovery bills for the damage the stack took:
+    resources and cash to replace it, and hours to do it in. Both are linear in
+    the same quantity, which is NOT HP lost:
+
+        ue  =  HP lost / current per-unit HP  =  (pct lost / 100) * count
+
+    "unit equivalents" -- how many whole units' worth of the stack is gone.
+    Against a full-HP stack that is lost/maxHP, which is why a per-unit
+    constant times HP lost fits every full-HP reading in the corpus and looks
+    like the whole law. It is not. The trench sweep separates them: the
+    defender there loses exactly 40.0 HP at every trench level, and its hours
+    fall 6, 6, 6, 6, 5, 5, 5, 5, 4 as the trench enlarges the pool, because the
+    same 40 HP destroys fewer whole units. HP lost never moves; the bill does.
+
+        cost_r  =  round( sum over rows of  COST[unit][r] * ue_row )
+        hours   =  floor( sum over rows of  REPAIR_HOURS[unit] * ue_row )
+
+    Resources are exact to the printed integer; hours is floored ONCE over the
+    stack total, not per row (the 62-hour two-row reading in mixed_stacks pins
+    that: 4.41 + 57.60 floors to 62, while flooring each row gives 61).
+
+    WHY A WIPE IS THE RIGHT INSTRUMENT HERE, AND NOT CENSORING. Every other
+    sweep in this rig refuses a >=99.9% reading, because a wiped stack's DAMAGE
+    is censored -- overkill is invisible. Nothing about that applies to ue. A
+    wiped stack has lost exactly its whole count, so ue is the integer `count`
+    with no rounding error at all, where every unwiped reading inherits the
+    3-4 significant figures of the printed percentage. The censoring rule
+    protects a quantity this experiment is not measuring; here the wipe is the
+    cleanest possible input, and n=100 pins each hours constant to 0.01.
+
+    WHAT THE CORPUS COULD NOT ANSWER, AND THIS SPENDS REQUESTS ON.
+      1. Balloon. bal is absent from every resource-bearing experiment,
+         because bal in 'air' triggers the known server bug and guard_payload
+         refuses it. Measured on land, where a balloon is a land-class target.
+      2. Buildings. The table's HP column excludes building rows -- the
+         fortress response proves it. Whether the BILL excludes them too is a
+         separate question and has never been asked.
+      3. Heroes. The opposite of a building: a hero renders an ordinary span
+         and the table's HP column counts it. Does it also cost resources?
+      4. The discriminating prediction. A stack at 10% HP that is wiped has
+         lost a tenth of the HP of a healthy one, but the same number of whole
+         units. Under ue it costs the SAME full rebuild; under any law
+         proportional to HP lost it costs a tenth. Resources are exact, so
+         this separates the two with no rounding argument.
+    """
+    print("\n  1. cost and repair time per unit, read off a clean wipe\n")
+
+    # A wiper per target class, chosen off CLASS_ATTACK for a column that can
+    # actually finish the job inside the round budget.
+    WIPER = {"land": ("ht", "land"), "air": ("int", "air"),
+             "naval": ("bb", "sea")}
+    # The balloon exception: 'air' is the combination that makes the server
+    # return a bare form, so the one unit missing from the corpus is measured
+    # on land, where balloon_class already established it counts as land.
+    TERRAIN_OVERRIDE = {"bal": "land"}
+
+    RES = ("food", "fish", "iron", "wood", "coal", "oil", "gas", "cash")
+    N = 100
+    cost: dict[str, dict[str, float]] = {}
+    hours: dict[str, tuple[float, float]] = {}
+
+    order = [(u, cls) for cls, us in UNIT_CLASSES.items() for u in us]
+    print(f"  {'unit':7}{'hours':>7}{'t bracket':>18}   resources per whole unit")
+    for unit, cls in order:
+        terr = TERRAIN_OVERRIDE.get(unit)
+        if terr is None:
+            terr = {"land": "land", "air": "air", "naval": "sea"}[cls]
+        atk, atk_terr = WIPER["land" if terr == "land" else
+                              ("air" if terr == "air" else "naval")]
+        ov = settings(rounds=100)
+        ov.update(duel(1, atk, 300, unit, N,
+                       atk_terrain=atk_terr, def_terrain=terr))
+        try:
+            p.submit(ov)
+        except (BareFormReturned, ValueError) as e:
+            print(f"  {unit:7} refused: {e}"[:96])
+            continue
+        s = dict(p.last_summary).get("B.1")
+        d = dict(p.last_details)
+        record("repair_cost", {"unit": unit, "n": N, "terrain": terr,
+                               "attacker": atk, "wiped": True,
+                               "detail": d, "summary": dict(p.last_summary)},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        if not s:
+            print(f"  {unit:7} no summary table")
+            continue
+        b = d.get("B.1.1") or {}
+        if (b.get("pct") or 0) < 99.9:
+            # Not wiped -> ue is not the count, and this reading cannot carry
+            # the exactness the whole method rests on. Refuse it rather than
+            # divide by an assumed ue.
+            print(f"  {unit:7} NOT wiped ({b.get('pct')}%) — refused, "
+                  f"ue is only exact on a wipe")
+            continue
+        h = s.get("hours")
+        cost[unit] = {k: s.get(k, 0.0) / N for k in RES if s.get(k, 0.0)}
+        hours[unit] = (h / N, (h + 1) / N)
+        shown = ", ".join(f"{k} {v:g}" for k, v in cost[unit].items()) or "none"
+        print(f"  {unit:7}{h:>7.0f}   [{h/N:7.4f},{(h+1)/N:7.4f})   {shown}")
+
+    print("\n  2. is the hours total floored once, or once per row?")
+    print("     (a wipe cannot answer this; the corpus can, and does: the "
+          "two-row\n      62-hour reading floors once — 4.41 + 57.60 -> 62, "
+          "per-row -> 61)")
+
+    print("\n  3. a wiped stack at 10% HP: same bill, or a tenth of it?\n")
+    print(f"  {'hp':>6}{'lost':>9}{'ue':>7}{'iron':>9}{'oil':>9}"
+          f"{'cash':>10}{'hours':>7}")
+    damaged: list[tuple[str, dict[str, float]]] = []
+    for hp in ("100%", "10%"):
+        ov = settings(rounds=100)
+        ov.update(duel(1, "ht", 300, "art", 20, def_hp=hp))
+        try:
+            p.submit(ov)
+        except (BareFormReturned, ValueError) as e:
+            print(f"  {hp}: {e}"[:96]); continue
+        s = dict(p.last_summary).get("B.1") or {}
+        d = dict(p.last_details)
+        record("repair_damaged", {"unit": "art", "n": 20, "def_hp": hp,
+                                  "detail": d, "summary": dict(p.last_summary)},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        b = d.get("B.1.1") or {}
+        if (b.get("pct") or 0) < 99.9:
+            print(f"  {hp:>6} not wiped — cannot compare"); continue
+        damaged.append((hp, s))
+        print(f"  {hp:>6}{s.get('hp_lost', 0):>9.2f}{20:>7}"
+              f"{s.get('iron', 0):>9.0f}{s.get('oil', 0):>9.0f}"
+              f"{s.get('cash', 0):>10.0f}{s.get('hours', 0):>7.0f}")
+    if len(damaged) == 2:
+        (_, full), (_, hurt) = damaged
+        same = all(abs(full.get(k, 0) - hurt.get(k, 0)) <= 1
+                   for k in ("iron", "oil", "cash", "hours"))
+        tenth = abs(hurt.get("cash", 0) - full.get("cash", 0) / 10) <= 1
+        if same:
+            verdict = ("IDENTICAL bill — the bill is per WHOLE UNIT destroyed, "
+                       "not per HP lost.")
+        elif tenth:
+            verdict = "a tenth of the bill — the bill tracks HP lost."
+        else:
+            verdict = "neither — investigate before writing anything down."
+        print(f"\n  VERDICT: {verdict}")
+
+    print("\n  4. does a damaged BUILDING add to the bill?\n")
+    print("     Infantry cost nothing to replace, so a 10-inf stack's bill is")
+    print("     entirely hours. Any resource cell that moves is the building.\n")
+    abb, lvl, bhp = "B.1.bldg.1.abb", "B.1.bldg.1.lvl", "B.1.bldg.1.hp"
+    print(f"  {'config':22}{'inf lost':>10}{'ue':>7}{'predicted h':>13}"
+          f"{'actual h':>10}   resources")
+    for label, with_bldg in (("10 inf", False), ("10 inf + fortress 5", True)):
+        ov = settings()
+        ov.update(duel(1, "ht", 20, "inf", 10))
+        fields: tuple[str, ...] = ()
+        if with_bldg:
+            ov.update({abb: "fortress", lvl: "5", bhp: "100%"})
+            fields = (abb, lvl, bhp)
+        try:
+            p.submit(ov, create=fields) if fields else p.submit(ov)
+        except (BareFormReturned, ValueError) as e:
+            print(f"  {label:22} refused: {e}"[:96]); continue
+        s = dict(p.last_summary).get("B.1") or {}
+        d = dict(p.last_details)
+        record("repair_building", {"label": label, "building": with_bldg,
+                                   "detail": d,
+                                   "summary": dict(p.last_summary)},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        b = d.get("B.1.1") or {}
+        if b.get("lost") is None or not b.get("pct"):
+            print(f"  {label:22} no reading"); continue
+        ue = b["pct"] / 100.0 * 10
+        res = ", ".join(f"{k} {s.get(k, 0):g}" for k in RES if s.get(k, 0))
+        print(f"  {label:22}{b['lost']:>10.2f}{ue:>7.3f}"
+              f"{3.31 * ue:>13.2f}{s.get('hours', 0):>10.0f}   {res or 'none'}")
+
+    print("\n  5. does a HERO add to the bill?\n")
+    hero_abb, hero_lvl, hero_hp = HERO_FIELDS
+    print(f"  {'config':22}{'inf lost':>10}{'hero lost':>11}"
+          f"{'ue(inf)':>9}{'predicted h':>13}{'actual h':>10}   resources")
+    for label, hero in (("10 inf", None), ("10 inf + alvin 10", "alvin")):
+        ov = settings()
+        ov.update(duel(1, "ht", 20, "inf", 10))
+        fields = ()
+        if hero:
+            ov.update({hero_abb: hero, hero_lvl: "10", hero_hp: "100%"})
+            fields = HERO_FIELDS
+        try:
+            p.submit(ov, create=fields) if fields else p.submit(ov)
+        except (BareFormReturned, ValueError) as e:
+            print(f"  {label:22} refused: {e}"[:96]); continue
+        s = dict(p.last_summary).get("B.1") or {}
+        d = dict(p.last_details)
+        record("repair_hero", {"label": label, "hero": hero, "detail": d,
+                               "summary": dict(p.last_summary)},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        b = d.get("B.1.1") or {}
+        hero_row = next((v for k, v in d.items()
+                         if k.startswith("B.1.hero")), None)
+        if b.get("lost") is None or not b.get("pct"):
+            print(f"  {label:22} no reading"); continue
+        ue = b["pct"] / 100.0 * 10
+        res = ", ".join(f"{k} {s.get(k, 0):g}" for k in RES if s.get(k, 0))
+        hl = (hero_row or {}).get("lost")
+        print(f"  {label:22}{b['lost']:>10.2f}"
+              f"{('-' if hl is None else f'{hl:.2f}'):>11}{ue:>9.3f}"
+              f"{3.31 * ue:>13.2f}{s.get('hours', 0):>10.0f}   {res or 'none'}")
+
+    print("\n  Constants for web/data.js (REPAIR_COST / REPAIR_HOURS):")
+    for u in cost:
+        lo, hi = hours[u]
+        print(f"    {u:8} hours [{lo:.4f}, {hi:.4f})  "
+              f"{ {k: round(v) for k, v in cost[u].items()} }")
+
+
+def exp_hero_repair(p: Probe) -> None:
+    """Heroes bill for repair; buildings do not. What is the hero's rate?
+
+    exp_repair_cost established the scope rule the hard way. A fortress that
+    lost 180 HP moved neither a resource cell nor the hours (33.10 predicted
+    from the infantry alone, 33 printed). A hero that lost 66.7 HP took the
+    same stack from 33 hours to 81. That is exactly the inclusion rule the HP
+    column already follows -- refine_details() documents that the table counts
+    a hero row and excludes a building row -- so the finding is really that
+    ALL ELEVEN COLUMNS share one scope: unit rows and hero rows in, building
+    rows out. Worth stating once, because it was arrived at twice.
+
+    What the single alvin reading cannot say is the SHAPE of the hero term.
+    81 = floor(3.32*10 + X) puts the hero's contribution in (47.7, 48.8], and
+    with the hero at ue 0.667 that is a rate near 72 h -- but one point cannot
+    separate "proportional to the hero's own ue, like a unit" from "a flat
+    charge whenever the hero is scratched at all". Vary how hard the hero is
+    hit and the two diverge immediately.
+
+    A second hero says whether the rate is per-hero or shared. Heroes differ in
+    every other coefficient this project has measured, so the prior is per-hero
+    -- which is precisely why it should be checked rather than assumed.
+    """
+    hero_abb, hero_lvl, hero_hp = HERO_FIELDS
+    print("\n  hours = floor( 3.32 * ue_inf  +  t_hero * ue_hero ) ?\n")
+    print(f"  {'hero':8}{'atk':>5}{'inf lost':>10}{'ue_inf':>8}"
+          f"{'hero lost':>11}{'ue_hero':>9}{'hours':>7}{'implied t_hero':>16}")
+    rows: list[tuple[str, float, float, float]] = []
+    for hero in ("alvin", "kangal"):
+        for atk_n in (5, 12, 20):
+            ov = settings()
+            ov.update(duel(1, "ht", atk_n, "inf", 10))
+            ov.update({hero_abb: hero, hero_lvl: "10", hero_hp: "100%"})
+            try:
+                p.submit(ov, create=HERO_FIELDS)
+            except (BareFormReturned, ValueError) as e:
+                print(f"  {hero:8}{atk_n:>5} refused: {e}"[:96])
+                continue
+            s = dict(p.last_summary).get("B.1") or {}
+            d = dict(p.last_details)
+            record("hero_repair", {"hero": hero, "atk_n": atk_n, "detail": d,
+                                   "summary": dict(p.last_summary)},
+                   {k: (v or {}).get("lost") for k, v in d.items()})
+            b = d.get("B.1.1") or {}
+            h_row = d.get("B.1.hero") or {}
+            hrs = s.get("hours")
+            if b.get("pct") is None or h_row.get("pct") is None or hrs is None:
+                print(f"  {hero:8}{atk_n:>5} incomplete reading")
+                continue
+            ue_inf = b["pct"] / 100.0 * 10
+            ue_hero = h_row["pct"] / 100.0
+            # floor(a + t*ue) = hrs  ->  t in [ (hrs-a)/ue, (hrs+1-a)/ue )
+            lo = (hrs - 3.33 * ue_inf) / ue_hero
+            hi = (hrs + 1 - 3.32 * ue_inf) / ue_hero
+            rows.append((hero, ue_inf, ue_hero, hrs))
+            print(f"  {hero:8}{atk_n:>5}{b['lost']:>10.2f}{ue_inf:>8.3f}"
+                  f"{h_row['lost']:>11.2f}{ue_hero:>9.4f}{hrs:>7.0f}"
+                  f"   [{lo:6.2f},{hi:6.2f})")
+
+    for hero in ("alvin", "kangal"):
+        mine = [r for r in rows if r[0] == hero]
+        if len(mine) < 2:
+            continue
+        lo, hi = 0.0, 1e9
+        flat_lo, flat_hi = 0.0, 1e9
+        for _, ue_inf, ue_hero, hrs in mine:
+            lo = max(lo, (hrs - 3.33 * ue_inf) / ue_hero)
+            hi = min(hi, (hrs + 1 - 3.32 * ue_inf) / ue_hero)
+            flat_lo = max(flat_lo, hrs - 3.33 * ue_inf)
+            flat_hi = min(flat_hi, hrs + 1 - 3.32 * ue_inf)
+        prop_ok = lo < hi
+        flat_ok = flat_lo < flat_hi
+        print(f"\n  {hero}: proportional-to-ue {'SURVIVES' if prop_ok else 'REFUTED'}"
+              f"  bracket [{lo:.3f}, {hi:.3f})" if prop_ok else
+              f"\n  {hero}: proportional-to-ue REFUTED")
+        print(f"  {hero}: flat-charge      "
+              f"{'SURVIVES' if flat_ok else 'REFUTED'}"
+              + (f"  bracket [{flat_lo:.2f}, {flat_hi:.2f})" if flat_ok else ""))
+
+
+# Repair hours per whole unit, as measured brackets. Only the three screen
+# units this experiment uses; the full table lives in web/data.js.
+REPAIR_HOURS_LOCAL = {"inf": (3.32, 3.33), "sub": (32.40, 32.41),
+                      "int": (32.4013, 32.40636)}
+
+
+def exp_hero_repair_all(p: Probe) -> None:
+    """Close the hero-repair gap instead of declaring it.
+
+    exp_hero_repair measured two heroes and found one shared rate, bracket
+    [71.75, 72.61). That was written into NOT_MEASURED as an open gap, because
+    two agreeing heroes is weak evidence for twenty-two and every OTHER hero
+    coefficient in this project -- own attack, buffs, HP pools, target-class
+    columns -- differs per hero, sometimes by a factor of ten.
+
+    It is also a gap that closes for about forty requests of entirely
+    mechanical work, which is a bad reason to leave it open. Two attack
+    strengths per hero is enough: two points refute a flat charge and pin a
+    bracket, and the shape question is already settled on two heroes.
+
+    Sea and air heroes are run in their own terrain against a screen of their
+    own class, because a naval hero on land is a configuration the server has
+    refused before.
+    """
+    hero_abb, hero_lvl, hero_hp = HERO_FIELDS
+    LAND = ["kangal", "joffre", "joffre_home", "marco", "allen", "larab",
+            "alvin", "lucien", "lucien_g", "pershing", "georg", "tatiana",
+            "hank", "johan", "tatiana_home", "maeve"]
+    OTHER = {"otto": "sea", "togo": "sea", "togo_b": "sea", "ivan": "sea",
+             "rbaron": "air", "thaden": "air"}
+    SCREEN = {"land": ("inf", "ht"), "sea": ("sub", "bb"), "air": ("int", "int")}
+
+    print(f"\n  {'hero':14}{'terrain':8}{'atk':>5}{'ue_unit':>9}"
+          f"{'ue_hero':>9}{'hours':>7}   t bracket")
+    per: dict[str, list[tuple[float, float, float]]] = {}
+    plan = [(h, "land") for h in LAND] + list(OTHER.items())
+    for hero, terr in plan:
+        unit, wiper = SCREEN[terr]
+        t_unit = REPAIR_HOURS_LOCAL[unit]
+        for atk_n in (8, 20):
+            ov = settings()
+            ov.update(duel(1, wiper, atk_n, unit, 10,
+                           atk_terrain=terr, def_terrain=terr))
+            ov.update({hero_abb: hero, hero_lvl: "10", hero_hp: "100%"})
+            try:
+                p.submit(ov, create=HERO_FIELDS)
+            except (BareFormReturned, ValueError) as e:
+                print(f"  {hero:14}{terr:8}{atk_n:>5} refused: {e}"[:98])
+                continue
+            s = dict(p.last_summary).get("B.1") or {}
+            d = dict(p.last_details)
+            record("hero_repair_all",
+                   {"hero": hero, "terrain": terr, "screen": unit,
+                    "atk_n": atk_n, "detail": d,
+                    "summary": dict(p.last_summary)},
+                   {k: (v or {}).get("lost") for k, v in d.items()})
+            b = d.get("B.1.1") or {}
+            hr = d.get("B.1.hero") or {}
+            hrs = s.get("hours")
+            if b.get("pct") is None or hr.get("pct") is None or hrs is None:
+                print(f"  {hero:14}{terr:8}{atk_n:>5} incomplete")
+                continue
+            ue_u = b["pct"] / 100.0 * 10
+            ue_h = hr["pct"] / 100.0
+            if ue_h <= 0:
+                print(f"  {hero:14}{terr:8}{atk_n:>5} hero untouched — no power")
+                continue
+            lo = (hrs - t_unit[1] * ue_u) / ue_h
+            hi = (hrs + 1 - t_unit[0] * ue_u) / ue_h
+            per.setdefault(hero, []).append((ue_u, ue_h, hrs))
+            print(f"  {hero:14}{terr:8}{atk_n:>5}{ue_u:>9.3f}{ue_h:>9.4f}"
+                  f"{hrs:>7.0f}   [{lo:6.2f},{hi:6.2f})")
+
+    print(f"\n  {'hero':14}{'pts':>4}   per-hero bracket        flat charge?")
+    shared_lo, shared_hi = 0.0, 1e9
+    for hero, pts in per.items():
+        terr = OTHER.get(hero, "land")
+        unit = SCREEN[terr][0]
+        t_unit = REPAIR_HOURS_LOCAL[unit]
+        lo, hi, flo, fhi = 0.0, 1e9, 0.0, 1e9
+        for ue_u, ue_h, hrs in pts:
+            lo = max(lo, (hrs - t_unit[1] * ue_u) / ue_h)
+            hi = min(hi, (hrs + 1 - t_unit[0] * ue_u) / ue_h)
+            flo = max(flo, hrs - t_unit[1] * ue_u)
+            fhi = min(fhi, hrs + 1 - t_unit[0] * ue_u)
+        shared_lo, shared_hi = max(shared_lo, lo), min(shared_hi, hi)
+        ok = "[%.2f, %.2f)" % (lo, hi) if lo < hi else "INCONSISTENT"
+        print(f"  {hero:14}{len(pts):>4}   {ok:22}  "
+              f"{'survives' if flo < fhi else 'refuted'}")
+    if shared_lo < shared_hi:
+        print(f"\n  ONE SHARED RATE SURVIVES all {len(per)} heroes: "
+              f"[{shared_lo:.3f}, {shared_hi:.3f})")
+    else:
+        print(f"\n  NO SINGLE RATE covers every hero — the rate is PER HERO.")
+
+
 EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "unit_stats": exp_unit_stats,
+    "repair_cost": exp_repair_cost,
+    "hero_repair": exp_hero_repair,
+    "hero_repair_all": exp_hero_repair_all,
     "range_roster": exp_range_roster,
     "return_fire": exp_return_fire,
     "mixed_range": exp_mixed_range,

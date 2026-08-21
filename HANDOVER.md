@@ -48,6 +48,123 @@ What that session established, in one place:
   0.25, 0.5 and 0.75 all deliver one whole strike — while patrol genuinely
   does; whole rounds repeat in both.
 
+### 2026-08-21: auditing the OUTPUT the server prints
+
+The previous session audited the server's INPUT surface — all 33 form fields —
+on the reasoning that the form is the first inventory the *server* authored
+rather than one this project wrote, so it can surface holes no self-written
+checklist can. It found three live defects. Asked whether that meant every case
+was covered, the honest answer was no, and the thing that made it answerable
+was noticing the form audit has a mirror image nobody had looked at: the server
+also authors an **output** inventory — every column it prints.
+
+The result table has **eleven** columns. This project consumed two.
+
+```
+HP lost | % lost | food | fish | iron | wood | coal | oil | gas | cash | hours
+```
+
+The other nine had been parsed and stored since `StackSummaryScraper` was
+written. Its `COLUMNS` comment says unknown headers are slugified "so a column
+dxter adds later shows up as data instead of vanishing" — and that is exactly
+what happened, except nothing ever read them back. **2,719 `hours` readings and
+256 complete resource rows were already on disk**, paid for by sweeps aimed at
+something else entirely. The probe's module docstring listed them as open; the
+gap list in `web/data.js` had dropped the entry altogether. No inventory this
+project wrote could have found it.
+
+**What they are.** The recovery bill: resources and cash to replace what was
+destroyed, and hours to do it in. Both linear in the same quantity, and the
+quantity is *not* HP lost:
+
+```
+ue = HP lost / current per-unit HP = (pct lost / 100) x count
+cost_r = round( SUM  REPAIR_COST[unit][r] x ue_row )
+hours  = floor( SUM  REPAIR_HOURS[unit]   x ue_row )
+```
+
+Against a full-HP stack `ue` equals `lost/maxHP`, so "a constant times HP lost"
+fits every full-HP reading in the corpus and looks like the whole law. Two
+readings separate them, and both were already on disk:
+
+- The **trench sweep**. The defender loses exactly 40.0 HP at every trench
+  level and its hours fall 6, 6, 6, 6, 5, 5, 5, 5, 4 as the trench enlarges the
+  pool and the same 40 HP destroys fewer whole units. HP lost never moves; the
+  bill does.
+- **Twenty artillery at 10% HP**, wiped, lose 40.00 HP where twenty healthy
+  ones lose 400.00 — and both print iron 60000, oil 40000, cash 200000, hours
+  432. Ten times the HP, identical bill. A destroyed unit is replaced whole,
+  however little was left of it.
+
+**Reading the constants on a wipe.** Every other sweep here refuses a ≥99.9%
+reading because a wiped stack's *damage* is censored. Nothing about that
+applies to `ue`: a wiped stack has lost exactly its whole count, so `ue` is the
+integer `count` with no rounding error at all, where any unwiped reading
+inherits the 3 significant figures of the printed percentage. `n = 100` pins
+each constant to 0.01 in one request. **The censoring rule protects a quantity
+this measurement is not using** — worth remembering before applying a
+methodology rule by reflex.
+
+**Rounding, measured rather than assumed.** Fitted as interval intersections
+per unit: floor is consistent for 16 of 16 units, ceil for 1, round for 3.
+Separately, 34 readings whose predicted fraction exceeds 0.55 print the floor
+and 1 prints the round. And the flooring happens **once over the stack total**,
+not per row — the two-row 62-hour reading in `mixed_stacks` is the only
+configuration on record that can tell the difference (4.41 + 57.60 → 62, where
+per-row flooring gives 61).
+
+**Scope — all eleven columns share one rule.** A fortress that lost 180 HP
+moved neither a resource cell nor the hours; a hero that lost 66.7 HP took the
+same stack from 33 hours to 81. That is precisely the inclusion rule the HP
+column already followed and `refine_details()` already documented: unit rows and
+hero rows count, building rows do not. Arrived at twice, from opposite ends.
+
+**The hero's rate.** First six requests, two heroes, three attack strengths
+each: proportional to the hero's own `ue`, exactly like a unit row, with a flat
+charge refuted independently by both. One shared constant covered both — which
+is unusual here, where every other hero coefficient differs per hero, sometimes
+by a factor of ten — so it went into `NOT_MEASURED` as an open gap, because two
+agreeing heroes is weak evidence for twenty-two.
+
+Then I noticed the gap's own `closedBy` said "twenty more requests, entirely
+mechanical", which is a bad reason to leave something open. **The whole table
+was swept**: 44 requests, all 22 heroes at two attack strengths, sea and air
+heroes in their own terrain against a screen of their own class. One shared
+rate survives all 22, and the bracket TIGHTENED to [71.87, 72.41). The gap is
+closed rather than declared.
+
+Four heroes — tatiana, tatiana_home, maeve, ivan — report "flat charge
+survives", and that is §0's thirteenth lesson again rather than evidence: their
+pools are small enough that both attack strengths wiped the hero outright, so
+`ue_hero` was 1.0 in both readings and the two hypotheses predict the identical
+number. Noted in the data file next to the constant, so nobody reads four
+no-power cells as four supporting ones. Heroes cost no resources.
+
+**Two of my own analysis errors, caught by the same rule that catches rig
+defects.** Fitting a per-unit constant against the corpus first reported seven
+units with "no consistent constant". Both causes were mine: `m_f_generality`
+puts a fixed infantry screen on the B side and I had mapped B to the same unit
+as A, and the `mixed_stacks` B stack is two rows I had not mapped at all. The
+standing rule — treat a null or contradictory result as a defect report against
+the rig until proven otherwise — applies to the analysis script just as much as
+to the probe. Once the mapping was right, the law reproduced **187 of 187**
+readings whose `ue` is exactly recoverable.
+
+**Not clean numbers, and not pretended to be.** Several constants genuinely are
+not the round figure beside them: `int` excludes 32.40 exactly, `zep` lies in
+[40.79, 40.80), `lart` in [9.97, 9.98). No integer inference is claimed; the
+engine uses the bracket midpoint, and a test asserts every quoted value sits
+inside its own bracket.
+
+Shipped: `REPAIR_COST` and `REPAIR_HOURS` for all 17 units (balloon included —
+it is absent from every corpus resource row because `bal` in `air` triggers the
+known server bug, so it was measured on land), `HERO_REPAIR`, `repairBill()` in
+the engine, a recovery-bill panel in the UI, provenance for all five findings,
+and test section 20 — including the 10%-HP case, which is the one test that
+fails if anyone rewrites `ue` as `lost/maxHP`, and an assertion that the hero
+rate still rests on the whole table rather than a sample of it. 2,664 engine
+checks, 11 offline probe suites, browser clean. 73 requests.
+
 ### 2026-08-20, third stretch: auditing by the session's own question
 
 The gap list said three, all unclosable. Auditing the PROVENANCE table instead
@@ -449,6 +566,46 @@ data has moved past. That question found every defect in this stretch, and it
 is the same question §0's tenth and seventeenth lessons ask about fits and
 about single numbers — applied to the record as a whole rather than to one
 value at a time.
+
+**A twentieth, and it is the nineteenth taken one step further: AUDIT WHAT THE
+SERVER AUTHORS, NOT WHAT YOU AUTHOR.** The nineteenth lesson says to audit the
+provenance table rather than the gap list, because a gap list records what
+someone thought to write down. The provenance table has the same weakness one
+level up: it too is written by this project. So does the engine's output, and
+so does the UI.
+
+The inventories the *server* authors are the only ones immune to that, and
+there are exactly two: the fields it **accepts** and the columns it **prints**.
+Auditing the first found three live defects. Auditing the second found nine
+columns that had been parsed, stored and never once read back — 2,719 readings
+already paid for, describing a whole mechanic (the recovery bill) that the app
+did not model at all. Both audits found things four earlier passes could not,
+for the same reason: **nothing you wrote can tell you about a thing you never
+knew to write about.**
+
+The practical form: when you think you are done, go and get a list of inputs
+and a list of outputs from the system itself, and tick them off one at a time.
+Cheap, mechanical, and it beat four rounds of thinking hard about it.
+
+**A twenty-first, small and sharp: a methodology rule protects a specific
+quantity, not every quantity.** This rig refuses any reading ≥99.9% wiped,
+because a wiped stack's *damage* is censored — overkill is invisible. Applied
+by reflex, that rule would have made the repair constants far harder to measure
+and much less precise. Unit equivalents are not censored by a wipe; they are
+*perfected* by it, because a wiped stack has lost exactly its integer count
+while every unwiped reading inherits only 3 significant figures from a printed
+percentage. **Before applying a hygiene rule, check that the quantity it
+protects is the quantity you are reading.**
+
+**A twenty-second: the rule about null results applies to the analysis script,
+not just to the probe.** Fitting the repair constants against the corpus first
+reported seven units with "no consistent constant" — which, taken at face
+value, would have been a claim about the game. Both causes were in my own
+mapping code: one experiment puts a fixed infantry screen on the B side, and
+another has a two-row B stack I had not mapped at all. §0's opening rule says
+treat a null result as a defect report against the rig; the rig includes
+whatever you wrote ten minutes ago to read the data. Once fixed, the law
+reproduced 187 of 187 readings.
 
 **A tenth, of a different kind: a law can fit everything you have and still be
 wrong, if the scope of the fit was narrower than the claim.** "The stack

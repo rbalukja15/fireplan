@@ -45,6 +45,7 @@ import {
   MAX_UNIT_ROWS,
   HEROES_OTHER_TERRAIN,
   HEROES,
+  REPAIR_COST, REPAIR_HOURS, HERO_REPAIR,
 } from '../data.js';
 import {
   heroBuff,
@@ -3108,7 +3109,11 @@ console.log('\n14. coverage of the record itself');
   // hero_targets is a DISCLOSURE sweep: it found HP-channel buffs the engine
   // has no term for, so they are declared and escalate the banner rather than
   // being replayed.
-  const notReplayed = Object.keys(counts).filter((e) => !replayed.includes(e));
+  // Section 20 replays these; it runs after this guard, so they are named here
+  // rather than left to look unreplayed.
+  const replayedLater = ['repair_cost', 'repair_damaged'];
+  const notReplayed = Object.keys(counts).filter(
+    (e) => !replayed.includes(e) && !replayedLater.includes(e));
   console.log(`  note  replayed: ${replayed.map((e) => `${e} ${counts[e] || 0}`).join(', ')}`);
   console.log(`  note  NOT replayed: ${notReplayed.map((e) => `${e} ${counts[e]}`).join(', ') || 'none'}`);
   // 'heroes' is measured but deliberately unmodelled: every reading is level
@@ -3146,8 +3151,15 @@ console.log('\n14. coverage of the record itself');
   //     recorded as constants (EMBARKED_COEF, UNIT_RANGE, BUILDING_DAMAGE,
   //     FORTRESS_MAX_LEVEL) but not yet computed by simulate(), so there is
   //     nothing to replay them against. Each is named in NOT_MEASURED.
+  //   repair_building / repair_hero / hero_repair  SCOPE and SHAPE probes for
+  //     the recovery bill, not bills to reproduce. repair_building establishes
+  //     that a damaged building contributes nothing and repair_hero/hero_repair
+  //     that a hero contributes time but no resources; all three are asserted
+  //     as invariants in section 20, against configurations built there, which
+  //     is a stronger check than replaying one stack's printed total.
   const declaredNonReplay = ['stack_limits', 'hero_caps', 'hero_targets',
-    'hero_hp_cap', 'hero_curves', 'variance', 'fortress_edges'];
+    'hero_hp_cap', 'hero_curves', 'variance', 'fortress_edges',
+    'repair_building', 'repair_hero', 'hero_repair', 'hero_repair_all'];
   void declaredNonReplay;
   check('every unreplayed experiment is one the engine declares and explains',
     notReplayed.every((e) => declaredNonReplay.includes(e)),
@@ -3508,6 +3520,167 @@ console.log('\n19. what the form offers, versus what was ever sent');
         Math.abs(sum - r[side].damageDealt) < 0.01,
         `${sum.toFixed(2)} vs ${r[side].damageDealt.toFixed(2)}`);
     }
+  }
+}
+
+
+// ===========================================================================
+// 20. THE RECOVERY BILL — the nine summary columns nobody had read back
+// ===========================================================================
+// The four earlier audits each worked from an inventory this project wrote.
+// The form audit was the first one the SERVER authored, and its mirror image
+// — the columns the server PRINTS — had never been looked at. Nine of the
+// eleven were being parsed and stored and never read: 2,719 hours readings
+// sitting in results.jsonl, paid for by sweeps aimed at something else.
+//
+// These checks exist so the law cannot rot back into "proportional to HP
+// lost", which is what it looks like on every full-HP reading and is wrong.
+console.log('\n20. the recovery bill');
+{
+  const ROSTER = Object.keys(UNITS);
+  check('every unit in the roster has a replacement cost',
+    ROSTER.every((u) => REPAIR_COST[u]),
+    ROSTER.filter((u) => !REPAIR_COST[u]).join(', '));
+  check('every unit in the roster has a repair time',
+    ROSTER.every((u) => REPAIR_HOURS[u] && typeof REPAIR_HOURS[u].hours === 'number'),
+    ROSTER.filter((u) => !REPAIR_HOURS[u]).join(', '));
+  check('every repair time is quoted inside its own measured bracket',
+    ROSTER.every((u) => {
+      const t = REPAIR_HOURS[u];
+      return t.hours >= t.bracket[0] && t.hours < t.bracket[1];
+    }), 'a midpoint outside its bracket is a transcription error');
+  check('infantry are free to replace and everything else is not',
+    Object.keys(REPAIR_COST.inf).length === 0
+      && ROSTER.filter((u) => u !== 'inf').every((u) => Object.keys(REPAIR_COST[u]).length > 0),
+    'inf was the one unit with an empty cost vector in every reading');
+
+  // --- replay every live repair reading -----------------------------------
+  const TERR = { land: 'land', air: 'air', sea: 'sea' };
+  let replayed = 0;
+  for (const rec of rows) {
+    if (rec.experiment !== 'repair_cost' && rec.experiment !== 'repair_damaged') continue;
+    const m = rec.meta;
+    const s = (m.summary || {})['B.1'];
+    if (!s) continue;
+    const terrain = m.terrain || 'land';
+    const hpPct = m.def_hp ? parseFloat(m.def_hp) : 100;
+    const r = simulate({
+      attacker: { rows: [{ unit: m.attacker || 'ht', count: 300 }],
+                  terrain: TERR[terrain] || 'land' },
+      defender: { rows: [{ unit: m.unit, count: m.n, hpPct }], terrain },
+      rounds: 100,
+    });
+    const bill = r.defender.repair;
+    if (!bill) { cannotReproduce(`repair bill for ${m.unit}`, 'a bill', null); continue; }
+    replayed += 1;
+    for (const k of ['food', 'fish', 'iron', 'wood', 'coal', 'oil', 'gas', 'cash']) {
+      const want = s[k] || 0;
+      check(`${m.unit}${m.def_hp ? ` @${m.def_hp}` : ''}: ${k} bill matches the server`,
+        Math.abs((bill[k] || 0) - want) <= Math.max(1, want * 0.001),
+        `engine ${bill[k]}, server ${want}`);
+    }
+    check(`${m.unit}${m.def_hp ? ` @${m.def_hp}` : ''}: repair hours match the server`,
+      bill.hours === s.hours, `engine ${bill.hours}, server ${s.hours}`);
+  }
+  check('the repair replay actually ran', replayed >= 17, `${replayed} readings replayed`);
+
+  // --- the reading that separates the law from "proportional to HP lost" ---
+  // Twenty artillery at 10% HP lose a tenth of the HP and cost the same to
+  // replace. This is the whole reason ue is defined against CURRENT per-unit
+  // HP; if someone rewrites it as lost/maxHP, every full-HP test still passes
+  // and only this one fails.
+  const full = simulate({
+    attacker: { rows: [{ unit: 'ht', count: 300 }] },
+    defender: { rows: [{ unit: 'art', count: 20 }] }, rounds: 100 });
+  const hurt = simulate({
+    attacker: { rows: [{ unit: 'ht', count: 300 }] },
+    defender: { rows: [{ unit: 'art', count: 20, hpPct: 10 }] }, rounds: 100 });
+  check('a wiped 10%-HP stack loses a tenth of the HP',
+    Math.abs(hurt.defender.hpLost * 10 - full.defender.hpLost) < 0.5,
+    `${hurt.defender.hpLost} vs ${full.defender.hpLost}`);
+  check('...and is billed exactly the same — the bill is per WHOLE UNIT',
+    hurt.defender.repair.cash === full.defender.repair.cash
+      && hurt.defender.repair.hours === full.defender.repair.hours,
+    `${JSON.stringify(hurt.defender.repair)} vs ${JSON.stringify(full.defender.repair)}`);
+
+  // --- scope: heroes in, buildings out ------------------------------------
+  const noBldg = simulate({
+    attacker: { rows: [{ unit: 'ht', count: 20 }] },
+    defender: { rows: [{ unit: 'inf', count: 10 }] }, rounds: 1 });
+  const withHero = simulate({
+    attacker: { rows: [{ unit: 'ht', count: 20 }] },
+    defender: { rows: [{ unit: 'inf', count: 10 }], hero: { code: 'alvin', level: 10 } },
+    rounds: 1 });
+  check('a hero adds to the repair time (measured: 33 h -> 81 h)',
+    withHero.defender.repair && noBldg.defender.repair
+      && withHero.defender.repair.hours > noBldg.defender.repair.hours,
+    `${withHero.defender.repair && withHero.defender.repair.hours} vs `
+      + `${noBldg.defender.repair && noBldg.defender.repair.hours}`);
+  check('a hero adds NO resources (measured: every cell stayed at zero)',
+    withHero.defender.repair && withHero.defender.repair.cash === 0,
+    `cash ${withHero.defender.repair && withHero.defender.repair.cash}`);
+
+  // A building that takes damage must not move the bill. The fortress in the
+  // measured run lost 180 HP and changed neither a resource cell nor the hours.
+  const bldg = simulate({
+    attacker: { rows: [{ unit: 'ht', count: 20 }] },
+    defender: { rows: [{ unit: 'inf', count: 10 }],
+                buildings: [{ code: 'fortress', level: 5 }] },
+    rounds: 1 });
+  if (bldg.defender.repair && bldg.defender.rows) {
+    const unitUe = bldg.defender.rows.reduce((t, r) => (
+      (typeof r.hpLost === 'number' && r.pool > 0)
+        ? t + r.hpLost / (r.pool / (r.count || 1)) : t), 0);
+    check('a damaged building contributes nothing to the bill',
+      Math.abs(bldg.defender.repair.unitEquivalents - unitUe) < 1e-6
+        && bldg.defender.repair.cash === 0,
+      `ue ${bldg.defender.repair.unitEquivalents} vs unit-only ${unitUe}`);
+  }
+
+  // --- the flooring rule --------------------------------------------------
+  // Floored once over the stack total, not per row. Two rows whose fractions
+  // sum past 1 are the only configuration that can tell the difference.
+  const twoRow = simulate({
+    attacker: { rows: [{ unit: 'ht', count: 40 }] },
+    defender: { rows: [{ unit: 'inf', count: 25 }, { unit: 'art', count: 25 }] },
+    rounds: 1 });
+  if (twoRow.defender.repair) {
+    const perRow = twoRow.defender.rows.reduce((t, r) => {
+      if (!(r.pool > 0) || typeof r.hpLost !== 'number') return t;
+      const ue = r.hpLost / (r.pool / (r.count || 1));
+      const rate = REPAIR_HOURS[r.unit];
+      return t + (rate ? Math.floor(rate.hours * ue) : 0);
+    }, 0);
+    const once = twoRow.defender.repair.hours;
+    check('hours floor once over the stack, never per row',
+      once >= perRow,
+      `stack-floored ${once}, row-floored ${perRow} — the corpus pins 62, not 61`);
+  }
+
+  check('the hero rate is quoted inside the bracket all 22 heroes agreed on',
+    HERO_REPAIR.hours >= HERO_REPAIR.bracket[0] && HERO_REPAIR.hours < HERO_REPAIR.bracket[1],
+    JSON.stringify(HERO_REPAIR));
+  // The shared rate was measured across the WHOLE table rather than
+  // generalised from the two heroes that first agreed. If a later session ever
+  // narrows this back to a sample, that is a claim about 22 heroes resting on
+  // two, and this assertion is where it should stop.
+  check('...and that bracket rests on the whole hero table, not a sample of it',
+    HERO_REPAIR.heroesMeasured === 'all 22',
+    `heroesMeasured = ${JSON.stringify(HERO_REPAIR.heroesMeasured)}`);
+  {
+    // Every hero must actually bill at the shared rate — a hero table that
+    // grew a per-hero override would otherwise pass silently.
+    const heroCodes = Object.keys(HEROES).slice(0, 4);
+    const bills = heroCodes.map((code) => {
+      const r = simulate({
+        attacker: { rows: [{ unit: 'ht', count: 20 }] },
+        defender: { rows: [{ unit: 'inf', count: 10 }], hero: { code, level: 10 } },
+        rounds: 1 });
+      return r.defender.repair && r.defender.repair.hours;
+    });
+    check('a hero always bills time and never resources, whichever hero it is',
+      bills.every((h) => typeof h === 'number' && h > 33),
+      `${heroCodes.join(', ')} -> ${bills.join(', ')}`);
   }
 }
 

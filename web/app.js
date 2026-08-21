@@ -1337,6 +1337,59 @@ function renderScoreboard(result, config) {
   renderSide('d', result.defender, config.defender);
 }
 
+
+/**
+ * The recovery bill — the nine summary columns the source page prints and this
+ * app modelled none of.
+ *
+ * Rendered ONLY from what the engine returned. The engine yields null for the
+ * whole bill whenever any row's loss or pool is unknown, and this function
+ * shows an em dash rather than a partial total: a bill missing one row reads
+ * exactly like a complete one, which is the failure mode this project keeps
+ * hitting.
+ *
+ * Zero-valued resources are hidden rather than listed as 0. Infantry genuinely
+ * cost nothing to replace, so an all-zero resource list is a real result and
+ * the note says so instead of leaving an empty strip.
+ */
+function renderRepair(prefix, side) {
+  const wrap = $(`sb-${prefix}-repair`);
+  if (!wrap) return;
+  const timeEl = $(`sb-${prefix}-repair-time`);
+  const listEl = $(`sb-${prefix}-repair-res`);
+  const noteEl = $(`sb-${prefix}-repair-note`);
+  listEl.textContent = '';
+  const bill = side && side.repair;
+  if (!bill) {
+    timeEl.textContent = '—';
+    noteEl.textContent = side && side.rows
+      ? 'Not billed: a row’s loss or pool is unknown, so the total would be short by an unknown amount.'
+      : '';
+    return;
+  }
+  const h = bill.hours;
+  const days = h >= 24 ? ` (${(h / 24).toFixed(1)} days)` : '';
+  timeEl.textContent = `${fmtInt(h)} h${days} to repair`;
+  const NAMES = { food: 'food', fish: 'fish', iron: 'iron', wood: 'wood',
+                  coal: 'coal', oil: 'oil', gas: 'gas', cash: 'cash' };
+  let any = false;
+  for (const k of Object.keys(NAMES)) {
+    const v = bill[k];
+    if (!v) continue;
+    any = true;
+    const li = el('li');
+    li.appendChild(el('b', null, k === 'cash' ? `$${fmtInt(v)}` : fmtInt(v)));
+    li.appendChild(document.createTextNode(` ${NAMES[k]}`));
+    listEl.appendChild(li);
+  }
+  const ue = bill.unitEquivalents;
+  const ueTxt = (typeof ue === 'number')
+    ? `${ue.toFixed(2)} whole units’ worth destroyed` : '';
+  noteEl.textContent = any
+    ? ueTxt
+    : `No resources: ${ueTxt || 'nothing destroyed'} — this stack costs only time to replace.`;
+}
+
 function renderSide(prefix, side, cfg) {
   const damaged = (cfg.rows || []).filter((r) => r.hpPct !== 100).length;
   $(`sb-${prefix}-name`).textContent =
@@ -1381,6 +1434,7 @@ function renderSide(prefix, side, cfg) {
   pctEl.textContent = pct === null ? '' : `${pct} of the pool${tail}`;
 
   renderRowSplit(prefix, s, cfg);
+  renderRepair(prefix, s);
 
   // Buildings: the engine may or may not report per-building damage. Only
   // render what it actually returned.

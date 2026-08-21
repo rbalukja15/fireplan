@@ -1115,7 +1115,130 @@ export const FORM_DOMAINS = {
 // The app must surface the relevant entries at the point of use, not in a
 // footnote. Ranked roughly by how likely a user is to hit it.
 
+// ---------------------------------------------------------------------------
+// THE RECOVERY BILL -- the nine summary columns nobody had read back
+// ---------------------------------------------------------------------------
+// Every stack's result block carries a table with eleven columns. Two of them,
+// HP lost and % lost, are the whole of what this project ever consumed. The
+// other nine
+//
+//     food | fish | iron | wood | coal | oil | gas | cash | hours
+//
+// are the bill to put the stack back together: resources and cash to replace
+// what was destroyed, and hours to do it in. The scraper was written to
+// slugify unrecognised headers "so a column dxter adds later shows up as data
+// instead of vanishing", and it worked -- 2,719 hours readings and 256
+// complete resource rows were already sitting in results.jsonl, paid for by
+// sweeps aimed at something else, and never once read back. The probe's own
+// module docstring listed them as open; the gap list here had lost the entry.
+//
+// THE QUANTITY IS NOT HP LOST. Both the bill and the time are linear in
+//
+//     ue  =  HP lost / current per-unit HP  =  (pct lost / 100) x count
+//
+// -- unit equivalents, how many whole units' worth of the stack is gone.
+// Against a full-HP stack that equals lost/maxHP, so a constant times HP lost
+// fits every full-HP reading in the corpus and looks like the entire law. It
+// is not, and two independent readings separate them:
+//
+//   * The trench sweep. The defender loses exactly 40.0 HP at every trench
+//     level, and its hours fall 6, 6, 6, 6, 5, 5, 5, 5, 4 as the trench
+//     enlarges the pool and the same 40 HP destroys fewer whole units. HP lost
+//     never moves; the bill does.
+//   * Twenty artillery at 10% HP, wiped, lose 40.00 HP where twenty at full HP
+//     lose 400.00 -- and both print iron 60000, oil 40000, cash 200000,
+//     hours 432. Ten times the HP, identical bill. A destroyed unit is
+//     replaced whole, however little was left of it.
+//
+//     cost_r  =  round( SUM over rows of  REPAIR_COST[unit][r] x ue_row )
+//     hours   =  floor( SUM over rows of  REPAIR_HOURS[unit]   x ue_row )
+//
+// FLOOR, and floored ONCE over the stack total rather than per row. Both halves
+// are measured, not assumed. Against every reading in the corpus whose ue is
+// exactly recoverable, floor is consistent for 16 of 16 units where ceil
+// manages 1 and round 3; and the two-row 62-hour reading in mixed_stacks pins
+// the single flooring (4.41 + 57.60 -> 62, where per-row flooring gives 61).
+//
+// SCOPE -- all eleven columns share one rule. A fortress that lost 180 HP moved
+// neither a resource cell nor the hours; a hero that lost 66.7 HP took the same
+// stack from 33 hours to 81. That is exactly the inclusion rule the HP column
+// already followed: unit rows and hero rows count, building rows do not.
+//
+// HOW THE CONSTANTS WERE READ. On a wipe. Every other sweep in this project
+// refuses a >=99.9% reading because a wiped stack's DAMAGE is censored, but
+// nothing about that applies here: a wiped stack has lost exactly its whole
+// count, so ue is the integer `count` with no rounding error at all, where any
+// unwiped reading inherits the 3 significant figures of the printed
+// percentage. n = 100 pins each constant to 0.01 in one request.
+//
+// The brackets below are honest. Several constants are NOT the clean number
+// they sit next to -- int excludes 32.40 exactly, zep sits in [40.79, 40.80),
+// lart in [9.97, 9.98) -- so no integer inference is claimed and the engine
+// uses the bracket midpoint.
+
+export const REPAIR_COST = {
+  inf: { /* free */ },
+  cav: { food: 1200, fish: 1200, cash: 6000 },
+  ac: { iron: 2000, oil: 1000, cash: 8500 },
+  lart: { food: 1000, iron: 1000, wood: 1000, cash: 10000 },
+  art: { iron: 3000, oil: 2000, cash: 10000 },
+  rrg: { iron: 10000, wood: 5000, coal: 5000, oil: 10000, cash: 50000 },
+  lt: { iron: 5000, oil: 3000, cash: 20000 },
+  ht: { iron: 7000, oil: 4000, cash: 30000 },
+  convoy: { iron: 5000, wood: 7500, oil: 10000, cash: 50000 },
+  st: { fish: 1500, iron: 1500, oil: 1500, cash: 12500 },
+  bal: { wood: 1000, gas: 1000, cash: 5000 },
+  int: { iron: 2000, wood: 5000, oil: 4000, cash: 20000 },
+  tac: { iron: 5000, wood: 7500, oil: 10000, cash: 50000 },
+  zep: { iron: 5000, wood: 5000, gas: 25000, cash: 50000 },
+  sub: { iron: 3000, wood: 2000, oil: 3000, cash: 20000 },
+  cl: { iron: 3000, coal: 2000, oil: 2000, cash: 15000 },
+  bb: { iron: 15000, wood: 5000, coal: 10000, oil: 5000, cash: 50000 },
+};
+
+export const REPAIR_HOURS = {
+  inf: { hours: 3.325, bracket: [3.32, 3.33], readings: 1 },
+  cav: { hours: 1.665, bracket: [1.66, 1.67], readings: 4 },
+  ac: { hours: 3.325, bracket: [3.32, 3.33], readings: 7 },
+  lart: { hours: 9.975, bracket: [9.97, 9.98], readings: 4 },
+  art: { hours: 21.6014, bracket: [21.6, 21.60279], readings: 12 },
+  rrg: { hours: 65.005, bracket: [65.0, 65.01], readings: 4 },
+  lt: { hours: 32.005, bracket: [32.0, 32.01], readings: 4 },
+  ht: { hours: 43.00142, bracket: [43.0, 43.00285], readings: 23 },
+  convoy: { hours: 54.005, bracket: [54.0, 54.01], readings: 4 },
+  st: { hours: 2.705, bracket: [2.7, 2.71], readings: 4 },
+  bal: { hours: 3.325, bracket: [3.32, 3.33], readings: 1 },
+  int: { hours: 32.40383, bracket: [32.4013, 32.40636], readings: 26 },
+  tac: { hours: 54.005, bracket: [54.0, 54.01], readings: 31 },
+  zep: { hours: 40.795, bracket: [40.79, 40.8], readings: 23 },
+  sub: { hours: 32.405, bracket: [32.4, 32.41], readings: 12 },
+  cl: { hours: 21.605, bracket: [21.6, 21.61], readings: 12 },
+  bb: { hours: 64.80345, bracket: [64.8, 64.80691], readings: 12 },
+};
+
+// The hero's rate, measured on ALL TWENTY-TWO heroes: two attack strengths
+// each, sea and air heroes in their own terrain against a screen of their own
+// class. Proportional to the hero's OWN ue, exactly like a unit row -- a flat
+// charge is refuted by every hero whose two readings actually differ (alvin
+// 52 then 81 hours as its share of the loss rises, kangal 46 then 86).
+//
+// Four heroes -- tatiana, tatiana_home, maeve, ivan -- read "flat survives",
+// and that is a test with no power rather than evidence: their pools are small
+// enough that both attack strengths wiped the hero outright, so ue_hero was
+// 1.0 in both readings and the two hypotheses predict the same number. §0's
+// thirteenth lesson, showing up again.
+//
+// ONE SHARED RATE covers all 22, bracket [71.87, 72.41) -- genuinely unusual
+// here, where every other hero coefficient differs per hero, often by a factor
+// of ten. That is why this was measured across the whole table rather than
+// generalised from the two heroes that first agreed.
+//
+// Heroes cost NO resources: the cells stayed at zero throughout, against free
+// infantry, while the hero bled.
+export const HERO_REPAIR = { hours: 72.14, bracket: [71.87, 72.41], heroesMeasured: 'all 22' };
+
 export const NOT_MEASURED = [
+
     { key: 'air_to_air_mechanism', what: 'WHY an air stack is attenuated against surface targets and not against other aircraft.', why: 'The scope is measured hard and modelled. Attacking land or naval, an air stack fires with what survives the round; attacking air it does not \u2014 twenty fighters lose 58% of their pool to two hundred fighters and still deal the full 20.0 x E(20) = 400.00. Embarkation is seen by every attacker including air, which is what the discriminating cell showed: against two hundred EMBARKED fighters the same stack deals 98.61, the naval column attenuated. What no black-box reading can reach is the mechanism \u2014 whether air-to-air resolves simultaneously or whether something else exempts it.', closedBy: 'nothing available. The obvious experiment is an air stack whose target cannot shoot back, and there is no such configuration: every air unit bisects to a range of 5 km and 5 km is exactly where return fire stops, so an aircraft is never out of reach of what it is attacking' },
     { key: 'return_fire_generality', what: 'Whether the 5 km return-fire cut-off is a constant or every unit\u2019s own melee reach.', why: 'Past 5 km a bombarded defender deals exactly zero while still taking the attacker\u2019s full figure. That is measured hard \u2014 lart at 4 and 5 km loses 20.00, at 6, 7 and 8 km loses nothing, and three defenders that could easily shoot back (lart reaching 30, cruiser 40, battleship 75) are all silent at 8 km, as is a mixed inf+lart defender at 6. But every unit in the roster ALSO bisected to a melee attack range of exactly 5, so "the cut-off is the constant 5" and "the cut-off is the defender\u2019s own melee reach" predict the identical number everywhere. The two are indistinguishable in this game and the engine uses the constant.', closedBy: 'nothing available \u2014 it would need a unit whose melee reach is not 5, and there is none' },
     { key: 'togo_b_unstable', what: 'Two heroes\u2019 own contribution is not a constant, and neither is explained. Both are \u201cwith something\u201d variants.', why: 'T\u014dg\u014d-with-bombardment ATTACKING contributes between 37.99 and 64.90 depending on how many units are on each side. Every other hero in both tables is flat, and so is plain T\u014dg\u014d \u2014 same hull, same pool, same level cap, differing only in the bombardment \u2014 which reads exactly 15.00 in the identical cells. Ruled out by two crossed sweeps: target TYPE (a battleship and a submarine at the same count read 64.34 and 64.32), INCOMING DAMAGE (identical at defender 50, 100 and 200 because E(n) caps at 35, while the contribution still climbs 60.80, 62.85, 63.91), the hero\u2019s own HP loss (13.80, 13.70 and 13.60 against contributions of 60.80, 62.85 and 63.91 \u2014 moving the wrong way), and its share of the stack\u2019s HP (constant down the whole defender ladder). The engine reports the band and says so rather than quoting one end of it. Defending is clean at 15.00 flat. LUCIEN LAROCHE W/GAS is the same family and was found the same week: on a six-type stack it contributes 8.00, exactly what plain Lucien does, and on a single-type stack 36.44 to 37.94 \u2014 with the extra close to a flat 29 whatever the stack\u2019s coefficient (29.94 on light artillery totalling 50, 28.44 on heavy tanks totalling 450). Not a multiplier, not an own attack, and absent from the mixed stack entirely. That both anomalies are \u201cw/\u201d variants and nothing else in either table behaves this way is the only pattern on offer.', closedBy: 'a mechanism nobody has proposed yet \u2014 the two obvious axes are both crossed and both flat, so the next step is a different KIND of variable: rounds, distance, or the hero\u2019s own HP percentage set explicitly rather than left at 100' },
@@ -1129,6 +1252,40 @@ export const NOT_MEASURED = [
 // measured, how well, and what it is NOT evidence for.
 
 export const PROVENANCE = {
+  'REPAIR.law': {
+    confidence: 'measured',
+    source: "results.jsonl, experiment=repair_cost (17 wipes, one per unit, n=100) and repair_damaged (2). Plus 256 complete resource rows and 2,719 'hours' readings already in the corpus from sweeps aimed at other things -- the scraper stored them from the start and nothing ever read them back.",
+    method: "A WIPE, deliberately. Every other sweep here refuses a >=99.9% reading because a wiped stack's damage is censored; nothing about that applies to unit equivalents, which on a wipe are exactly the integer count with no rounding at all. n=100 pins each hours constant to 0.01 in a single request, where an unwiped reading inherits only the 3 significant figures of the printed percentage.",
+    tolerance: 'Resources are exact: predicted and printed agree to the integer over 187 readings whose ue is exactly recoverable (from cash / cash-cost). Hours are floored, so each constant is an interval of width <=0.01 and the midpoint is quoted; several constants are NOT the clean number beside them -- int excludes 32.40 exactly, zep lies in [40.79, 40.80), lart in [9.97, 9.98).',
+    notEvidenceFor: "That the bill tracks HP LOST. It does not, and every full-HP reading in the corpus is consistent with both, which is why this went unnoticed. Two readings separate them: the trench sweep (40.0 HP lost at every level, hours falling 6->4 as the pool grows) and twenty artillery at 10% HP, which lose a tenth of the HP and are billed identically. Also not evidence about buildings, which are excluded, or about heroes beyond the two measured.",
+  },
+  'REPAIR.rounding': {
+    confidence: 'measured',
+    source: 'results.jsonl, all readings with an exactly recoverable ue.',
+    method: 'Three candidate rules fitted per unit as interval intersections. floor is consistent for 16 of 16 units; ceil for 1; round for 3. Separately, 34 readings whose predicted fractional part exceeds 0.55 print the floor and 1 prints the round.',
+    tolerance: 'The stack total is floored ONCE, not per row. The discriminating reading is the two-row 62-hour stack in mixed_stacks: 4.41 + 57.60 floors to 62, where flooring each row gives 61.',
+    notEvidenceFor: 'The resource columns, which are rounded to the nearest integer rather than floored.',
+  },
+  'REPAIR.scope': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=repair_building (2) and repair_hero (2).',
+    method: 'Self-contained rather than controlled: each request is compared against the bill predicted from its OWN unit rows, so the fortress changing the infantry losses is not a confound. A fortress that lost 180 HP moved neither a resource cell nor the hours (predicted 14.89 from the infantry alone, printed 14). A hero that lost 66.7 HP took the same stack from 33 hours to 81.',
+    tolerance: 'Exact -- both are presence/absence, not magnitudes.',
+    notEvidenceFor: 'Anything about buildings other than the fortress, though the HP column already excludes every building type and the bill follows the HP column exactly.',
+  },
+  'REPAIR.hero': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=hero_repair (2 heroes x 3 strengths) and hero_repair_all (22 heroes x 2 strengths).',
+    method: "Vary how hard the hero is hit and the two candidate shapes diverge at once. A first pass took two heroes at three strengths each; the whole table was then swept at two strengths each -- 44 requests, sea and air heroes in their own terrain against a screen of their own class -- rather than generalising from two agreeing heroes. Proportional-to-own-ue survives for all 22 and the intersection of their brackets is [71.87, 72.41).",
+    tolerance: 'One shared constant covers all 22, which is unusual in this game -- every other hero coefficient measured here differs per hero, sometimes by a factor of ten. Four heroes (tatiana, tatiana_home, maeve, ivan) report "flat charge survives", but that is a test with no power rather than support: both their readings wiped the hero, so ue_hero was 1.0 twice and the two hypotheses predict the same number.',
+    notEvidenceFor: 'Hero RESOURCE cost. There is none: the cells stayed at zero against free infantry while the hero bled.',
+  },
+  'FIELD.outputCoverage': {
+    confidence: 'measured',
+    source: 'The response fixture and results.jsonl.',
+    note: "The fourth audit checked that every field the server ACCEPTS had been exercised. This is its mirror: every column the server PRINTS. The result table has eleven; the project consumed two. The other nine had been parsed and stored since StackSummaryScraper was written -- its COLUMNS comment says unknown headers are slugified 'so a column dxter adds later shows up as data instead of vanishing' -- and never read back once. The probe's module docstring listed them as open and the gap list in this file had dropped the entry entirely, so no inventory this project wrote could have surfaced it.",
+  },
+
   precision: {
     confidence: 'measured',
     note: 'The source page prints HP lost to 0.1 in each unit span and to 0.01 in the summary table, and percentages to 3 significant figures. A stack POOL is never printed: it is pool = lost / pct, so every pool is an interval whose width is set by the percentage. Quoting a derived pool to 2 decimal places is a documented failure mode of this project (HANDOVER.md), committed by HANDOVER.md itself in its trench section.',
