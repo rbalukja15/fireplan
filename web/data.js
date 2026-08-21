@@ -720,6 +720,23 @@ export const EMBARKED_ATTACK = { land: 1.0, air: 0.5, naval: 1.0 };
 export const EMBARKED_DEFENCE = { land: 1.0, air: 0.5, naval: 1.0 };
 export const EMBARKED_TERRAIN = ['sea', 'debark'];
 
+// DEBARK IS NOT SEA, and the difference is asymmetric. A unit in debark
+// attacks and defends on the embarked column and holds the flat 10 HP, exactly
+// as at sea -- 40 embarked infantry in debark deal 0.9999 to infantry, 0.5001
+// to fighters and 0.9999 to a battleship, which is the sea column to four
+// decimals. But a TARGET in debark is hit on the attacker's LAND column, not
+// its naval one:
+//
+//              land col   naval col   at sea   in debark
+//   cavalry       15.0        8.0       8.00     15.00
+//   light art      5.0        1.0       1.00      5.00
+//   heavy tank    45.0       23.0      23.00     45.00
+//
+// The two terrains were treated as one because they sit in the same list, and
+// only the HP half had ever been measured in debark. For a light artillery
+// attacker that assumption was 5x wrong.
+export const EMBARKED_CLASS_CHANGE_TERRAIN = ['sea'];
+
 // RANGE IS A BINARY GATE, measured by moving one side's position while the
 // other stays at 0. Inside range the figure is identical to zero distance --
 // there is no falloff -- and outside it the server returns no result rows at
@@ -1584,6 +1601,49 @@ export const PROVENANCE = {
       + 'rendered under the lead figure now. The band is NOT replayed cell by cell — a '
       + 'deterministic engine cannot reproduce a roll — so what the suite asserts is that the '
       + 'band exists, straddles the figure, and is the full ±10% at every stack size.',
+  },
+  'FIELD.coverage': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=field_coverage (0 requests — it reads the form this rig '
+      + 'already loads and compares it against everything ever sent), then debark_class (6) and '
+      + 'long_rounds (8) for what it found.',
+    note: 'THE ONE INVENTORY NOBODY AUTHORED. Every audit before this worked from something this '
+      + 'project wrote down — the gap list, this table, the engine\'s outputs — and each could '
+      + 'only find holes someone had thought to describe. The FORM is discovered rather than '
+      + 'declared, so checking all 33 of its fields against every field ever sent is the one audit '
+      + 'that does not beg its own question. All 33 have been exercised. Varying them turned up '
+      + 'two live defects no note mentioned: debark treated as sea for the target class, and '
+      + 'patrol multiplying one round by the duration instead of iterating it. maxRounds accepts '
+      + 'up to 1000 and 100 is now the highest submitted; nothing suggests a further change of '
+      + 'behaviour above it, but nothing has been sent there either.',
+  },
+  'DEBARK.asymmetry': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=debark_class: the three attackers whose land and naval '
+      + 'columns differ, fired at a target in sea and in debark, plus an embarked attacker in '
+      + 'debark against one target of each class.',
+    note: 'DEBARK IS NOT SEA, and the difference is asymmetric. A unit in debark attacks and '
+      + 'defends on the embarked column and holds the flat 10 HP exactly as at sea — 40 embarked '
+      + 'infantry in debark deal 0.9999 to infantry, 0.5001 to fighters and 0.9999 to a '
+      + 'battleship. But a TARGET in debark is hit on the attacker\'s LAND column: cavalry 15.00 '
+      + 'where at sea it is 8.00, light artillery 5.00 against 1.00, a heavy tank 45.00 against '
+      + '23.00. The two were treated as one because they sit in the same list and only the HP half '
+      + 'had ever been measured in debark. For a light artillery attacker that was 5x wrong.',
+  },
+  'PATROL.duration': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=long_rounds: 1, 4, 20 and 100 rounds, flown as a strike '
+      + 'and as a patrol.',
+    note: 'PATROL ITERATES ROUNDS; it does not multiply one. The app computed a single round and '
+      + 'scaled it by the duration, which is right below one round — the 0.25/0.5/0.75/1 ladder '
+      + 'gives a flat per-round rate, and that is still measured and still modelled — and badly '
+      + 'wrong above it. At 100 rounds multiplying gives 29811.90 where the server prints '
+      + '9108.46, a factor of 3.3, because both sides wear each other down and a stack that has '
+      + 'lost most of its pool does not keep dealing its opening figure. Iterating reproduces the '
+      + 'ladder to 0.01% at four rounds and 0.05% at twenty; the 1.16% at a hundred is the '
+      + 'per-round residual accumulating. The app used to warn that scaling past four rounds '
+      + '"assumes the proportionality holds indefinitely, which nobody has checked" — it has been '
+      + 'checked now, and it did not hold.',
   },
   'STACK.composition': {
     confidence: 'measured',

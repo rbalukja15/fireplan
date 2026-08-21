@@ -7537,6 +7537,157 @@ def exp_building_damage_rest(p: Probe) -> None:
     print("\n  building damage per effective unit = " + json.dumps(
         {k: round(v, 4) for k, v in out.items()}, sort_keys=True))
 
+
+def exp_field_coverage(p: Probe) -> None:
+    """Which of the server's own input fields has this project NEVER varied?
+
+    Every audit so far has worked from something this project wrote down: the
+    gap list, the provenance table, the engine's outputs. Each found real
+    holes, and each could only find holes someone had thought to describe.
+
+    The form is the one inventory nobody authored. It is the complete surface
+    the server offers, discovered by load_form() rather than declared, so
+    comparing it against every field this rig has ever sent answers "did you
+    cover all the cases" in the only way that does not beg the question.
+    """
+    base = dict(p.baseline or {})
+    if not base:
+        print("  ! no form fields discovered.", file=sys.stderr)
+        return
+    print(f"\n  The form offers {len(base)} fields.\n")
+
+    # Everything this rig has ever put in a payload, from the record.
+    sent: set[str] = set()
+    varied: dict[str, set[str]] = {}
+    for line in open(RESULTS_PATH):
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        blob = json.dumps(row.get("meta") or {})
+        for f in re.findall(r'"([A-Za-z][A-Za-z0-9_.]*)"\s*:', blob):
+            if f in base:
+                sent.add(f)
+    # The probe's own helpers name fields directly; scan the source too, since
+    # a field set by settings() or duel() never appears in a meta blob.
+    src = open(__file__).read()
+    for f in base:
+        if f"\"{f}\"" in src or f"'{f}'" in src:
+            sent.add(f)
+        # Fields built by templates: A.1.1.unit is written as f"{side}.{stack}..."
+        tail = f.split(".")[-1]
+        if re.search(r'\{[a-z_]+\}\.\{?[a-z_0-9]*\}?\.?' + re.escape(tail), src):
+            sent.add(f)
+
+    untouched = sorted(f for f in base if f not in sent)
+    print(f"  {len(sent)} of {len(base)} have been set by this rig at least once.")
+    if not untouched:
+        print("  Every field the form offers has been exercised.")
+    else:
+        print(f"\n  NEVER SET ({len(untouched)}), with the value the form ships:\n")
+        for f in untouched:
+            opts = p.select_options.get(f)
+            print(f"    {f:28} = {base[f]!r:20}"
+                  + (f"  choices: {opts[:6]}" if opts else ""))
+    record("field_coverage", {"total": len(base), "sent": len(sent),
+                              "untouched": untouched}, {})
+
+
+def exp_debark_and_long_rounds(p: Probe) -> None:
+    """Two assumptions the field-coverage audit turned up.
+
+    DEBARK. EMBARKED_TERRAIN lists sea AND debark, and the engine treats them
+    identically -- flat 1.0 column, flat 10 HP, hit on the attacker's naval
+    column. Only the HP half was ever measured in debark; the class change was
+    measured in SEA and extended to debark because they sit in the same list.
+    That is precisely the kind of extension this project keeps finding wrong,
+    so the three discriminating attackers go again, in debark.
+
+    LONG ROUNDS. The form accepts maxRounds up to 1000 and nothing above 10 has
+    been submitted. Patrol scales with duration and the app says outright that
+    scaling past 4 "assumes the proportionality holds indefinitely, which
+    nobody has checked". Two rungs check it.
+    """
+    print("\n  1. debark: does the class change apply there too, or only at sea?\n")
+    print(f"  {'attacker':8} {'land col':>9} {'naval col':>10} "
+          f"{'sea':>8} {'debark':>8}   verdict")
+    for atk, land_c, naval_c in (("cav", 15.0, 8.0), ("lart", 5.0, 1.0),
+                                 ("ht", 45.0, 23.0)):
+        reads = {}
+        for terr in ("sea", "debark"):
+            ov = settings()
+            ov.update(duel(1, atk, 10, "inf", 200,
+                           atk_terrain="land", def_terrain=terr))
+            try:
+                p.submit(ov)
+            except (BareFormReturned, ValueError) as e:
+                print(f"  {atk:8} {terr}: {e}"[:96])
+                continue
+            d = dict(p.last_details)
+            b = d.get("B.1.1") or {}
+            record("debark_class", {"attacker": atk, "tgt_terrain": terr,
+                                    "detail": d},
+                   {k: (v or {}).get("lost") for k, v in d.items()})
+            if b.get("lost") is None or (b.get("pct") or 0) >= 99.9:
+                continue
+            reads[terr] = b["lost"] / effective_units(10)
+        if len(reads) == 2:
+            same = abs(reads["sea"] - reads["debark"]) < 0.05
+            near = lambda v, x: abs(v - x) < 0.05 * max(x, 1.0)
+            v = ("NAVAL column, same as sea" if same and near(reads["debark"], naval_c)
+                 else "LAND column — debark is NOT sea" if near(reads["debark"], land_c)
+                 else "neither")
+            print(f"  {atk:8} {land_c:9.1f} {naval_c:10.1f} {reads['sea']:8.2f} "
+                  f"{reads['debark']:8.2f}   {v}")
+
+    print("\n  2. an embarked ATTACKER in debark, against all three classes\n")
+    print(f"  {'target':8} {'terrain':8} {'per eff. unit':>14}   expected if debark == sea")
+    for tgt, tterr, want in (("inf", "land", 1.0), ("int", "land", 0.5),
+                             ("bb", "sea", 1.0)):
+        ov = settings()
+        ov.update(duel(1, "inf", 40, tgt, 200 if tgt != "bb" else 60,
+                       atk_terrain="debark", def_terrain=tterr))
+        try:
+            p.submit(ov)
+        except (BareFormReturned, ValueError) as e:
+            print(f"  {tgt:8} {tterr:8} {'refused':>14}   {e}"[:100])
+            continue
+        d = dict(p.last_details)
+        b = d.get("B.1.1") or {}
+        record("debark_class", {"probe": "attacker", "target": tgt,
+                                "tgt_terrain": tterr, "detail": d},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        if b.get("lost") is None or (b.get("pct") or 0) >= 99.9:
+            print(f"  {tgt:8} {tterr:8} {'wiped/none':>14}")
+            continue
+        per = b["lost"] / effective_units(40)
+        print(f"  {tgt:8} {tterr:8} {per:14.4f}   {want}"
+              + ("" if abs(per - want) < 0.03 else "   <-- DIFFERS"))
+
+    print("\n  3. maxRounds far past anything submitted before\n")
+    print(f"  {'mode':8} {'rounds':>7} {'B lost':>10}   per round")
+    for mode in ("air", "patrol"):
+        for rounds in (1, 4, 20, 100):
+            ov = settings(rounds=rounds)
+            ov.update(duel(1, "tac", 10, "inf", 4000,
+                           atk_terrain=mode, def_terrain="land"))
+            try:
+                p.submit(ov)
+            except (BareFormReturned, ValueError) as e:
+                print(f"  {mode:8} {rounds:>7} {'refused':>10}   {e}"[:96])
+                continue
+            d = dict(p.last_details)
+            b = d.get("B.1.1") or {}
+            record("long_rounds", {"mode": mode, "rounds": rounds,
+                                   "detail": d},
+                   {k: (v or {}).get("lost") for k, v in d.items()})
+            if b.get("lost") is None:
+                print(f"  {mode:8} {rounds:>7} {'—':>10}")
+                continue
+            wiped = (b.get("pct") or 0) >= 99.9
+            print(f"  {mode:8} {rounds:>7} {b['lost']:10.2f}   "
+                  f"{b['lost'] / rounds:8.3f}" + ("   WIPED" if wiped else ""))
+
 # Every (hero, unit) pair with a measured OUTPUT buff, and the level cap to
 # sweep to. Read with a SINGLE-TYPE stack, which needs no baseline subtraction
 # and cannot be contaminated by another curve.
@@ -8642,6 +8793,8 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "e_n_gaps": exp_e_n_gaps,
     "patrol_pin": exp_patrol_pin,
     "building_damage_rest": exp_building_damage_rest,
+    "field_coverage": exp_field_coverage,
+    "debark_and_long_rounds": exp_debark_and_long_rounds,
     "mixed_stacks": exp_mixed_stacks,
     "heroes": exp_heroes,
     "stack_limits": exp_stack_limits,

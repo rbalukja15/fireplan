@@ -36,6 +36,7 @@ import { dirname, join } from 'node:path';
 import {
   UNITS, CLASS_ATTACK, TRENCH_POOL, TRENCH_POOL_BRACKET, TRENCH_OUTPUT, PROVENANCE, NOT_MEASURED,
   UNIT_RANGE, MELEE_RANGE, EMBARKED_MAXHP, CLASS_ATTACK_CORROBORATED,
+  EMBARKED_TERRAIN, EMBARKED_CLASS_CHANGE_TERRAIN,
   PATROL,
   BUILDINGS,
   BUILDING_DAMAGE_FLOOR, BUILDING_DAMAGE_PER_EFFECTIVE_UNIT,
@@ -1997,9 +1998,24 @@ console.log('\n12k. embarkation — a class change, replayed in all three of its
     Object.values(UNITS).every((u) => CLASS_ATTACK.inf[combatClass(u.code, 'land')] !== undefined
       || u.cls === 'sea'),
     [...new Set(Object.values(UNITS).map((u) => combatClass(u.code, 'land')))].join(', '));
+  // This asserted that debark behaves like sea for the class change. It does
+  // not, and only the HP half had ever been measured there: a TARGET in debark
+  // is hit on the attacker's LAND column (cavalry 15.00, light artillery 5.00,
+  // a heavy tank 45.00) where at sea it is the naval one (8.00, 1.00, 23.00).
+  // The unit's OWN column and its flat 10 HP are unchanged in both.
   check('a non-naval unit at sea is naval; a naval unit anywhere is naval',
-    combatClass('ht', 'sea') === 'naval' && combatClass('ht', 'debark') === 'naval'
+    combatClass('ht', 'sea') === 'naval'
     && combatClass('int', 'sea') === 'naval' && combatClass('bb', 'land') === 'naval');
+  check('but debark is NOT sea — a target there is hit on the land column',
+    combatClass('ht', 'debark') === 'land'
+    && Math.abs(simulate({ attacker: { unit: 'ht', count: 10 },
+      defender: { unit: 'inf', count: 200 }, terrain: 'land',
+      defenderTerrain: 'debark' }).defender.hpLost / 10 - 45.0) < 0.05);
+  check('while a unit ATTACKING from debark still uses the embarked column',
+    Math.abs(simulate({ attacker: { rows: [{ unit: 'inf', count: 40 }] },
+      defender: { rows: [{ unit: 'int', count: 200 }] },
+      terrain: 'debark', defenderTerrain: 'land' })
+      .defender.hpLost / effectiveUnits(40) - 0.5) < 0.01);
   check('and the naval column is reachable at last — infantry deal 2.0 to a ship',
     attackCoefficient('inf', 'bb').value === 2.0
     && attackCoefficient('inf', 'bb').level === 'measured',
@@ -3085,6 +3101,7 @@ console.log('\n14. coverage of the record itself');
     'land_hero_attacking', 'land_hero_screen', 'hero_new_buffs', 'hank_sides',
     'land_hero_target_class', 'land_hero_def_class',
     'm_f_generality', 'building_levels', 'e_n_gaps', 'patrol_pin', 'building_damage_rest',
+    'field_coverage', 'debark_class', 'long_rounds',
     // Heroes are now modelled and replayed above: the sweeps that measured
     // them are physics the engine reproduces, not declared omissions.
     'heroes', 'hero_scaling', 'hero_table', 'hero_levels', 'air_rounds'];
@@ -3396,6 +3413,102 @@ console.log('\n18. the variance band, which the page never showed');
     /s\.hpLostBand/.test(app) && /with variance on/.test(app));
   check('the band is styled to sit under the figure, not compete with it',
     /\.figure-band/.test(readFileSync(new URL('../styles.css', import.meta.url), 'utf8')));
+}
+
+// ===========================================================================
+console.log('\n19. what the form offers, versus what was ever sent');
+// ===========================================================================
+// Every audit before this one worked from something this project WROTE DOWN:
+// the gap list, the provenance table, the engine's own outputs. Each found real
+// holes and each could only find holes someone had thought to describe. The
+// form is the one inventory nobody authored — the complete surface the server
+// offers, discovered rather than declared — so comparing it against everything
+// ever sent is the one check that does not beg its own question.
+//
+// It found two live defects that no note mentioned.
+{
+  const fc = rows.filter((r) => r.experiment === 'field_coverage').pop();
+  check('every field the form offers has been exercised at least once',
+    fc && fc.meta.untouched.length === 0,
+    fc ? `${fc.meta.sent}/${fc.meta.total}, untouched: ${fc.meta.untouched.join(', ') || 'none'}`
+      : 'no coverage row recorded');
+
+  // DEBARK IS NOT SEA. Only the HP half had ever been measured there.
+  const dk = rows.filter((r) => r.experiment === 'debark_class' && r.meta.detail);
+  let cells = 0;
+  for (const r of dk) {
+    const m = r.meta;
+    const b = m.detail['B.1.1'] || {};
+    if (b.lost == null || (b.pct || 0) >= 99.9) continue;
+    const got = m.probe === 'attacker'
+      ? simulate({ terrain: 'debark', defenderTerrain: m.tgt_terrain,
+          attacker: { rows: [{ unit: 'inf', count: 40 }] },
+          defender: { rows: [{ unit: m.target, count: m.target === 'bb' ? 60 : 200 }] } })
+      : simulate({ terrain: 'land', defenderTerrain: m.tgt_terrain,
+          attacker: { rows: [{ unit: m.attacker, count: 10 }] },
+          defender: { rows: [{ unit: 'inf', count: 200 }] } });
+    check(`${m.probe === 'attacker' ? 'embarked in debark vs ' + m.target
+      : m.attacker + ' vs a target in ' + m.tgt_terrain}: ${b.lost}`,
+      Math.abs(got.defender.hpLost - b.lost) < 0.05,
+      `got ${got.defender.hpLost.toFixed(2)}`);
+    cells += 1;
+  }
+  check('both halves of the debark question were replayed', cells >= 8, String(cells));
+  check('debark and sea are separate lists now, and only one changes the class',
+    EMBARKED_TERRAIN.includes('debark') && EMBARKED_TERRAIN.includes('sea')
+    && EMBARKED_CLASS_CHANGE_TERRAIN.includes('sea')
+    && !EMBARKED_CLASS_CHANGE_TERRAIN.includes('debark'));
+
+  // PATROL ITERATES ROUNDS. It multiplied one round by the duration, which is
+  // right below one round and 3.3x wrong at a hundred.
+  const lr = rows.filter((r) => r.experiment === 'long_rounds' && r.meta.detail);
+  let rungs = 0;
+  let worst = 0;
+  for (const r of lr) {
+    const m = r.meta;
+    const b = m.detail['B.1.1'] || {};
+    if (b.lost == null) continue;
+    const got = simulate({
+      mode: m.mode === 'patrol' ? 'patrol' : 'strike',
+      attacker: { unit: 'tac', count: 10 },
+      defender: { unit: 'inf', count: 4000 },
+      rounds: m.rounds,
+    });
+    const err = Math.abs(got.defender.hpLost - b.lost) / b.lost;
+    worst = Math.max(worst, err);
+    check(`${m.mode} x${m.rounds} rounds: ${b.lost}`, err < 0.015,
+      `got ${got.defender.hpLost.toFixed(2)} (${(err * 100).toFixed(2)}%)`);
+    rungs += 1;
+  }
+  check('the long-round ladder was replayed on both modes', rungs === 8, String(rungs));
+  check('and patrol is no longer 3.3x out at a hundred rounds', worst < 0.015,
+    `${(worst * 100).toFixed(2)}%`);
+  check('while fractional patrol rounds stay proportional, which IS measured',
+    (() => {
+      const one = simulate({ mode: 'patrol', attacker: { unit: 'tac', count: 10 },
+        defender: { unit: 'inf', count: 4000 }, rounds: 1 }).defender.hpLost;
+      return [0.25, 0.5, 0.75].every((f) => {
+        const got = simulate({ mode: 'patrol', attacker: { unit: 'tac', count: 10 },
+          defender: { unit: 'inf', count: 4000 }, rounds: f }).defender.hpLost;
+        return Math.abs(got - one * f) < 0.01;
+      });
+    })());
+
+  // The invariant that caught the accumulation bug, now run across durations.
+  for (const n of [1, 2, 3, 5, 8]) {
+    const r = simulate({
+      attacker: { rows: [{ unit: 'inf', count: 20 }, { unit: 'art', count: 20 }] },
+      defender: { rows: [{ unit: 'inf', count: 60 }] }, rounds: n });
+    for (const side of ['attacker', 'defender']) {
+      if (r[side].damageDealt === null) continue;
+      if (!r[side].rows.some((x) => typeof x.damageDealt === 'number')) continue;
+      const sum = r[side].rows.reduce(
+        (t, x) => t + (typeof x.damageDealt === 'number' ? x.damageDealt : 0), 0);
+      check(`${n} rounds: ${side} rows still sum to the stack`,
+        Math.abs(sum - r[side].damageDealt) < 0.01,
+        `${sum.toFixed(2)} vs ${r[side].damageDealt.toFixed(2)}`);
+    }
+  }
 }
 
 // ===========================================================================

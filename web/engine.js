@@ -38,6 +38,7 @@ import {
   EMBARKED_ATTACK,
   EMBARKED_DEFENCE,
   EMBARKED_TERRAIN,
+  EMBARKED_CLASS_CHANGE_TERRAIN,
   UNIT_RANGE,
   MELEE_RANGE,
   VARIANCE_BAND,
@@ -602,7 +603,11 @@ export function combatClass(unit, terrain) {
   if (!u) return null;
   const own = ownClass(u, terrain);
   if (own === 'naval') return 'naval';
-  if (EMBARKED_TERRAIN.includes(terrain)) return 'naval';
+  // SEA only, not debark. A unit in debark still attacks on the embarked
+  // column and still holds the flat 10 HP -- that is EMBARKED_TERRAIN, and it
+  // covers both -- but as a TARGET it is hit on the attacker's LAND column.
+  // Treating the two terrains as one made a light artillery attacker 5x wrong.
+  if (EMBARKED_CLASS_CHANGE_TERRAIN.includes(terrain)) return 'naval';
   return own;
 }
 
@@ -1583,10 +1588,19 @@ function runSimulation(config, derivation, caveats) {
 
   // Zero rounds when out of range: both sides take nothing, through the same
   // return path as any other battle rather than a second exit.
-  const patrolSolved = (patrol.applies && !outOfRange)
-    ? solvePatrol(atk, def, atkCoef.value, defCoef.value, patrol.c) : null;
-  const loopRounds = outOfRange ? 0 : (patrol.applies ? 1 : rounds);
-  const patrolScale = patrol.applies ? rounds : 1;
+  // PATROL ITERATES ROUNDS. It used to compute one round and multiply by the
+  // duration, which is right below one round and badly wrong above it: at 100
+  // rounds that gives 29811.90 where the server prints 9108.46, a factor of
+  // 3.3. Both sides wear each other down, and a stack that has lost most of
+  // its pool does not keep dealing its opening figure. Iterating instead
+  // reproduces the same ladder to 0.05% at 20 rounds.
+  //
+  // Below one round the proportionality IS measured -- a 0.25/0.5/0.75/1
+  // ladder gives a flat per-round rate -- so a fractional duration scales the
+  // single round it runs, and a fractional TAIL scales the last of many.
+  const wholeRounds = patrol.applies ? Math.max(1, Math.ceil(rounds)) : rounds;
+  const patrolTail = patrol.applies && rounds > 1 ? rounds - Math.floor(rounds) : 0;
+  const loopRounds = outOfRange ? 0 : wholeRounds;
   for (let r = 1; r <= loopRounds; r += 1) {
     const tag = loopRounds > 1 ? `R${r} ` : '';
     // Rounds after the first fight with what is left: fewer units, and those
@@ -1600,6 +1614,17 @@ function runSimulation(config, derivation, caveats) {
       });
       break;
     }
+
+    // The patrol fixed point is per ROUND: each side fires with what survives a
+    // fraction of THIS round's losses, and the stacks entering round five are
+    // not the stacks that entered round one. Solving once before the loop --
+    // which is what happens when a single round is multiplied out — freezes
+    // the opening state.
+    const patrolScale = !patrol.applies ? 1
+      : (rounds < 1 ? rounds
+        : (patrolTail > 0 && r === wholeRounds ? patrolTail : 1));
+    const patrolSolved = (patrol.applies && patrolScale > 0)
+      ? solvePatrol(atk, def, atkCoef.value, defCoef.value, patrol.c) : null;
 
     const atkE = effectiveUnits(atk.n);
     const defE = effectiveUnits(def.n);
@@ -1645,8 +1670,13 @@ function runSimulation(config, derivation, caveats) {
         && Math.abs(defParts.total - defOutput) > EPS) {
       const k = defOutput / defParts.total;
       for (const pt of defParts.parts) {
+        const before = pt.out;
         pt.out *= k;
-        if (pt.row) pt.row.damageDealt = pt.out;
+        // Rows accumulate, so correct this round's contribution rather than
+        // overwriting the running total with one round's figure.
+        if (pt.row && typeof pt.row.damageDealt === 'number') {
+          pt.row.damageDealt += pt.out - before;
+        }
         if (pt.hero && def.hero) def.hero.dealt = pt.out;
       }
     }
@@ -2106,7 +2136,12 @@ function stackOutput(side, coefFor, scale, mulEach) {
     // figure of 218.17, the same number times the 1.54 trench bonus.
     const out = c * r.effective * unitScale * mm * mFor(r.unit) * k
       * (r.trenchOutput === undefined ? 1 : r.trenchOutput);
-    r.damageDealt = out;
+    // ACCUMULATE ACROSS ROUNDS. This assigned, so after a three-round battle
+    // every row carried its LAST round's damage while the stack total carried
+    // all three -- rows summing to 123.46 against a stack of 508.25. The
+    // row-vs-stack invariant only caught it once patrol became multi-round,
+    // because patrol was the only multi-round case in that check.
+    r.damageDealt = (typeof r.damageDealt === 'number' ? r.damageDealt : 0) + out;
     total += out;
     parts.push({ row: r, coef: c, mul: mm, out, heroM: mFor(r.unit) });
   }
