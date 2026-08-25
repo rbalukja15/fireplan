@@ -55,7 +55,7 @@ function extensionManifestPlugin(outDir: string): Plugin {
 
 export default defineConfig(({ mode }) => {
   const isExt = mode === 'ext'
-  const base = isExt ? './' : '/dxcalc/'
+  const base = isExt ? './' : '/fireplan/'
   const outDir = isExt ? 'dist/ext' : 'dist/web'
   const input: Record<string, string> = { index: resolve(here, 'index.html') }
   if (isExt) input.popup = resolve(here, 'popup.html')

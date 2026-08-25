@@ -101,7 +101,7 @@ export default function App() {
               </a>
               ; unverified values are flagged in Engine data, and the fully
               measured cross-class model lives in the{' '}
-              <a href="https://rbalukja15.github.io/dxcalc/research/" target="_blank" rel="noreferrer">
+              <a href="https://rbalukja15.github.io/fireplan/research/" target="_blank" rel="noreferrer">
                 research calculator
               </a>
               . Fan-made tool — not affiliated with Bytro Labs or dxcalc.

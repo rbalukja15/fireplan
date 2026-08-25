@@ -12,7 +12,7 @@ Fan-made tool. Not affiliated with Bytro Labs, dxcalc, or NoxiaZ.
 ## Use it
 
 **Web / phone:** the Pages deploy lives at
-`https://rbalukja15.github.io/dxcalc/`. On a phone, open it and use
+`https://rbalukja15.github.io/fireplan/`. On a phone, open it and use
 "Add to Home Screen" (Android: browser menu → *Install app*; iOS Safari:
 Share → *Add to Home Screen*). It works offline after the first visit.
 

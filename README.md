@@ -12,8 +12,8 @@ black-box measurement, plus two calculators built on what it measured.
 | `test_*.py` | Offline suites that guard the rig: they prove each experiment design could distinguish the hypotheses it ruled between. No network. |
 | `HANDOVER.md` | The research log and methodology contract. |
 
-The deployed site: **https://rbalukja15.github.io/dxcalc/** (Trenchline;
-the research calculator lives under [`/research/`](https://rbalukja15.github.io/dxcalc/research/)).
+The deployed site: **https://rbalukja15.github.io/fireplan/** (Trenchline;
+the research calculator lives under [`/research/`](https://rbalukja15.github.io/fireplan/research/)).
 
 ## Provenance & notices
 
