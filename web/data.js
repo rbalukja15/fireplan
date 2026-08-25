@@ -1569,6 +1569,24 @@ export const NOT_MEASURED = [
 // measured, how well, and what it is NOT evidence for.
 
 export const PROVENANCE = {
+  'BATTLE.stopCondition': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=bughunt, prongs fortress_after_garrison (6) and building_grind_no_deaths (4).',
+    method: 'A battle ends when a side has no UNIT pool left, and nothing else ends it. Six heavy tanks kill five infantry behind a level-5 fortress by round 3, leaving 90.2 HP of fortress standing; asking for 5 rounds, 8 rounds and 100 returns the byte-identical result. The converse was read in the same sweep: ten heavy tanks destroy a level-5 fortress at round 3 with the garrison alive and round 4 goes ahead and wipes them, so a destroyed building does not end a battle either.',
+    tolerance: 'Exact, and the 100-round cell is what makes it exact rather than suggestive \u2014 a stop condition that were merely LATE would show somewhere between 5 and 100 rounds, and one that never fired would grind a 90 HP fortress to nothing many times over.',
+    notEvidenceFor: 'The residual on the real-army run, where the site destroys a fortress and this engine leaves it at 97-100%. That was the suspect this prong was built to test, and it is cleared: the stop condition is right, so what is left is accumulation drift in a fortress that falls at about the same time as its garrison. A different question, now separated from this one.',
+  },
+  'BUGHUNT.sweep': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=bughunt \u2014 eighteen cells, predictions computed from web/engine.js and written to disk before the first request.',
+    method: 'Cells chosen where the ENGINE was most likely to be wrong rather than where a law is cleanest. Counting the rounds column by experiment shows nearly every sweep in this archive is maxRounds=1 \u2014 trenches, buildings, allocation, saturation, terrain, heroes \u2014 so a law that is right for one round and applied wrongly on the second is invisible in the record. That is the class of defect the real-army run turned up six of. Three prongs: a fortress outliving its garrison, a trench over five round counts at two levels, and a building ground down with the garrison intact.',
+    tolerance: 'Eighteen of eighteen to the printed decimal, attacker, defender and building alike.',
+    notEvidenceFor: 'The engine being free of defects. It means these eighteen cells did not reach one. What it does establish is that two axes that had never been exercised at all \u2014 a trench past round one, and a building ground down over rounds \u2014 are now assertions rather than hopes.',
+  },
+  'RIG.dryRunPollution': {
+    confidence: 'measured',
+    note: 'Found while dry-running this sweep, before a request was sent: --dry-run appended eighteen rows of NOTHING to results.jsonl. record() is called unconditionally by every experiment, and a dry run has no readings to record. They are not wrong measurements, they are not measurements \u2014 and a reader replaying the archive could not tell "the site returned no reading" from "nobody asked the site". The eighteen were removed and record() now refuses while a dry run is in progress. The guard cannot key on the readings being empty, because they legitimately are in hero_hp_cap and hero_caps, whose 152 blank rows record server REFUSALS; it keys on whether a request was actually sent.',
+  },
   'MULTI_STACK.laws': {
     confidence: 'measured',
     source: 'results.jsonl, experiments=multi_stack (5), multi_stack_idle (1), multi_stack_focus (1) \u2014 seven requests, all ten-infantry stacks so every figure is a clean multiple of a known one.',

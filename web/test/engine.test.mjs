@@ -3159,7 +3159,8 @@ console.log('\n14. coverage of the record itself');
     'bombardment_law', 'bombardment_own', 'bombardment_finish',
     'bombardment_lucien2', 'togo_buff_clean',
     'mutual', 'mutual_law', 'mutual_order', 'mutual_control', 'mutual_rounds',
-    'real_army', 'fortress_hp_scale', 'update_counts', 'update_counts_army'];
+    'real_army', 'fortress_hp_scale', 'update_counts', 'update_counts_army',
+    'bughunt'];
   const notReplayed = Object.keys(counts).filter(
     (e) => !replayed.includes(e) && !replayedLater.includes(e));
   console.log(`  note  replayed: ${replayed.map((e) => `${e} ${counts[e] || 0}`).join(', ')}`);
@@ -4653,6 +4654,145 @@ check('and NOT ONE of them has leaked into the "nobody has measured this" list',
 check('the multi-stack advice names the two laws a player can apply by hand',
   /co-located|pile/i.test(SCOPE_LIMITS.find((s) => s.key === 'multi_stack').whatToDoInstead)
   && /1 km/i.test(SCOPE_LIMITS.find((s) => s.key === 'multi_stack').whatToDoInstead));
+
+// ===========================================================================
+// 25. THE BUG HUNT — a sweep aimed at this engine rather than at the game
+// ===========================================================================
+// Every other sweep in results.jsonl asks the site a question. This one asked
+// the MODEL a question and used the site as the answer key, so the cells were
+// picked where the engine was most likely to be wrong rather than where a law
+// is cleanest.
+//
+// Where that is, is readable straight off the archive: count the rounds column
+// by experiment and nearly every sweep here is maxRounds=1. Trenches,
+// buildings, allocation, saturation, terrain — all measured at one round. A
+// law that is right for one round and applied wrongly on the second is
+// therefore INVISIBLE in the record, and that is the exact class of defect the
+// real-army run turned up six of.
+//
+// Eighteen cells, predictions written to disk before the first request. All
+// eighteen came back to the printed decimal. That is worth less than it looks
+// — it means these cells did not reach a defect, not that there is none — but
+// two of the three prongs had never been exercised at all, so they are now
+// assertions rather than hopes.
+console.log('\n25. THE BUG HUNT');
+
+const bh = rows.filter((r) => r.experiment === 'bughunt');
+check('the bug-hunt sweep is on disk, all eighteen cells',
+  bh.length === 18, String(bh.length));
+check('every cell carries the prediction that was made BEFORE it was submitted',
+  bh.every((r) => r.meta.predicted && typeof r.meta.predicted.atk_lost === 'number'));
+
+for (const r of bh) {
+  const c = r.meta.cell;
+  const res = simulate({
+    attacker: { unit: c.atk.unit, count: c.atk.count, trench: c.atkTrench || 0 },
+    defender: {
+      unit: c.def.unit, count: c.def.count, trench: c.defTrench || 0,
+      buildings: c.fortress ? [{ code: 'fortress', level: c.fortress }] : [],
+    },
+    rounds: c.rounds,
+  });
+  const eA = r.readings['A.1.1'];
+  const eB = r.readings['B.1.1'];
+  const eBldg = r.readings['B.1.bldg.1'];
+  const tag = `${c.id} ${c.prong} ${c.rounds}rd`;
+  check(`${tag}: attacker loses ${eA}`,
+    near(res.attacker.hpLost, eA, lostTol(eA)), `engine ${fmt(res.attacker.hpLost)}`);
+  check(`${tag}: defender loses ${eB}`,
+    near(res.defender.hpLost, eB, lostTol(eB)), `engine ${fmt(res.defender.hpLost)}`);
+  if (eBldg !== undefined && eBldg !== null) {
+    // The building row prints one decimal, so 0.05 is span rounding, not drift.
+    check(`${tag}: fortress loses ${eBldg}`,
+      near(res.defender.buildings[0].hpLost, eBldg, 0.06),
+      `engine ${fmt(res.defender.buildings[0].hpLost)}`);
+  }
+  if (!near(res.attacker.hpLost, eA, lostTol(eA))) cannotReproduce(`bughunt ${tag} attacker`, eA, res.attacker.hpLost);
+  if (!near(res.defender.hpLost, eB, lostTol(eB))) cannotReproduce(`bughunt ${tag} defender`, eB, res.defender.hpLost);
+}
+
+// --- A FORTRESS WITH NOBODY LEFT TO DEFEND IT ------------------------------
+// This prong existed to hunt one specific suspect. The suite has long printed
+// a discrepancy it could not explain: fought to the end, the site destroys the
+// real army's fortress and this engine leaves it at 97-100%. The obvious
+// culprit was the STOP CONDITION — the engine ends a battle when the defending
+// side's unit pool is gone, and a fortress standing over a dead garrison might
+// well still be a target. If so, every fought-out battle with a building in it
+// would be wrong, and nothing in the record could have told us.
+//
+// It is not the stop condition. Six ht kill five infantry by round 3 and leave
+// 90.2 HP of a level-5 fortress standing, and the site returns THE IDENTICAL
+// numbers at 5 rounds, 8 rounds and 100. The battle really is over when the
+// last defender dies; the building is not finished off, not at any horizon.
+{
+  const afterGarrison = bh.filter((r) => r.meta.cell.prong === 'fortress_after_garrison');
+  const byRounds = Object.fromEntries(afterGarrison.map((r) => [r.meta.cell.rounds, r]));
+  check('the garrison is dead by round 3 with the fortress still standing',
+    byRounds[3].meta.detail['B.1.1'].died === 5
+    && byRounds[3].readings['B.1.bldg.1'] === 159.8,
+    `${byRounds[3].meta.detail['B.1.1'].died} dead, fortress ${byRounds[3].readings['B.1.bldg.1']} of 250`);
+  for (const n of [5, 8, 100]) {
+    check(`${n} rounds changes NOTHING — the fortress is not finished off`,
+      byRounds[n].readings['B.1.bldg.1'] === byRounds[3].readings['B.1.bldg.1']
+      && byRounds[n].readings['A.1.1'] === byRounds[3].readings['A.1.1']
+      && byRounds[n].readings['B.1.1'] === byRounds[3].readings['B.1.1'],
+      `bldg ${byRounds[n].readings['B.1.bldg.1']} vs ${byRounds[3].readings['B.1.bldg.1']}`);
+  }
+  // 100 rounds is the point. A stop condition that was merely LATE would show
+  // up somewhere between 5 and 100; one that never fires would grind a 90 HP
+  // fortress to nothing many times over.
+  check('and the engine stops in the same round the site does',
+    simulate({
+      attacker: { unit: 'ht', count: 6 },
+      defender: { unit: 'inf', count: 5, buildings: [{ code: 'fortress', level: 5 }] },
+      rounds: 100,
+    }).rounds.fought === 3);
+  // The converse, from prong C: a DESTROYED building does not end the battle
+  // either. The fortress falls at round 3 with the garrison alive, and round 4
+  // goes ahead and wipes them.
+  const grind = bh.filter((r) => r.meta.cell.prong === 'building_grind_no_deaths');
+  const g3 = grind.find((r) => r.meta.cell.rounds === 3);
+  const g5 = grind.find((r) => r.meta.cell.rounds === 5);
+  check('a destroyed building does not end the battle either',
+    g3.meta.detail['B.1.bldg.1'].destroyed === 1
+    && g3.meta.detail['B.1.1'].died === 21
+    && g5.meta.detail['B.1.1'].died === 40,
+    `${g3.meta.detail['B.1.1'].died} dead at 3 rounds, ${g5.meta.detail['B.1.1'].died} at 5`);
+  check('so the rule is about UNITS, not about what is left standing',
+    /unit pool/i.test(PROVENANCE['BATTLE.stopCondition'].method));
+}
+
+// --- A TRENCH OVER MORE THAN ONE ROUND -------------------------------------
+// Two dozen trench levels are measured and every single reading was a single
+// round. A trench changes both the pool and the output, and a factor applied
+// to the OPENING state instead of to the survivors is precisely the defect
+// found twice before — allocation weights, and the hero's own output. Eight
+// cells at two levels; all eight exact.
+{
+  const tr = bh.filter((r) => r.meta.cell.prong === 'trench_over_rounds');
+  check('eight trench cells across two levels and five round counts',
+    tr.length === 8 && new Set(tr.map((r) => r.meta.cell.defTrench)).size === 2);
+  check('the trench keeps working past round one, not just in it',
+    tr.every((r) => near(
+      simulate({
+        attacker: { unit: 'inf', count: 20 },
+        defender: { unit: 'inf', count: 20, trench: r.meta.cell.defTrench },
+        rounds: r.meta.cell.rounds,
+      }).defender.hpLost, r.readings['B.1.1'], lostTol(r.readings['B.1.1']))));
+  // The discriminator: a level-20 trench must still be a level-20 trench in
+  // round three. If the engine were applying it once at setup, the multi-round
+  // cells would drift apart from the site while the one-round cells stayed
+  // exact — which is exactly what the archive could never have shown.
+  const t20 = tr.filter((r) => r.meta.cell.defTrench === 20);
+  const t5 = tr.filter((r) => r.meta.cell.defTrench === 5);
+  check('and the two levels stay apart over rounds, so it is not being dropped',
+    t20.find((r) => r.meta.cell.rounds === 3).readings['B.1.1']
+    !== t5.find((r) => r.meta.cell.rounds === 3).readings['B.1.1']);
+}
+
+check('no bug-hunt cell had to be filed as unreproduced',
+  !unreproduced.some((u) => String(u.what).startsWith('bughunt ')),
+  JSON.stringify(unreproduced.filter((u) => String(u.what).startsWith('bughunt ')).map((u) => u.what)));
 
 // ===========================================================================
 console.log('');

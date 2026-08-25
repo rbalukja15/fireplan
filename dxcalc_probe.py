@@ -1334,7 +1334,25 @@ def clear_stacks(first: int, last: int) -> dict[str, str]:
     return out
 
 
+# Set by main() from --dry-run. A dry run sends nothing, so every experiment
+# that calls record() unconditionally -- which is all of them -- was appending
+# rows of NOTHING to the measurement archive. Eighteen went in on the first dry
+# run of exp_bughunt before a single request was sent. They are not wrong
+# measurements, they are not measurements at all, and the difference matters
+# because the archive is meant to be evidence: a reader replaying it cannot
+# tell "the site returned no reading" from "nobody asked the site".
+#
+# Empty readings ARE meaningful in two experiments -- hero_hp_cap and hero_caps
+# measure server REFUSALS, and 152 rows there are legitimately blank -- so the
+# guard cannot key on the readings being empty. It keys on whether a request
+# was actually sent.
+DRY_RUN = False
+
+
 def record(tag: str, meta: dict[str, Any], readings: dict[str, float]) -> None:
+    if DRY_RUN:
+        print(f"  [dry run] {tag} NOT recorded -> {readings}")
+        return
     row = {"ts": time.time(), "experiment": tag, "meta": meta, "readings": readings}
     with open(RESULTS_PATH, "a") as fh:
         fh.write(json.dumps(row) + "\n")
@@ -10672,7 +10690,153 @@ def exp_multi_stack(p: Probe) -> None:
         print(f"     refused: {e}"[:96])
 
 
+def exp_bughunt(p: Probe) -> None:
+    """One sweep aimed at the engine, not at the game.
+
+    Every other experiment here asks the site a question. This one asks the
+    MODEL a question and uses the site as the answer key, so its design rule is
+    different: pick the cells where the engine is most likely to be wrong, not
+    the cells that isolate a law.
+
+    WHERE IT IS MOST LIKELY TO BE WRONG is readable straight off results.jsonl.
+    Count the rounds column by experiment and almost every sweep in this project
+    is one round: trenches, buildings, allocation, saturation, terrain, heroes,
+    all measured at maxRounds=1. Multi-round exists only for bare stacks, one
+    bombardment ladder, and the real-army run. So any law that is correct for a
+    single round and applied WRONGLY on the second is invisible in the record,
+    and that is exactly the class of defect the real-army run turned up six of.
+
+    THREE PRONGS.
+
+    A. THE FORTRESS AFTER THE GARRISON DIES. The suite already prints a
+       discrepancy it could not explain: fought to the end, the site destroys
+       the fortress outright and this engine leaves it at 97-100%. The obvious
+       suspect is the stop condition -- the engine ends the battle when the
+       defending side's pool is gone, and a fortress with nobody left to defend
+       it may still be a target. Six ht against five infantry behind a level-5
+       fortress puts the garrison in the ground at round 3 with 90 HP of
+       fortress still standing, then asks for 5, 8 and 100 rounds. If the site
+       keeps grinding, the engine stops one condition too early.
+
+    B. A TRENCH OVER MULTIPLE ROUNDS. The trench is measured at two dozen
+       levels and every reading is a single round. A trench changes both the
+       pool and the output, and a factor applied to the opening state instead
+       of to the survivors is the precise defect that was found twice already
+       (allocation weights, and the hero's own output).
+
+    C. A BUILDING GROUND DOWN WITH THE GARRISON INTACT. Prong A confounds the
+       building with the deaths. Ten ht against forty infantry keeps everyone
+       alive while the fortress falls, so building damage per round is read on
+       its own.
+
+    THE PREDICTIONS ARE WRITTEN DOWN FIRST. web/engine.js is run over every
+    cell before the first request goes out and its answers are recorded into
+    the meta of each row. A prediction made after the fact is not a prediction,
+    and this project has caught itself reading a law off the data it was meant
+    to test more than once.
+    """
+    import json as _json
+    import os as _os
+    base = _os.environ.get("BUGHUNT_DIR", ".")
+    cells = _json.load(open(_os.path.join(base, "bughunt_cells.json")))
+    pred = _json.load(open(_os.path.join(base, "bughunt_pred.json")))
+    # A PREDICTION OLDER THAN THE ENGINE IS NOT A PREDICTION. bughunt_pred.json
+    # is derived from web/engine.js; edit the engine and the file on disk
+    # becomes a record of what the engine used to say. Submitting against it
+    # would compare the site to a model that no longer exists and report the
+    # difference as a finding.
+    engine = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                           "web", "engine.js")
+    pred_path = _os.path.join(base, "bughunt_pred.json")
+    if _os.path.exists(engine) and \
+            _os.path.getmtime(pred_path) < _os.path.getmtime(engine):
+        print("  bughunt_pred.json is older than web/engine.js — re-run "
+              "scripts/bughunt_predict.mjs. Nothing submitted.", file=sys.stderr)
+        return
+
+    missing = [c["id"] for c in cells if c["id"] not in pred]
+    if missing:
+        # Refuse rather than submit blind. A cell with no prediction cannot
+        # produce a finding -- whatever comes back will look like a result and
+        # be compared against nothing.
+        print(f"  no prediction for {', '.join(missing)} — run predict.mjs "
+              f"first. Nothing submitted.", file=sys.stderr)
+        return
+
+    rows: list[tuple[str, str, int, dict[str, float], dict[str, Any]]] = []
+    for c in cells:
+        ov = settings(str(c["rounds"]))
+        ov.update(duel(1, c["atk"]["unit"], c["atk"]["count"],
+                       c["def"]["unit"], c["def"]["count"],
+                       trench=int(c.get("defTrench", 0)),
+                       atk_trench=int(c.get("atkTrench", 0))))
+        fields: tuple[str, ...] = ()
+        if c.get("fortress"):
+            ov.update({"B.1.bldg.1.abb": "fortress",
+                       "B.1.bldg.1.lvl": str(c["fortress"]),
+                       "B.1.bldg.1.hp": "100%"})
+            fields = ("B.1.bldg.1.abb", "B.1.bldg.1.lvl", "B.1.bldg.1.hp")
+        try:
+            p.submit(ov, create=fields)
+        except (BareFormReturned, ValueError) as e:
+            print(f"  {c['id']}: {e}"[:100])
+            continue
+        d = dict(p.last_details)
+        record("bughunt",
+               {"cell": c, "rounds": c["rounds"], "predicted": pred[c["id"]],
+                "detail": d, "summary": dict(p.last_summary)},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        rows.append((c["id"], c["prong"], c["rounds"], pred[c["id"]], d))
+        print(f"  {c['id']} sent")
+
+    def got(d: dict[str, Any], slot: str, key: str = "lost") -> float | None:
+        v = d.get(slot) or {}
+        return v.get(key)
+
+    print("\n  cell prong                      rd   attacker lost      "
+          "defender lost       fortress lost")
+    print("  " + "-" * 94)
+    findings: list[str] = []
+    for cid, prong, rounds, pr, d in rows:
+        line = [f"  {cid:4} {prong:26} {rounds:4}"]
+        for label, slot, pkey in (("A", "A.1.1", "atk_lost"),
+                                  ("B", "B.1.1", "def_lost"),
+                                  ("bldg", "B.1.bldg.1", "bldg_lost")):
+            g = got(d, slot)
+            e = pr.get(pkey)
+            if g is None and e is None:
+                line.append(f"{'—':>19}")
+                continue
+            if g is None or e is None:
+                line.append(f"{('site ' + str(g)) if e is None else ('engine ' + str(e))!s:>19}")
+                findings.append(f"{cid} {label}: one side has a number and the "
+                                f"other does not (site {g}, engine {e})")
+                continue
+            # A percentage gap on a big number and an absolute gap on a small
+            # one; either alone calls something wrong that is not.
+            off = abs(g - e)
+            rel = off / max(abs(g), 1e-9)
+            mark = " " if (off <= 0.05 or rel <= 0.005) else "*"
+            line.append(f"{g:9.2f}/{e:8.2f}{mark}")
+            if mark == "*":
+                findings.append(f"{cid} {label}: site {g:.2f}, engine {e:.2f} "
+                                f"({(e - g) / max(abs(g), 1e-9) * 100:+.1f}%)")
+        print("".join(line))
+
+    print("\n  (site / engine; * = the two disagree by more than 0.05 HP and 0.5%)")
+    if findings:
+        print(f"\n  {len(findings)} DISAGREEMENT(S) — each is a defect report "
+              f"against the engine until shown otherwise:")
+        for f in findings:
+            print(f"    {f}")
+    else:
+        print("\n  No disagreement anywhere. That is a weaker result than it "
+              "looks: it means these cells did not reach a defect, not that "
+              "there is none.")
+
+
 EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
+    "bughunt": exp_bughunt,
     "unit_stats": exp_unit_stats,
     "repair_cost": exp_repair_cost,
     "hero_repair": exp_hero_repair,
@@ -10830,6 +10994,8 @@ def main() -> int:
                   + ", ".join(EXPERIMENTS), file=sys.stderr)
         return 1
 
+    global DRY_RUN
+    DRY_RUN = args.dry_run
     p = Probe(delay=args.delay, dry_run=args.dry_run, insecure=args.insecure,
               encoding=args.encoding, save_response=args.save_response)
     print(f"Loading form from {BASE_URL} ...")

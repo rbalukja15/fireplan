@@ -12,6 +12,7 @@ the server behaviour that a live --sanity run actually demonstrated:
 Run:  python3 test_probe_offline.py
 """
 import http.server
+import json
 import os
 import sys
 import threading
@@ -237,6 +238,40 @@ check("the exception carries the server's own lines",
       == ["oops: max level for Railway is 1"])
 check("and defaults to an empty list, never None",
       dp.BareFormReturned("m").oops == [])
+
+print("\n8. REGRESSION: a dry run must not write to the measurement archive")
+# Found by dry-running exp_bughunt: --dry-run sent nothing and appended
+# eighteen rows of NOTHING to results.jsonl, because record() is called
+# unconditionally by every experiment. They are not wrong measurements, they
+# are not measurements — and a reader replaying the archive cannot tell "the
+# site returned no reading" from "nobody asked the site".
+import tempfile
+
+_real_path, _real_dry = dp.RESULTS_PATH, dp.DRY_RUN
+try:
+    with tempfile.NamedTemporaryFile("w+", suffix=".jsonl", delete=False) as fh:
+        dp.RESULTS_PATH = fh.name
+    dp.DRY_RUN = True
+    dp.record("scratch", {"note": "dry"}, {"A.1.1": None})
+    check("nothing is appended while a dry run is in progress",
+          open(dp.RESULTS_PATH).read() == "",
+          repr(open(dp.RESULTS_PATH).read()[:80]))
+    dp.DRY_RUN = False
+    dp.record("scratch", {"note": "live"}, {"A.1.1": 1.0})
+    written = open(dp.RESULTS_PATH).read().strip().splitlines()
+    check("and a real run still writes exactly one row", len(written) == 1)
+    check("with the reading intact", json.loads(written[0])["readings"] == {"A.1.1": 1.0})
+    # THE GUARD MUST NOT KEY ON THE READINGS BEING EMPTY. hero_hp_cap and
+    # hero_caps measure server REFUSALS; 152 rows on disk are legitimately
+    # blank, and a guard that dropped those would delete real evidence.
+    dp.record("hero_hp_cap", {"note": "a refusal"}, {})
+    rows = open(dp.RESULTS_PATH).read().strip().splitlines()
+    check("an empty reading from a LIVE request is still recorded — refusals "
+          "are data", len(rows) == 2 and json.loads(rows[1])["readings"] == {})
+finally:
+    if os.path.exists(dp.RESULTS_PATH) and dp.RESULTS_PATH != _real_path:
+        os.unlink(dp.RESULTS_PATH)
+    dp.RESULTS_PATH, dp.DRY_RUN = _real_path, _real_dry
 
 print(f"\nALL {ok} CHECKS PASSED")
 srv.shutdown()
