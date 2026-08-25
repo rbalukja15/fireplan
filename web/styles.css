@@ -96,6 +96,16 @@
 
 /* --- reset -------------------------------------------------------------- */
 *, *::before, *::after { box-sizing: border-box; }
+/* THE HTML `hidden` ATTRIBUTE HAS TO WIN. The UA sheet gives it
+   `display: none` at the lowest possible specificity, so any rule of ours that
+   sets `display` on the same element silently beats it and the element stays
+   on screen with .hidden === true. That is exactly what happened to
+   #rounds-label: ticking "fight to the finish" hid the rounds BOX (an input,
+   which nothing here sets display on) and left its label behind, so the panel
+   read "Stop after (rounds)" above a note explaining that it would not stop.
+   Every element this app hides goes through the attribute, so the fix belongs
+   here rather than at each call site. */
+[hidden] { display: none !important; }
 html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0;
@@ -441,11 +451,54 @@ input:hover, select:hover { border-color: var(--muted); }
 .btn:hover { background: var(--bg-sunk); border-color: var(--muted); }
 .btn:active { transform: translateY(1px); }
 .btn-small { min-height: 32px; padding: 4px 10px; font-size: .78rem; }
-.btn-primary {
-  background: var(--ink); color: var(--bg); border-color: var(--ink);
-}
-.btn-primary:hover { background: var(--ink-2); border-color: var(--ink-2); }
+/* .btn-primary is gone with the button that wore it. Copy link held it until
+   Start battle existed, and two primary buttons in one row is no primary
+   button at all. Removed rather than left behind: dead CSS is a claim about
+   the page that nothing checks. */
 .btn.is-done { color: var(--ok); border-color: var(--ok-line); background: var(--ok-soft); }
+
+/* START BATTLE. The one control on the page that changes the numbers, so it
+   is the one that gets the weight. Copy link used to hold btn-primary and no
+   longer does: it copies a URL, which is not what anyone came here to do. */
+.btn-go {
+  background: var(--ink); color: var(--bg); border-color: var(--ink);
+  padding-inline: var(--s5); font-weight: 640;
+}
+.btn-go:hover { background: var(--ink-2); border-color: var(--ink-2); }
+/* Armed = the inputs have moved and the outcome below is out of date. A ring
+   rather than a colour change, so it reads as "waiting for you" and not as an
+   error, and so it survives both themes without a second palette. */
+.btn-go.btn-armed {
+  box-shadow: 0 0 0 3px var(--warn-soft), 0 0 0 4px var(--warn-line);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .btn-go.btn-armed { animation: armed 1.6s ease-in-out infinite; }
+}
+@keyframes armed {
+  0%, 100% { box-shadow: 0 0 0 3px var(--warn-soft), 0 0 0 4px var(--warn-line); }
+  50%      { box-shadow: 0 0 0 3px transparent,      0 0 0 4px var(--warn-line); }
+}
+
+/* A STALE RESULT IS DIMMED AND LABELLED, never cleared. Blanking it would hide
+   the thing a reader is adjusting one number against — and this page's whole
+   argument is that you can see where a figure came from. What it must not do
+   is look current. Opacity alone would fail anyone who cannot see it, hence
+   the note above, which is a live region. */
+.result.is-stale, .stickybar.is-stale { opacity: .55; }
+.result.is-stale { filter: saturate(.4); }
+@media (prefers-reduced-motion: no-preference) {
+  .result, .stickybar { transition: opacity .15s ease, filter .15s ease; }
+}
+.stale-note {
+  flex: 1 1 100%; order: 3;
+  font-size: .78rem; color: var(--warn);
+  background: var(--warn-soft); border: 1px solid var(--warn-line);
+  border-radius: var(--r-sm); padding: 6px 10px;
+  /* The note is the one part of the panel that must NOT be dimmed with it. */
+  opacity: 1;
+}
+.result.is-stale .stale-note { opacity: 1; filter: saturate(2.5); }
+.stale-note[hidden] { display: none; }
 
 .global-row {
   display: flex; flex-wrap: wrap; gap: var(--s4);

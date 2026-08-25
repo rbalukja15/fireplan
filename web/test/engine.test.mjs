@@ -3445,6 +3445,61 @@ console.log('\n16. the page can express what the engine models');
   check('and the hero HP box has its own listener',
     /hpBox\.addEventListener/.test(app));
 
+  // ---- THE BATTLE IS FOUGHT ON DEMAND, NOT ON EVERY KEYSTROKE ------------
+  // The page recomputed live. That reads well in a demo and badly in use: you
+  // are half way through typing "120" and the outcome has already been fought
+  // at 1 and at 12, and the figure on screen belongs to a stack nobody meant.
+  check('there is a Start battle button',
+    /id="run"[^>]*class="btn btn-go"/.test(html) && />Start battle</.test(html));
+  check('and it is the primary control, not Copy link',
+    !/id="share"[^>]*btn-primary/.test(html),
+    'Copy link copies a URL, which is not what anyone came here to do');
+  check('the outcome says so when it is out of date',
+    /id="stale-note"/.test(html) && /aria-live="polite"/.test(html));
+  check('and it is polite, not assertive — it fires on every keystroke',
+    !/id="stale-note"[^>]*aria-live="assertive"/.test(html));
+  check('input takes the light path; only runBattle() simulates',
+    /function runBattle\(\)/.test(app)
+    && /ENGINE\.simulate/.test((app.match(/function runBattle\(\)[\s\S]*?\n\}/) || [''])[0])
+    && !/ENGINE\.simulate/.test((app.match(/\nfunction recompute\(\)[\s\S]*?\n\}/) || [''])[0]),
+    'recompute() must not simulate; that is what made every keystroke a battle');
+  // ENTER. A form with several inputs and no submit button does not fire
+  // `submit` on Enter in Chrome at all, so a submit listener looks right,
+  // reads right, and never runs. Both are wired; the keydown one is the one
+  // that works, and it was found by driving a real browser.
+  check('Enter fights the battle, by keydown and not only by submit',
+    /\$\('builders'\)\.addEventListener\('keydown', onEnter\)/.test(app)
+    && /\$\('global-row'\)\.addEventListener\('keydown', onEnter\)/.test(app));
+  check('and a stray form submit cannot reload the page',
+    /\$\('builders'\)\.addEventListener\('submit'[^;]*preventDefault/.test(app));
+  // The four callers that mean "fight it" rather than "the inputs moved".
+  for (const [what, near] of [['first paint', 'First paint'],
+    ['a shared link', 'A shared link must show its battle'],
+    ['Reset', 'Reset: a complete new state'],
+    ['Swap sides', 'Swap sides: an explicit command']]) {
+    check(`${what} fights the battle rather than leaving a stale panel`,
+      new RegExp(`runBattle\\(\\);[^\n]*\n?[^\n]*${near.slice(0, 20)}`).test(app)
+      || app.includes(near),
+      near);
+  }
+  // A CONTROL'S OWN STATE IS NOT A RESULT. updateRoundsNote() decides whether
+  // the rounds box is visible at all, so leaving it on the fought path meant
+  // unticking "fight to the finish" did nothing until Start battle was
+  // pressed. Fourth silent dead control in this project, and it arrived within
+  // minutes of adding the button that was meant to make the page calmer.
+  check('the rounds control is refreshed on the path an EDIT takes',
+    /updateRoundsNote\(null\)/.test(
+      (app.match(/\nfunction recompute\(\)[\s\S]*?\n\}/) || [''])[0]),
+    'otherwise the rounds box stays hidden until the battle is fought');
+  // And a hidden element must actually be hidden. The UA sheet gives
+  // [hidden] `display: none` at the lowest specificity, so any rule of ours
+  // setting `display` beats it: #rounds-label had .hidden === true and
+  // display: block, leaving "Stop after (rounds)" over a note saying it would
+  // not stop.
+  check('the hidden attribute beats our own display rules',
+    /\[hidden\] \{ display: none !important; \}/.test(
+      readFileSync(new URL('../styles.css', import.meta.url), 'utf8')));
+
 
   // ---- HP INPUT: decimals, and absolute hit points -----------------------
   // The boxes were type="number" step="1", so 87.5 was rejected and 17.3 --

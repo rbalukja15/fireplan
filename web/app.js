@@ -421,11 +421,30 @@ function boot() {
     if (rm) { removeBuilding(rm.dataset.side, Number(rm.dataset.index)); }
   });
 
+  $('run').addEventListener('click', runBattle);
+  // ENTER IS THE BUTTON. Both halves of this are needed and the first one alone
+  // is a trap: a form with several inputs and no submit button does not fire
+  // `submit` on Enter at all in Chrome, so a submit listener looks right, reads
+  // right, and never runs. Caught by driving it in a real browser rather than
+  // by reasoning about it — the keydown handler is what actually works, and the
+  // submit listener stays because a browser that DOES submit must not reload
+  // the page (there is no action and no handler; it would look like a crash).
+  const onEnter = (ev) => {
+    if (ev.key !== 'Enter') return;
+    if (ev.target.tagName === 'BUTTON' || ev.target.tagName === 'TEXTAREA') return;
+    ev.preventDefault();
+    onCommit();
+    runBattle();
+  };
+  $('builders').addEventListener('submit', (ev) => { ev.preventDefault(); runBattle(); });
+  $('builders').addEventListener('keydown', onEnter);
+  $('global-row').addEventListener('keydown', onEnter);
   $('swap').addEventListener('click', swapSides);
   $('reset').addEventListener('click', () => {
     state = DEFAULT_STATE();
     writeStateToDom();
-    recompute();
+    runBattle();          // Reset: a complete new state, and nobody wants to
+                          // press Start Battle to see the default battle.
   });
   $('share').addEventListener('click', copyLink);
 
@@ -440,7 +459,8 @@ function boot() {
     }
     state = s;
     writeStateToDom();
-    recompute();
+    runBattle();          // A shared link must show its battle, not a stale
+                          // panel and an invitation to press a button.
   });
 
   // The working panel is the differentiator, so it is open where there is
@@ -476,7 +496,8 @@ function boot() {
   document.body.classList.add('has-sticky');
   $('app').hidden = false;
 
-  recompute();
+  runBattle();            // First paint: the default battle is computed, so
+                          // the page never opens on an empty outcome.
 }
 
 /* --------------------------------------------------------------------------
@@ -1238,7 +1259,8 @@ function swapSides() {
   state.attacker = state.defender;
   state.defender = a;
   writeStateToDom();
-  recompute();
+  runBattle();            // Swap sides: an explicit command on the whole
+                          // board, not an edit to one field.
 }
 
 /* --------------------------------------------------------------------------
@@ -1293,7 +1315,9 @@ function updateRoundsNote(result) {
   }
 }
 
-function recompute() {
+function runBattle() {
+  stale = false;
+  paintStale();
   // Wrapped, and the wrapping is the point. updateHpEchoes() only writes a
   // caption under each HP box, and when it threw -- heroMaxHP reached a `defOf`
   // that is local to renderHero -- it took recompute() with it, so every figure
@@ -1332,6 +1356,59 @@ function recompute() {
   renderDerivation(result.derivation);
   renderSticky(result);
   announceResult(result);
+}
+
+/* THE BATTLE IS FOUGHT WHEN THE USER SAYS SO, not on every keystroke.
+
+   It used to recompute live. That reads well in a demo and badly in use: you
+   are half way through typing "120" and the page has already fought the battle
+   at 1, then at 12, and the figure you are looking at belongs to a stack you
+   did not mean. Worse for the reader, an outcome that changes while you type
+   invites you to stop reading it.
+
+   So input edits take the LIGHT path -- captions, the shareable link, and a
+   mark saying the outcome below is out of date -- and the outcome itself is
+   recomputed only by Start Battle, by Enter, or by a whole-state action whose
+   intent is not in doubt (Reset, Swap sides, opening a shared link).
+
+   Every existing caller of recompute() was an input edit, so they all keep
+   their line and now mean "the inputs moved". The four that are not are named
+   at their call sites and say runBattle().
+
+   The stale result is DIMMED AND LABELLED rather than cleared. Blanking it
+   would hide the very thing a reader wants while they adjust one number, and
+   this page's whole argument is that you should be able to see where a figure
+   came from. What it must never do is look current. */
+let stale = false;
+
+function paintStale() {
+  const result = $('result');
+  if (result) result.classList.toggle('is-stale', stale);
+  const sticky = $('stickybar');
+  if (sticky) sticky.classList.toggle('is-stale', stale);
+  const note = $('stale-note');
+  if (note) note.hidden = !stale;
+  const btn = $('run');
+  if (btn) btn.classList.toggle('btn-armed', stale);
+}
+
+function recompute() {
+  // The link and the captions must NOT go stale with the result: Copy link
+  // hands out the inputs as they stand, and a caption that disagreed with the
+  // box above it would be a defect whoever pressed what.
+  try { updateStackNotes(); } catch (err) { console.error('stack notes failed', err); }
+  try { syncHash(currentConfig()); } catch (err) { console.error('hash sync failed', err); }
+  // A CONTROL'S OWN STATE IS NOT A RESULT. updateRoundsNote() both writes a
+  // sentence about the battle and decides whether the rounds box is visible at
+  // all, so leaving it on the fought path meant unticking "fight to the finish"
+  // did nothing until you pressed Start battle. That is the silent-dead-control
+  // failure this project has now hit FOUR times, and it arrived within minutes
+  // of adding a button — the whole point of which was to stop the page acting
+  // on half-finished input. It takes a result when there is one and reads the
+  // generic sentence when there is not.
+  try { updateRoundsNote(null); } catch (err) { console.error('rounds note failed', err); }
+  stale = true;
+  paintStale();
 }
 
 /**

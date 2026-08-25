@@ -72,7 +72,7 @@
     <div id="stack-defender"></div>
   </form>
 
-  <div class="global-row">
+  <div class="global-row" id="global-row">
     <div class="field field-mode" id="mode-field" hidden>
       <label for="mode">Air mode</label>
       <select id="mode" name="mode" aria-describedby="mode-note">
@@ -118,9 +118,15 @@
       <p class="field-note" id="distance-note">Range is a yes/no gate, not a falloff, and every unit's is measured by bisection: melee 5&nbsp;km, light artillery 30, artillery 50, cruiser 40, battleship 75, railgun 150. A row that cannot reach is inert. Past 5&nbsp;km the <em>defender does not fire back at all</em>.</p>
     </div>
     <div class="global-actions">
+      <!-- THE PAGE NO LONGER FIGHTS THE BATTLE AS YOU TYPE. See the comment on
+           recompute() in app.js: a figure that changes on every keystroke
+           belongs to a stack you were half way through entering, and it
+           invites you not to read it. Editing marks the outcome stale; this
+           button, Enter, Reset and Swap sides fight it. -->
+      <button type="button" id="run" class="btn btn-go">Start battle</button>
       <button type="button" id="swap" class="btn">Swap sides</button>
       <button type="button" id="reset" class="btn">Reset</button>
-      <button type="button" id="share" class="btn btn-primary">Copy link</button>
+      <button type="button" id="share" class="btn">Copy link</button>
     </div>
   </div>
 
@@ -131,6 +137,13 @@
     <div class="result-head">
       <h2 id="result-h">Outcome</h2>
       <span class="conf-chip" id="result-chip"></span>
+      <!-- Polite, not assertive: this fires on every keystroke, and a screen
+           reader interrupting the user mid-number to say the figures are old
+           would be worse than the figures being old. -->
+      <p class="stale-note" id="stale-note" role="status" aria-live="polite" hidden>
+        The inputs have changed &mdash; these figures are from the previous battle.
+        Press <strong>Start battle</strong>.
+      </p>
     </div>
 
     <p class="verdict" id="verdict"></p>
