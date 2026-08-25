@@ -48,8 +48,21 @@ def details_of(html):
 print("1. the table exists in the real response and parses")
 s = dp.StackSummaryScraper()
 s.feed(REAL)
-check("one summary per stack", sorted(s.summaries) == ["A.1", "B.1"],
-      str(sorted(s.summaries)))
+# THIS ASSERTION USED TO READ  == ["A.1", "B.1"]  under the label "one summary
+# per stack", and it passed for 2,585 readings. It was wrong the whole time.
+# There is exactly ONE resultTable per ARMY, and every army in this project had
+# exactly one stack, so an army total and a stack total were the same number
+# and nothing could tell them apart. exp_multi_stack fielded two stacks a side
+# and the difference showed instantly: the table after A.2 carries A.1 + A.2.
+#
+# The old assertion was not a bad test. It was an accurate record of what was
+# known, and it went stale in exactly the way a hand-written constant goes
+# stale -- which is the whole reason this file exists. Keeping the label while
+# quietly widening the list would have hidden that; the label changes too.
+check("one summary per ARMY, plus a stack alias where that is unambiguous",
+      sorted(s.summaries) == ["A", "A.1", "B", "B.1"], str(sorted(s.summaries)))
+check("the alias is the same object's values, not a second reading",
+      s.summaries["A"] == s.summaries["A.1"])
 check("attacker HP lost carries the extra digit",
       s.summaries["A.1"]["hp_lost"] == 141.67, str(s.summaries["A.1"]["hp_lost"]))
 check("defender likewise", s.summaries["B.1"]["hp_lost"] == 11.33)
@@ -140,5 +153,91 @@ sc.feed('<div id="A.1"><table class="resultTable">'
         '<tr><td>10.5</td><td>7</td></tr></table></div>')
 check("new column survives under a usable key",
       sc.summaries["A.1"].get("morale") == 7.0, str(sc.summaries))
+
+print("\n9. TWO STACKS AN ARMY: the table is an army total")
+# multi_stack_response.html is a genuine response from the exp_multi_stack run,
+# with A.1+A.2 attacking B.1+B.2. It is the first capture in this project where
+# an army total and a stack total are different numbers, so it is the only
+# evidence that can tell the two apart -- which is why it is committed as a
+# fixture rather than left in a scratch directory.
+MULTI = open(os.path.join(HERE, "multi_stack_response.html")).read()
+m = dp.StackSummaryScraper()
+m.feed(MULTI)
+check("two stacks an army yields two tables, not four",
+      sorted(m.summaries) == ["A", "B"], str(sorted(m.summaries)))
+check("no stack alias when the army has more than one stack",
+      "A.1" not in m.summaries and "A.2" not in m.summaries)
+md = details_of(MULTI)
+check("all four stacks reported their own spans",
+      sorted(md) == ["A.1.1", "A.2.1", "B.1.1", "B.2.1"], str(sorted(md)))
+# THE ARITHMETIC THAT SETTLES IT. If the table were a stack total, the one
+# following A.2 would say 90. It says 190, which is A.1's 100 plus A.2's 90.
+check("A's table equals A.1 + A.2, not A.2 alone",
+      m.summaries["A"]["hp_lost"] == md["A.1.1"]["lost"] + md["A.2.1"]["lost"]
+      == 190.0, str(m.summaries["A"]["hp_lost"]))
+check("B's table likewise",
+      m.summaries["B"]["hp_lost"] == md["B.1.1"]["lost"] + md["B.2.1"]["lost"]
+      == 80.0, str(m.summaries["B"]["hp_lost"]))
+check("and the percentage is over the army's pool, not one stack's",
+      abs(m.summaries["A"]["pct_lost"] - 100 * 190.0 / 400.0) < 0.05,
+      str(m.summaries["A"]["pct_lost"]))
+check("'hours' is an army total too, so it cannot be billed per stack",
+      (m.summaries["A"]["hours"], m.summaries["B"]["hours"]) == (31.0, 13.0))
+# The site said so all along, in a title attribute nobody had read: "The total
+# hit points lost by all the stacks during the battle." Recorded here because a
+# claim the source itself makes is worth more than an inference from arithmetic
+# -- and because it is the reason to trust this beyond the one capture.
+check("the site's own tooltip says 'all the stacks'",
+      "lost by all the stacks" in MULTI)
+
+print("\n10. the army total is cross-checked, never divided")
+mref = dp.refine_details(md, m.summaries)
+check("no substitution: the total is real but not divisible between stacks",
+      all("lost_source" not in mref[s] for s in mref), str(mref))
+check("spans survive untouched",
+      [mref[s]["lost"] for s in sorted(mref)] == [100.0, 90.0, 40.0, 40.0])
+# The guard has to survive the new key shape. Swap the two armies' totals and
+# it must still refuse -- this is the building-row bug's exact shape, one level
+# up, and the sum check is the only thing standing in front of it.
+mswap = {"A": m.summaries["B"], "B": m.summaries["A"]}
+mout = dp.refine_details(md, mswap, quiet=True)
+check("a table attached to the wrong ARMY is refused too",
+      [mout[s]["lost"] for s in sorted(mout)] == [100.0, 90.0, 40.0, 40.0])
+# And an army whose two stacks between them show ONE unit row can still be
+# sharpened: the total is divisible when there is only one thing to divide it
+# into. A.2 empty, A.1 carrying the reading.
+one = {"A.1.1": {"lost": 190.0, "pct": 47.5, "pool": 400.0}}
+sharp = dp.refine_details(one, {"A": {"hp_lost": 190.04, "hours": 31.0}},
+                          quiet=True)
+check("one unit row under a two-stack army is still refined",
+      sharp["A.1.1"]["lost"] == 190.04 and sharp["A.1.1"]["lost_source"] == 1.0)
+check("and its stack extras come from the army row",
+      sharp["A.1.1"]["stack_hours"] == 31.0)
+
+print("\n11. the '% lost' header changed spelling mid-project")
+# fortress_result.html was served "% lost"; multi_stack_response.html was served
+# "%lost", and the site had added an "HP final" column in between. A literal
+# header match filed the same quantity under two different keys -- 'pct_lost'
+# on the early captures, 'lost' on the later ones -- and 'lost' is already the
+# span reading's name for HP. Nothing had read it yet, so nothing on disk is
+# wrong; the risk was entirely in front of us.
+check("the two fixtures really do spell it differently",
+      "% lost" in REAL and "%lost" in MULTI and "% lost" not in MULTI)
+check("both spellings now land on the same key",
+      "pct_lost" in s.summaries["A.1"] and "pct_lost" in m.summaries["A"])
+check("neither files a percentage under 'lost'",
+      "lost" not in s.summaries["A.1"] and "lost" not in m.summaries["A"])
+check("the column the site added later arrived as data, not as a discard",
+      m.summaries["A"]["hp_final"] == 210.0)
+check("HP final + HP lost is the army's opening pool",
+      m.summaries["A"]["hp_final"] + m.summaries["A"]["hp_lost"] == 400.0)
+# Rows captured before the fix keep the key they were captured with. Reading
+# them is a function's job, not a rewrite's.
+check("the compatibility reader handles the old spelling",
+      dp.summary_pct_lost({"lost": 0.4}) == 0.4)
+check("and prefers the explicit key when both are somehow present",
+      dp.summary_pct_lost({"lost": 0.4, "pct_lost": 47.5}) == 47.5)
+check("and returns None rather than guessing when neither is there",
+      dp.summary_pct_lost({"hp_lost": 1.0}) is None)
 
 print(f"\nALL {ok} CHECKS PASSED")

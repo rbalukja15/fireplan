@@ -729,6 +729,14 @@ input:hover, select:hover { border-color: var(--muted); }
   content: "—"; position: absolute; left: 0; color: var(--muted);
 }
 .limits-list strong { color: var(--ink); font-weight: 620; }
+.limits-sub {
+  /* Two lists in one panel, and the reader has to be able to tell which is
+     which at a glance -- "measured but not computed" and "nobody has measured
+     this" mean different things about whose problem it is. */
+  margin-top: var(--s4); font-size: .82rem; font-weight: 620;
+  color: var(--ink); letter-spacing: .01em;
+}
+.limits-sub:first-of-type { margin-top: var(--s3); }
 
 /* --- footer ------------------------------------------------------------- */
 .site-foot {

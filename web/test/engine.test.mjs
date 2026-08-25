@@ -48,6 +48,7 @@ import {
   REPAIR_COST, REPAIR_HOURS, HERO_REPAIR,
   BOMBARDMENT, BOMBARDMENT_SPLIT, HERO_REACH,
   MUTUAL,
+  MULTI_STACK, SCOPE_LIMITS, STACK_GROUP, STACK_GROUP_LABEL,
 } from '../data.js';
 import {
   heroBuff,
@@ -3213,6 +3214,15 @@ console.log('\n14. coverage of the record itself');
   //   bombardment_lucien  superseded by bombardment_lucien2, which re-read the
   //     same levels outside every measured radius.
     'repair_building', 'repair_hero', 'hero_repair', 'hero_repair_all',
+  //   multi_stack / multi_stack_idle / multi_stack_focus  MORE THAN ONE STACK
+  //     A SIDE, which this engine does not model and says so. Not a gap in the
+  //     record -- the three laws are measured to the printed decimal and are
+  //     in MULTI_STACK -- but a gap in the FORM: computing them needs a
+  //     position in kilometres and a target per stack, and this page asks for
+  //     neither. It is declared in SCOPE_LIMITS rather than NOT_MEASURED
+  //     precisely so it cannot hide here as an open question. Section 24
+  //     asserts the arithmetic against the readings directly instead.
+    'multi_stack', 'multi_stack_idle', 'multi_stack_focus',
     'bombardment_friendly', 'bombardment_melee', 'bombardment_lucien'];
   void declaredNonReplay;
   check('every unreplayed experiment is one the engine declares and explains',
@@ -3302,6 +3312,28 @@ console.log('\n15. the page cannot contradict the model');
     (html.match(/<ul class="limits-list"[^>]*>/) || ['absent'])[0]);
   check('and app.js fills it from NOT_MEASURED',
     /DATA\.NOT_MEASURED/.test(readFileSync(new URL('../app.js', import.meta.url), 'utf8')));
+  // The second list, added when multi-stack was measured and NOT modelled.
+  // Same discipline, opposite meaning: this one is rendered from SCOPE_LIMITS,
+  // and if it ever collapses back into the gap list the reader stops being
+  // told that the answer exists and is theirs to apply.
+  check('the scope-limits list is its own rendered container',
+    /<ul class="limits-list" id="scope-list"><\/ul>/.test(html),
+    (html.match(/id="scope-list"[^>]*>/) || ['absent'])[0]);
+  check('with a heading that does not read as a measurement gap',
+    /What it does not do, though the answer is known/.test(html));
+  // The lede used to say flatly "These are gaps in the measurement record",
+  // which became false the moment a measured-but-unmodelled list sat under it.
+  // A panel whose introduction contradicts its first entry is the same defect
+  // this section exists to catch, one paragraph higher.
+  check('and a lede that does not call the scope list a measurement gap',
+    !/These are gaps in\s+the measurement record/.test(html)
+    && /apply it yourself/.test(html));
+  check('no rendered sentence doubles its full stop',
+    /function endStop/.test(readFileSync(new URL('../app.js', import.meta.url), 'utf8')));
+  check('and app.js fills it from SCOPE_LIMITS, not from NOT_MEASURED',
+    /DATA\.SCOPE_LIMITS/.test(readFileSync(new URL('../app.js', import.meta.url), 'utf8')));
+  check('the page never claims to compute more than one stack a side',
+    !/\b(multi-stack|multiple stacks) (support|modelled|supported)\b/i.test(html));
 
   // The specific claims that went stale. Each of these is a law the engine
   // computes the OPPOSITE of, so finding one in the page is a live defect.
@@ -4470,6 +4502,157 @@ console.log('\n23. a real army');
         + 'used to stop the moment the unit count hit zero');
   }
 }
+
+// ===========================================================================
+// 24. MORE THAN ONE STACK A SIDE — measured, and deliberately not modelled
+// ===========================================================================
+// Every reading before these seven was one stack attacking one stack, which is
+// also all this engine computes. So this section replays nothing: it asserts
+// the ARITHMETIC of the three laws against the recorded readings directly, and
+// then asserts that the app says out loud it does not do them.
+//
+// The distinction matters more than usual here. A law that is measured and
+// unmodelled is not a gap in the record, and filing it under "what nobody has
+// measured" would be a lie in the comfortable direction. It goes in
+// SCOPE_LIMITS, with what the player should do about it by hand.
+console.log('\n24. MORE THAN ONE STACK A SIDE');
+
+const msRows = rows.filter((r) => String(r.experiment).startsWith('multi_stack'));
+check('the multi-stack sweep is on disk, all seven requests',
+  msRows.length === 7, String(msRows.length));
+
+const msBy = (exp, tag) => msRows.find(
+  (r) => r.experiment === exp && (tag === undefined || r.meta.tag === tag));
+const rd = (row, slot) => row.readings[slot];
+
+// --- law 1: attacking one stack of a pile is attacking the pile ------------
+// A.1 attacks B.1 alone; B.2 is idle beside it at 0 km. If co-location did
+// nothing, B.2 would lose 0.0 and A.1 would lose one stack's worth of return
+// fire. Both halves of that are false.
+const idle = msBy('multi_stack_idle');
+check('an IDLE co-located stack still takes damage it was never aimed at',
+  rd(idle, 'B.2.1') === 20.0, String(rd(idle, 'B.2.1')));
+check('and the attacker\u2019s output is SPLIT between them, not doubled',
+  rd(idle, 'B.1.1') + rd(idle, 'B.2.1') === 40.0,
+  `${rd(idle, 'B.1.1')} + ${rd(idle, 'B.2.1')}`);
+check('the split is even between two identical stacks',
+  rd(idle, 'B.1.1') === rd(idle, 'B.2.1'));
+// Ten infantry defending deal 50.00 — measured long ago, and the number this
+// prediction was made from. A.1 takes two of them.
+check('BOTH co-located defenders answer, at full strength: 50 + 50',
+  rd(idle, 'A.1.1') === 100.0, String(rd(idle, 'A.1.1')));
+check('a stack that is not attacking takes nothing when nothing reaches it',
+  rd(idle, 'A.2.1') === 0.0, String(rd(idle, 'A.2.1')));
+
+// --- law 2: concentration adds, and the defender weakens between attackers --
+const focus = msBy('multi_stack_focus');
+check('two stacks on one target: the damage is exactly additive, 40 + 40',
+  rd(focus, 'B.1.1') === 80.0, String(rd(focus, 'B.1.1')));
+check('the FIRST attacker takes a full defensive answer',
+  rd(focus, 'A.1.1') === 50.0, String(rd(focus, 'A.1.1')));
+// B.1 is on 160 of 200 by the time it answers A.2 — a fifth of its pool gone
+// to A.1's 40. 50.00 x 0.8 = 40.00, and that is what A.2 loses.
+check('the SECOND takes 0.8 of one, the defender having lost a fifth answering the first',
+  rd(focus, 'A.2.1') === 50.0 * (1 - rd(focus, 'B.1.1') / 2 / 200),
+  `${rd(focus, 'A.2.1')} vs ${50.0 * (1 - rd(focus, 'B.1.1') / 2 / 200)}`);
+// THE SAME ARITHMETIC, PREDICTED FORWARD onto a configuration it was not
+// derived from: four stacks, two attacking two. A.1 fires first and takes
+// 50 + 50 from two untouched defenders; A.2 fires second and takes 45 + 45,
+// each defender now on 180 of 200.
+const base = msBy('multi_stack', 'no fortress');
+check('four stacks: the first attacker takes 50 + 50',
+  rd(base, 'A.1.1') === 100.0, String(rd(base, 'A.1.1')));
+check('and the second takes 45 + 45, predicted before it was submitted',
+  rd(base, 'A.2.1') === 2 * 50.0 * (1 - 20.0 / 200), String(rd(base, 'A.2.1')));
+check('each defender loses 20 from each attacker, 40 in all',
+  rd(base, 'B.1.1') === 40.0 && rd(base, 'B.2.1') === 40.0);
+
+// --- law 3: a building is inherited at 0 km, and 1 km is the way out -------
+const f0 = msBy('multi_stack', 'fortress on B.1, B.2 at 0 km');
+const f1 = msBy('multi_stack', 'fortress on B.1, B.2 at 1 km');
+check('at 0 km a stack with NO building of its own is protected identically',
+  rd(f0, 'B.2.1') === rd(f0, 'B.1.1'), `${rd(f0, 'B.2.1')} vs ${rd(f0, 'B.1.1')}`);
+check('and that protection is the fortress\u2019s, not a rounding artefact',
+  rd(f0, 'B.2.1') < rd(base, 'B.2.1') / 8,
+  `${rd(f0, 'B.2.1')} against ${rd(base, 'B.2.1')} unprotected`);
+check('ONE KILOMETRE ends it: the same stack loses nine times as much',
+  rd(f1, 'B.2.1') > 8 * rd(f0, 'B.2.1'),
+  `${rd(f1, 'B.2.1')} at 1 km against ${rd(f0, 'B.2.1')} at 0 km`);
+check('while the fortress\u2019s owner is unaffected by where the neighbour stands',
+  Math.abs(rd(f1, 'B.1.1') - rd(f0, 'B.1.1')) <= 0.1,
+  `${rd(f1, 'B.1.1')} vs ${rd(f0, 'B.1.1')}`);
+check('the level-5 fortress is on the board in both, at the same HP',
+  rd(f0, 'B.1.bldg.1') === 6.0 && rd(f1, 'B.1.bldg.1') === 6.0);
+
+// --- the exception, and it is exact ---------------------------------------
+// An Airplane Convoy is flagged in the roster as stacking with nothing. This
+// is the first measurement of what that costs it: the fortress appears beside
+// it and its losses do not move by a hundredth.
+const c0 = msBy('multi_stack', 'convoy, no fortress');
+const c1 = msBy('multi_stack', 'convoy, fortress');
+check('an Airplane Convoy at 0 km does NOT inherit the fortress',
+  rd(c1, 'B.2.1') === rd(c0, 'B.2.1'),
+  `${rd(c1, 'B.2.1')} with fortress, ${rd(c0, 'B.2.1')} without`);
+check('while its neighbour, which does inherit, drops by an order of magnitude',
+  rd(c1, 'B.1.1') < rd(c0, 'B.1.1') / 8,
+  `${rd(c1, 'B.1.1')} against ${rd(c0, 'B.1.1')}`);
+// Not a new fact — STACK_GROUP has said the convoy is a group of one since the
+// stack-limits probe. What is new is the PRICE: a group of one does not get to
+// stand in somebody else's fortress. The two records have to agree, because a
+// convoy quietly folded into 'land' would take the inheritance with it.
+check('the roster already flagged the convoy as a stack group of its own',
+  STACK_GROUP.convoy === 'convoy'
+  && /stacks with nothing/i.test(STACK_GROUP_LABEL.convoy),
+  `${STACK_GROUP.convoy} / ${STACK_GROUP_LABEL.convoy}`);
+check('and it is the only unit in the roster with that group',
+  Object.keys(STACK_GROUP).filter((u) => STACK_GROUP[u] === 'convoy').length === 1,
+  JSON.stringify(Object.keys(STACK_GROUP).filter((u) => STACK_GROUP[u] === 'convoy')));
+// Unlike defenders do NOT split evenly, which is the one thing this sweep
+// shows and cannot pin down. Recorded as an observation, not a rule.
+check('two UNLIKE defenders split unevenly — observed, and not enough to fix a rule',
+  rd(c0, 'B.1.1') !== rd(c0, 'B.2.1')
+  && rd(c0, 'B.1.1') + rd(c0, 'B.2.1') === 80.0,
+  `${rd(c0, 'B.1.1')} / ${rd(c0, 'B.2.1')}`);
+
+// --- and the app has to SAY it does not do any of this ---------------------
+check('MULTI_STACK declares itself unmodelled rather than implying otherwise',
+  MULTI_STACK.modelledByThisApp === false
+  && MULTI_STACK.stacksPerSideModelled === 1);
+check('the escape distance is recorded as the measured 1 km',
+  MULTI_STACK.escapeDistanceKm === 1);
+check('the convoy is named as the inheritance exception',
+  MULTI_STACK.buildingInheritanceExceptions.includes('convoy'));
+check('the readings block matches the rows on disk, so it cannot drift',
+  MULTI_STACK.readings.concentrated['B.1'] === rd(focus, 'B.1.1')
+  && MULTI_STACK.readings.fortressAt1km['B.2'] === rd(f1, 'B.2.1')
+  && MULTI_STACK.readings.convoyWithFortress['B.2'] === rd(c1, 'B.2.1'));
+check('the army-total finding is recorded where a reader will meet it',
+  MULTI_STACK.oneResultTablePerArmy === true
+  && /190/.test(PROVENANCE['MULTI_STACK.armyTable'].method)
+  && /all the stacks/i.test(PROVENANCE['MULTI_STACK.armyTable'].method),
+  PROVENANCE['MULTI_STACK.armyTable'].method);
+check('and it says plainly that no reading already on disk is invalidated',
+  /2,585/.test(PROVENANCE['MULTI_STACK.armyTable'].notEvidenceFor),
+  PROVENANCE['MULTI_STACK.armyTable'].notEvidenceFor);
+check('and the stale assertion that hid it for 2,585 readings is written down',
+  /stale/i.test(PROVENANCE['RESULTS.staleAssertion'].note));
+
+// SCOPE_LIMITS is a different list from NOT_MEASURED and the suite enforces it.
+// The temptation, every time, is to fold an unmodelled law into the gap list
+// because the gap list is already rendered. That would tell the reader nobody
+// knows, when the truth is that it is known and this page declines to compute
+// it — and the reader is the one who has to make up the difference.
+check('SCOPE_LIMITS exists and carries the multi-stack entry',
+  SCOPE_LIMITS.some((s) => s.key === 'multi_stack'), JSON.stringify(SCOPE_LIMITS.map((s) => s.key)));
+check('every scope limit says what to do instead — a limit without advice is an excuse',
+  SCOPE_LIMITS.every((s) => s.what && s.why && s.whatToDoInstead),
+  JSON.stringify(SCOPE_LIMITS.filter((s) => !s.whatToDoInstead).map((s) => s.key)));
+check('and NOT ONE of them has leaked into the "nobody has measured this" list',
+  SCOPE_LIMITS.every((s) => !NOT_MEASURED.some((g) => g.key === s.key)),
+  JSON.stringify(NOT_MEASURED.map((g) => g.key)));
+check('the multi-stack advice names the two laws a player can apply by hand',
+  /co-located|pile/i.test(SCOPE_LIMITS.find((s) => s.key === 'multi_stack').whatToDoInstead)
+  && /1 km/i.test(SCOPE_LIMITS.find((s) => s.key === 'multi_stack').whatToDoInstead));
 
 // ===========================================================================
 console.log('');

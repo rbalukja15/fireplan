@@ -1447,6 +1447,112 @@ export const MUTUAL = {
   notModelledInEngagement2: ['fortress', 'buildings', 'heroes'],
 };
 
+// ---------------------------------------------------------------------------
+// MULTI-STACK BATTLES -- more than one stack an army, which this app does not model
+// ---------------------------------------------------------------------------
+// Every reading this project took for its first 2,585 was one stack a side.
+// The form has always accepted more, and the site's help page makes three
+// claims about what happens when you use them. All three were submitted, in
+// seven requests, and all three hold. They are recorded here because a player
+// reading a one-stack answer off this app needs to know which of them the
+// number quietly assumes.
+//
+// THE HEADLINE FINDING IS ABOUT THE RECORD, NOT THE GAME. There is exactly ONE
+// <table class=resultTable> per ARMY, not one per stack -- the site says so in
+// a title attribute it has always served and nobody had read: "The total hit
+// points lost by all the stacks during the battle." With one stack an army an
+// army total and a stack total are the same number, so 2,585 readings could
+// not tell them apart, and the parser's association rule handed the army total
+// to whichever stack happened to precede it. It was right by coincidence for
+// the whole project. See test_result_table.py sections 9-11.
+//
+// 1. CO-LOCATED DEFENDERS ALL JOIN IN. One stack attacking one of two enemy
+//    stacks parked together fights both. A.1 attacks B.1 with B.2 idle
+//    alongside it: A.1's 40.0 of output is SPLIT 20.0/20.0 across both, and
+//    A.1 takes 100.0 back -- 50.00 from each, both defending at full strength.
+//    Attacking one stack of a pile is attacking the pile.
+//
+// 2. CONCENTRATED ATTACKS ARE ADDITIVE, AND THE DEFENDER WEAKENS BETWEEN THEM.
+//    A.1 and A.2 both target B.1. B.1 loses 80.0, exactly 40.0 + 40.0. But the
+//    two attackers do not take the same beating: A.1 loses 50.0 and A.2 loses
+//    40.0, because B.1 answers A.1 at full strength and answers A.2 with what
+//    is left -- 50.00 x 0.8 = 40.00 on a stack already down to 160 of 200. The
+//    defender replies to each attacker IN SEQUENCE, weakening as it goes, so
+//    the last stack to pile on pays the least. The same arithmetic predicts
+//    the four-stack baseline before it was submitted: A.1 takes 50 + 50 = 100
+//    and A.2 takes 45 + 45 = 90, against 100.0 and 90.0 printed.
+//
+// 3. A BUILDING IS INHERITED BY EVERY LAND STACK STANDING ON IT. A level-5
+//    fortress belongs to B.1; B.2 is a separate stack at 0 km with no building
+//    of its own. Both lose 4.2 where an unprotected stack loses 40.0. B.2 is
+//    getting the full 90% damage reduction off a building it does not own.
+//
+// 4. AND 1 KM IS THE ESCAPE HATCH, EXACTLY AS DOCUMENTED. Move B.2 to 1 km and
+//    it loses 38.9 while B.1 still loses 4.3. One kilometre is the whole
+//    difference between 90% protection and none. This is the mechanic the help
+//    page describes for keeping a stack out of a fortress it does not want to
+//    be in, and it is not approximate.
+//
+// 5. THE AIRCRAFT-TRANSPORT EXCEPTION IS EXACT. An Airplane Convoy at 0 km
+//    does not inherit. Without the fortress the two defenders lose 27.6 and
+//    52.4; with it, 2.9 and 52.4. The convoy's figure does not move by a
+//    hundredth. It is the same unit the roster already flags as stacking with
+//    nothing, and this is the first measurement of what that costs it.
+//
+// WHAT THIS APP DOES. It models ONE stack a side and says so in the interface.
+// Nothing above is implemented, because implementing it means asking the user
+// for a position in kilometres per stack and a target per stack, and the two
+// laws that matter most to a player -- co-located defenders join in, and the
+// defender weakens between concentrated attackers -- are both things a player
+// can apply to a one-stack answer by hand once they know them. They are here
+// to be known.
+export const MULTI_STACK = {
+  modelledByThisApp: false,
+  stacksPerSideModelled: 1,
+  oneResultTablePerArmy: true,
+  coLocatedDefendersAllFight: true,
+  attackerOutputSplitAcrossCoLocatedDefenders: true,
+  concentratedAttacksAdditive: true,
+  defenderAnswersEachAttackerInSequence: true,
+  buildingsInheritedAtZeroKm: true,
+  escapeDistanceKm: 1,
+  buildingInheritanceExceptions: ['convoy'],
+  readings: {
+    idle: { 'A.1': 100.0, 'A.2': 0.0, 'B.1': 20.0, 'B.2': 20.0 },
+    concentrated: { 'A.1': 50.0, 'A.2': 40.0, 'B.1': 80.0 },
+    baseline: { 'A.1': 100.0, 'A.2': 90.0, 'B.1': 40.0, 'B.2': 40.0 },
+    fortressAt0km: { 'B.1': 4.2, 'B.2': 4.2 },
+    fortressAt1km: { 'B.1': 4.3, 'B.2': 38.9 },
+    convoyNoFortress: { 'B.1': 27.6, 'B.2': 52.4 },
+    convoyWithFortress: { 'B.1': 2.9, 'B.2': 52.4 },
+  },
+};
+
+// ---------------------------------------------------------------------------
+// SCOPE LIMITS -- measured, understood, and deliberately NOT modelled
+// ---------------------------------------------------------------------------
+// A different list from NOT_MEASURED and it has to be. NOT_MEASURED is where
+// the record is silent; this is where the record SPEAKS and the app declines to
+// listen, because implementing it would need inputs this form does not ask for.
+// Filing these under "not measured" would be a lie in the flattering direction
+// -- it makes an unmodelled law look like an open question rather than a known
+// one the reader is now responsible for applying themselves. So each entry says
+// what the player should do about it instead.
+export const SCOPE_LIMITS = [
+  {
+    key: 'multi_stack',
+    what: 'One stack a side. A real battle can have several stacks in each army, and this page models exactly one.',
+    why: 'The laws are measured and they are in MULTI_STACK: co-located defenders all join in and split the attacker\u2019s output between them; concentrated attacks add up, with the defender answering each attacker in turn and weakening as it goes; a building at 0 km is inherited by every land stack standing on it, an Airplane Convoy excepted; and moving a stack 1 km away takes it out of the building entirely. Modelling them means asking for a position in kilometres and a target for every stack, which is a different form from this one.',
+    whatToDoInstead: 'Attacking a pile: add the defenders\u2019 stacks together to see what comes back at you, since all of them answer. Piling on: the figures add, and each attacker after the first takes less return fire in proportion to how much of the defender\u2019s pool is already gone. Defending near a fortress you do not want: 1 km is enough to leave it.',
+  },
+  {
+    key: 'mutual_second_engagement_extras',
+    what: 'In a mutual attack, the second engagement is fought without the fortress, buildings or hero effects that the first engagement applies.',
+    why: 'The two-engagement law itself was predicted in advance and confirmed on sixteen cells, but every one of those cells was bare stacks. What a fortress does to the return engagement has not been measured, and guessing it would put an unmeasured number inside a measured law.',
+    whatToDoInstead: 'Read a mutual result with a fortress or a hero on the board as a LOWER bound on the defended side\u2019s advantage, not as a figure.',
+  },
+];
+
 export const NOT_MEASURED = [
     { key: 'bombardment_melee_split', what: 'How a HERO\u2019s bombardment ability divides its total when the attacker is standing ON its target, at 0 km.', why: 'Everything else about the ability is measured hard. Its total is 5 x level for T\u014dg\u014d and a three-level staircase for Lucien, read at a distance where the target is alone in the blast; it lasts 6 rounds and 9 rounds respectively; its radius is centred on the target, 40 km for T\u014dg\u014d and 20/30/40/50 km by level for Lucien; and from 10 km out to the radius it is divided by HP POOL SHARE, which reproduces every reading exactly \u2014 41.39 predicted against 41.39 printed, and a friendly stack 20 km away losing 12.40 against a predicted 12.50. At 0 km it is NOT pool share. A hundred submarines attacking fifty give the defender 0.2918 of the total where pool share says 0.3325, and a battleship stack against light cruisers goes the other way. Post-round pools, an attenuation term and a power law were each tried against both cells and each fits one and misses the other.', closedBy: 'a melee cell where the attacker cannot be hit back, which would separate "the split changed" from "the attacker\u2019s output attenuated". Nothing on the form provides one \u2014 melee is exactly where return fire exists \u2014 so the likelier route is a third stack: put a friendly stack of known pool inside the blast at 0 km and read its share directly, the way the friendly-fire cell did at 10 km.' },
 
@@ -1463,6 +1569,28 @@ export const NOT_MEASURED = [
 // measured, how well, and what it is NOT evidence for.
 
 export const PROVENANCE = {
+  'MULTI_STACK.laws': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiments=multi_stack (5), multi_stack_idle (1), multi_stack_focus (1) \u2014 seven requests, all ten-infantry stacks so every figure is a clean multiple of a known one.',
+    method: 'Each of the help page\u2019s three multi-stack claims was turned into a pair of configurations differing in ONE thing, and the prediction was written down first. Co-location: A.1 attacks B.1 with B.2 idle beside it \u2014 A.1\u2019s 40.0 comes back as 20.0/20.0 and A.1 takes 50.00 + 50.00. Concentration: A.1 and A.2 both on B.1 \u2014 80.0 taken, 50.0 and 40.0 dealt back, the second attacker paying 0.8 of the first because the defender has lost a fifth of its pool answering the first. Inheritance: the same level-5 fortress with B.2 at 0 km and at 1 km \u2014 4.2/4.2 against 4.3/38.9.',
+    tolerance: 'Exact to the printed decimal on the two laws with independent arithmetic. A.1 takes 100.0 against a predicted 50 + 50; A.2 takes 90.0 against a predicted 45 + 45; B.1 loses 80.0 against a predicted 40 + 40. The convoy exception is exact in the strongest available sense \u2014 adding the fortress moves B.1 from 27.6 to 2.9 and moves the convoy from 52.4 to 52.4.',
+    notEvidenceFor: 'Any of it at three or more stacks, at distances other than 0 and 1 km, or with the two co-located defenders differing in unit type from each other \u2014 the split across co-located defenders was read on identical stacks, where an even 20.0/20.0 cannot distinguish \u201chalf each\u201d from \u201cby pool share\u201d from \u201cby target factor\u201d. The convoy run is the one cell with unlike defenders and it splits 27.6/52.4, which is not even; that is a real observation and it is not enough to fix a rule.',
+  },
+  'MULTI_STACK.armyTable': {
+    confidence: 'measured',
+    source: 'multi_stack_response.html \u2014 a captured two-stack-a-side response, committed as an offline fixture.',
+    method: 'Document order is A.1, A.2, TABLE, B.1, B.2, TABLE. The table after A.2 reads 190.0, which is A.1\u2019s 100.0 plus A.2\u2019s 90.0, not A.2\u2019s 90.0. Its \u201cHP final\u201d column reads 210.0 and 210 + 190 = 400, the two stacks\u2019 pools together. The site had also been saying it in a tooltip since the first request: \u201cThe total hit points lost by all the stacks during the battle.\u201d',
+    tolerance: 'Exact, and now asserted offline against the fixture rather than inferred.',
+    notEvidenceFor: 'Any reading already on disk being wrong. Every one of the 2,585 single-stack readings had exactly one stack an army, so its army total IS its stack total; the parser keeps the stack-keyed alias for that case precisely so nothing already recorded has to be re-read.',
+  },
+  'RESULTS.staleAssertion': {
+    confidence: 'measured',
+    note: 'test_result_table.py asserted \u201cone summary per stack\u201d for 2,585 readings and it passed every time. It was wrong from the first line: the table is an ARMY total and every army had one stack. This is the same failure the file was written to catch, one level up \u2014 a hand-written claim about what is known goes stale in exactly the way a hand-written constant does, and passes right up until the day the data varies the axis it was never tested on. The assertion was not deleted; its label changed with it, so the diff shows a claim being overturned rather than a list being widened.',
+  },
+  'RESULTS.headerSpelling': {
+    confidence: 'measured',
+    note: 'The site changed its own summary header mid-project: fortress_result.html carries \u201c% lost\u201d and the later multi_stack_response.html carries \u201c%lost\u201d, with a new \u201cHP final\u201d column added in between. A literal header match filed one quantity under two keys \u2014 pct_lost on 128 stored rows, lost on 284 \u2014 and \u201clost\u201d is already the span reading\u2019s name for HP, so a percentage and a hit-point count were one key collision apart. Nothing downstream had read the column yet, so nothing on disk is wrong. The lookup now ignores internal whitespace; rows already captured keep the key they were captured with and summary_pct_lost() reads either, because a measurement archive that gets edited after the fact stops being evidence. The provision that saved the new column was the slugify-don\u2019t-drop rule for unknown headers, written two thousand readings before there was a column to save.',
+  },
   'ALLOCATION.survivors': {
     confidence: 'measured',
     source: 'results.jsonl, experiment=update_counts_army \u2014 the site\u2019s own post-round counts, read back through updateCounts.',

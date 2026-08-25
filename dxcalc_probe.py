@@ -530,13 +530,29 @@ class StackSummaryScraper(HTMLParser):
     """
 
     # Header text -> key. Unknown headers are slugified rather than dropped, so
-    # a column dxter adds later shows up as data instead of vanishing.
-    COLUMNS = {"hp lost": "hp_lost", "% lost": "pct_lost"}
+    # a column dxter adds later shows up as data instead of vanishing. That
+    # provision earned itself: the site later added an "HP final" column, and
+    # it arrived as data instead of being silently discarded.
+    #
+    # The lookup IGNORES INTERNAL WHITESPACE, and it has to. The same column is
+    # served as "% lost" in fortress_result.html and as "%lost" in
+    # multi_stack_response.html, so a literal match slugified the two spellings
+    # to DIFFERENT keys -- "pct_lost" on 128 stored rows and "lost" on 284.
+    # Worse, that second key collides with the span reading's "lost", which is
+    # HP, not a percentage. Nothing downstream had read it yet, so nothing was
+    # wrong in results.jsonl beyond a name; but a percentage filed under "lost"
+    # beside HP filed under "lost" is precisely the sort of thing that is
+    # noticed six months later by the wrong number in a graph. Both spellings
+    # now land on pct_lost. Rows already on disk are left exactly as captured
+    # -- see summary_pct_lost() for reading either.
+    COLUMNS = {"hplost": "hp_lost", "%lost": "pct_lost", "hpfinal": "hp_final"}
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.summaries: dict[str, dict[str, float]] = {}
         self.extra_rows: dict[str, list[list[str]]] = {}
+        # army letter -> the stack ids seen under it, in document order
+        self._stacks_seen: dict[str, list[str]] = {}
         self._stack: str | None = None
         self._in_table = False
         self._rows: list[list[str]] = []
@@ -547,6 +563,8 @@ class StackSummaryScraper(HTMLParser):
         a = {k: (v or "") for k, v in attrs}
         if STACK_ID_RE.match(a.get("id", "")):
             self._stack = a.get("id", "")
+            self._stacks_seen.setdefault(self._stack.split(".")[0],
+                                         []).append(self._stack)
         if tag == "table" and "resultTable" in a.get("class", "").split():
             self._in_table = True
             self._rows = []
@@ -576,8 +594,9 @@ class StackSummaryScraper(HTMLParser):
     @classmethod
     def _key(cls, header: str) -> str:
         h = header.strip().lower()
-        if h in cls.COLUMNS:
-            return cls.COLUMNS[h]
+        squashed = re.sub(r"\s+", "", h)
+        if squashed in cls.COLUMNS:
+            return cls.COLUMNS[squashed]
         return re.sub(r"[^a-z0-9]+", "_", h).strip("_") or "col"
 
     @staticmethod
@@ -602,7 +621,24 @@ class StackSummaryScraper(HTMLParser):
             if val is not None:
                 row[self._key(name)] = val
         if row:
-            self.summaries[self._stack] = row
+            # THE TABLE IS AN ARMY TOTAL, not a stack total. There is exactly
+            # ONE per army, after all of that army's stacks -- and with one
+            # stack per army, which is every reading this project took for its
+            # first 2,585, "the army total" and "this stack's total" are the
+            # same number. Field two stacks and they are not: the table that
+            # follows A.2 carries A.1 + A.2, and the nearest-preceding-stack
+            # rule hands it to A.2 alone.
+            #
+            # Nothing here silently changed key. The army total is stored under
+            # its ARMY, and ALSO under the stack when that army has exactly one
+            # -- where it is literally true -- so every existing reader and
+            # every row already in results.jsonl keeps working.
+            army = self._stack.split(".")[0]
+            self.summaries[army] = row
+            if len(self._stacks_seen.get(army, ())) == 1:
+                self.summaries[self._stack] = row
+            else:
+                self.summaries.pop(f"{army}.1", None)
         # More than one data row would mean the table carries a per-round or
         # per-unit breakdown, which would be worth having. Say so loudly rather
         # than silently keeping the first line.
@@ -619,15 +655,41 @@ def stack_of(slot: str) -> str | None:
     return m.group(1) if m else None
 
 
+ARMY_ID_RE = re.compile(r"^[AB]$")
+
+
+def army_of(key: str) -> str:
+    """'A.1.1' -> 'A', 'B.2' -> 'B', 'A' -> 'A'."""
+    return key.split(".")[0]
+
+
+def summary_pct_lost(row: dict[str, float]) -> float | None:
+    """The '% lost' column under either spelling the site has served.
+
+    Rows captured before the header lost its space are filed under 'lost';
+    rows captured after are filed under 'pct_lost'. Neither file is rewritten
+    -- results.jsonl records what the parser saw at capture time, and editing
+    it after the fact is how a measurement archive stops being evidence. Read
+    through this instead of reaching for either key directly.
+    """
+    if "pct_lost" in row:
+        return row["pct_lost"]
+    return row.get("lost")
+
+
 def refine_details(details: dict[str, dict[str, float]],
                    summaries: dict[str, dict[str, float]],
                    quiet: bool = False) -> dict[str, dict[str, float]]:
     """Upgrade span readings with the summary table's extra digit, where safe.
 
-    The table gives a stack TOTAL over its unit rows; the spans give the split.
-    So the table can only replace a span when the stack has exactly one unit
+    The table gives an ARMY TOTAL over its unit rows; the spans give the split.
+    So the table can only replace a span when the army has exactly one unit
     row with a reading — which is every experiment here, because duel() blanks
-    rows 2-15 precisely so a single reading means a single unit type.
+    rows 2-15 precisely so a single reading means a single unit type, and until
+    exp_multi_stack every army fielded exactly one stack. Field two and the
+    total is real but no longer divisible, so the spans are left alone: the
+    cross-check below still runs, and still proves the association, but there
+    is nothing to substitute.
 
     Before substituting anything, the sum of that stack's unit spans is checked
     against the table. Agreement to within span rounding is the evidence that
@@ -641,10 +703,22 @@ def refine_details(details: dict[str, dict[str, float]],
     response proves the table leaves them out.
     """
     out = {slot: dict(d) for slot, d in details.items()}
+    seen: set[str] = set()
     for stack, summary in summaries.items():
         total = summary.get("hp_lost")
         if total is None:
             continue
+        # A key may be an ARMY ('A') or a stack ('A.1'). The table is an army
+        # total either way; the stack form is only an alias, kept for armies
+        # that field exactly one stack. Handle both, and do not process the
+        # same army twice when both keys are present -- the substitution is
+        # idempotent, but the warning it prints on a mismatch is not, and a
+        # doubled warning reads like two independent failures.
+        army = army_of(stack)
+        if army in seen:
+            continue
+        seen.add(army)
+        is_army_key = ARMY_ID_RE.match(stack) is not None
         # Building rows carry delta notation and ARE excluded -- the fortress
         # response proves the table leaves them out. A HERO row is the
         # opposite, and it was guessed wrong before it was measured: the hero
@@ -653,7 +727,8 @@ def refine_details(details: dict[str, dict[str, float]],
         # (77.90 units + 2.10 hero = 80.00 table, on all sixteen). So a hero
         # belongs to its stack in a way a building does not.
         units = [s for s, d in details.items()
-                 if stack_of(s) == stack and not d.get("delta") and "lost" in d]
+                 if (army_of(s) == army if is_army_key else stack_of(s) == stack)
+                 and not d.get("delta") and "lost" in d]
         if not units:
             continue
         span_sum = sum(details[s]["lost"] for s in units)
@@ -10447,6 +10522,156 @@ def exp_update_counts(p: Probe) -> None:
               f"{g('B.1.hero.hp'):>9}{g('B.1.bldg.1.hp'):>9}")
 
 
+def stack_fields(stack: int) -> tuple[str, ...]:
+    """Every field duel() SETS for one pair, so submit() can synthesise them.
+
+    Blanking a field the form does not have is harmless -- submit() drops it --
+    but SETTING one silently does nothing, which is how the fortress sweep lost
+    six requests a run. Second-stack fields do not exist until the page's own
+    JS clones them, so they all have to be named.
+    """
+    out: list[str] = []
+    for side in ("A", "B"):
+        out += [f"{side}.{stack}.target", f"{side}.{stack}.terrain",
+                f"{side}.{stack}.position", f"{side}.{stack}.trench",
+                f"{side}.{stack}.1.unit", f"{side}.{stack}.1.count",
+                f"{side}.{stack}.1.hp"]
+    return tuple(out)
+
+
+def exp_multi_stack(p: Probe) -> None:
+    """Two stacks a side -- 2 readings out of 2,585, and three documented laws.
+
+    bytro.js allows a hundred stacks per army and this rig has sent two, once,
+    for the bombardment friendly-fire cell. Everything else in the record is one
+    stack against one stack, which is not how anybody actually fights.
+
+    The help page documents three things about it and leaves a fourth blank:
+
+        "Only a single stack at a given position should be assigned the
+         buildings. All other land stacks at the same position as the stack
+         assigned buildings (except aircraft transport) will inherit the same
+         set of buildings ... If there is a stack at or near the same position
+         that shouldn't receive the fortification bonus ... you can give it
+         ... position 1, 2, or 3 km. That way they will still be within melee
+         range for the battle, but won't recieve the fort protection."
+
+    So: INHERITANCE by position, an EXCLUSION for aircraft transports, and an
+    escape hatch at 1-3 km. The fourth section is headed "Auto-targeting
+    behavior" and has no text under it at all -- the author meant to write it
+    and did not -- so what a stack does when nothing is aimed at it is
+    undocumented as well as unmeasured.
+
+    THE MEASUREMENT IS A DIFFERENCE, not a reading. A fortress cuts incoming
+    damage, so "did stack two inherit it?" is answered by running the same
+    battle with and without the fortress and seeing whether B.2's losses move.
+    Both pairs are melee infantry at the same position, isolated by target.
+    """
+    FORT = ("B.1.bldg.1.abb", "B.1.bldg.1.lvl", "B.1.bldg.1.hp")
+    CREATE = stack_fields(2) + FORT
+
+    def run(tag: str, *, fortress: bool, b2_pos: int = 0,
+            b2_unit: str = "inf") -> dict:
+        ov = settings(1)
+        ov.update(duel(1, "inf", 10, "inf", 10))
+        ov.update(duel(2, "inf", 10, b2_unit, 10))
+        ov["B.2.position"] = str(b2_pos)
+        if fortress:
+            ov.update({FORT[0]: "fortress", FORT[1]: "5", FORT[2]: "100%"})
+        try:
+            p.submit(ov, create=CREATE)
+        except (BareFormReturned, ValueError) as e:
+            print(f"    {tag}: {e}"[:96])
+            return {}
+        d = dict(p.last_details)
+        record("multi_stack", {"tag": tag, "fortress": fortress,
+                               "b2_pos": b2_pos, "b2_unit": b2_unit,
+                               "detail": d, "summary": dict(p.last_summary)},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        return d
+
+    print("\n  1. does a second stack inherit the first stack's fortress?\n")
+    print("     Two pairs of 10 infantry, both at 0 km, isolated by target.")
+    print("     The fortress sits on B.1 only. If B.2's losses fall when it is")
+    print("     added, B.2 inherited it.\n")
+    print(f"  {'configuration':38}{'B.1 lost':>10}{'B.2 lost':>10}   verdict")
+    base = run("no fortress", fortress=False)
+    b1_0 = (base.get("B.1.1") or {}).get("lost")
+    b2_0 = (base.get("B.2.1") or {}).get("lost")
+    f = lambda v: "-" if v is None else f"{v:.2f}"
+    print(f"  {'no fortress at all':38}{f(b1_0):>10}{f(b2_0):>10}   baseline")
+
+    for tag, kw, expect in (
+            ("fortress on B.1, B.2 at 0 km", dict(fortress=True), "inherits"),
+            ("fortress on B.1, B.2 at 1 km", dict(fortress=True, b2_pos=1),
+             "the page's escape hatch")):
+        d = run(tag, **kw)
+        b1 = (d.get("B.1.1") or {}).get("lost")
+        b2 = (d.get("B.2.1") or {}).get("lost")
+        note = ""
+        if b2 is not None and b2_0 is not None:
+            note = ("PROTECTED — it inherited the fortress"
+                    if b2 < b2_0 - 0.05 else "NOT protected")
+        print(f"  {tag:38}{f(b1):>10}{f(b2):>10}   {note}")
+
+    print("\n  2. the exception: an aircraft transport at the same position\n")
+    print(f"  {'configuration':38}{'B.2 lost':>10}   verdict")
+    conv_base = run("convoy, no fortress", fortress=False, b2_unit="convoy")
+    cb = (conv_base.get("B.2.1") or {}).get("lost")
+    print(f"  {'convoy at 0 km, no fortress':38}{f(cb):>10}   baseline")
+    conv_fort = run("convoy, fortress", fortress=True, b2_unit="convoy")
+    cf = (conv_fort.get("B.2.1") or {}).get("lost")
+    note = ""
+    if cf is not None and cb is not None:
+        note = ("PROTECTED — the page's exception does not hold"
+                if cf < cb - 0.05 else "NOT protected — the exception holds")
+    print(f"  {'convoy at 0 km, fortress on B.1':38}{f(cf):>10}   {note}")
+
+    print("\n  3. the blank section: what happens to a stack nobody targets?\n")
+    ov = settings(1)
+    ov.update(duel(1, "inf", 10, "inf", 10))
+    ov.update(duel(2, "inf", 10, "inf", 10))
+    ov["A.2.target"] = "0"          # A.2 attacks nobody
+    ov["B.2.target"] = "0"          # and nobody attacks B.2
+    try:
+        p.submit(ov, create=CREATE)
+        d = dict(p.last_details)
+        record("multi_stack_idle", {"tag": "A.2 and B.2 both defending",
+                                    "detail": d,
+                                    "summary": dict(p.last_summary)},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        print("     A.1 attacks B.1; A.2 and B.2 are both set to Defend.\n")
+        for slot in sorted(d):
+            v = d[slot] or {}
+            print(f"     {slot:10} lost {str(v.get('lost')):>8}  ({v.get('pct')}%)")
+    except (BareFormReturned, ValueError) as e:
+        print(f"     refused: {e}"[:96])
+
+    print("\n  4. two stacks concentrating on one defender\n")
+    ov = settings(1)
+    ov.update(duel(1, "inf", 10, "inf", 10))
+    ov.update(duel(2, "inf", 10, "inf", 10))
+    ov["A.2.target"] = "B.1"        # both attack the SAME stack
+    ov["B.2.1.count"] = ""          # and B.2 is not fielded at all
+    ov["B.2.1.hp"] = ""
+    try:
+        p.submit(ov, create=CREATE)
+        d = dict(p.last_details)
+        record("multi_stack_focus", {"tag": "A.1 and A.2 both target B.1",
+                                     "detail": d,
+                                     "summary": dict(p.last_summary)},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        print("     A.1 and A.2 both target B.1. One defender, two attackers.\n")
+        for slot in sorted(d):
+            v = d[slot] or {}
+            print(f"     {slot:10} lost {str(v.get('lost')):>8}  ({v.get('pct')}%)")
+        print("\n     A single 10-inf attacker takes 50.00 from a 10-inf "
+              "defender.\n     Does the defender answer each attacker in full, "
+              "or split its fire?")
+    except (BareFormReturned, ValueError) as e:
+        print(f"     refused: {e}"[:96])
+
+
 EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "unit_stats": exp_unit_stats,
     "repair_cost": exp_repair_cost,
@@ -10465,6 +10690,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "real_army": exp_real_army,
     "fortress_hp_scale": exp_fortress_hp_scale,
     "update_counts": exp_update_counts,
+    "multi_stack": exp_multi_stack,
     "range_roster": exp_range_roster,
     "return_fire": exp_return_fire,
     "mixed_range": exp_mixed_range,

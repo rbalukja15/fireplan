@@ -290,9 +290,26 @@
   <section class="limits" aria-labelledby="limits-h">
     <h2 id="limits-h">What this model does not know</h2>
     <p class="limits-lede">
-      True of every result on this page, whatever the banner above says. These are gaps in
-      the measurement record, not in the arithmetic.
+      True of every result on this page, whatever the banner above says. Two different
+      things, kept apart on purpose: the first list is measured and simply not computed
+      here, so the answer exists and you have to apply it yourself. The second is where
+      nobody has an answer yet. Neither is a gap in the arithmetic.
     </p>
+
+    <!-- TWO LISTS, AND THEY ARE NOT THE SAME LIST.
+
+         Below this one is NOT_MEASURED: things nobody has measured. This one is
+         SCOPE_LIMITS: things that HAVE been measured, are written down in
+         data.js, and that this page still does not compute. Multi-stack is the
+         whole reason the distinction exists — the laws are known to the printed
+         decimal, and folding them into "what this model does not know" would
+         quietly downgrade a fact the reader is now responsible for applying by
+         hand into an open question they can shrug at. Each entry therefore ends
+         with what to do about it instead. -->
+    <h3 class="limits-sub" id="scope-h">What it does not do, though the answer is known</h3>
+    <ul class="limits-list" id="scope-list"></ul>
+
+    <h3 class="limits-sub" id="gaps-h">What nobody has measured</h3>
     <!-- RENDERED FROM data.js NOT_MEASURED, never hand-written.
 
          This list used to be prose in the HTML, and it went stale in the worst

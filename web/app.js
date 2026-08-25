@@ -2411,6 +2411,12 @@ function provSummary(provenance) {
    NOT_MEASURED is the one list. Each entry carries what is missing, why it is
    missing, and what would close it, so all three go on the page: "closedBy" is
    the part that makes a gap a piece of work rather than a shrug. */
+/** Finish a sentence without doubling a full stop it already has. */
+function endStop(text) {
+  const t = String(text).trim();
+  return /[.!?]$/.test(t) ? t : `${t}.`;
+}
+
 function buildLimits() {
   const ul = $('limits-list');
   if (!ul) return;
@@ -2434,9 +2440,48 @@ function buildLimits() {
     li.appendChild(document.createTextNode(String(g.why || '')));
     if (g.closedBy) {
       const span = el('span', 'limits-closedby');
-      span.textContent = ` What would close it: ${g.closedBy}.`;
+      // These strings are written as prose in data.js and some already end in a
+      // full stop. Appending one unconditionally printed "at 10 km.." on the
+      // page for as long as that entry has existed.
+      span.textContent = ` What would close it: ${endStop(g.closedBy)}`;
       li.appendChild(span);
     }
+    ul.appendChild(li);
+  }
+}
+
+/* SCOPE_LIMITS -- measured, and still not computed here.
+
+   Deliberately a separate renderer from buildLimits() rather than a flag on
+   the same list. The two say opposite things about whose problem the gap is:
+   an unmeasured law is nobody's answer yet, and an unmodelled one is an answer
+   the reader now has to apply by hand. That is why every entry ends with
+   whatToDoInstead, and why an entry missing it is rendered as a fault rather
+   than skipped -- a scope limit with no advice attached is just an excuse. */
+function buildScopeLimits() {
+  const ul = $('scope-list');
+  if (!ul) return;
+  ul.textContent = '';
+  const limits = (DATA && Array.isArray(DATA.SCOPE_LIMITS)) ? DATA.SCOPE_LIMITS : [];
+  if (!limits.length) {
+    const li = el('li', 'tag-none');
+    li.textContent = 'The scope list could not be read from data.js. That is a '
+      + 'fault in this page: this model does not compute multi-stack battles, '
+      + 'and if that sentence is the only place it says so, say it louder.';
+    ul.appendChild(li);
+    return;
+  }
+  for (const s of limits) {
+    const li = el('li');
+    li.appendChild(el('strong', null, String(s.what || s.key || 'unnamed limit')));
+    li.appendChild(document.createTextNode(' '));
+    li.appendChild(document.createTextNode(String(s.why || '')));
+    const span = el('span', 'limits-closedby');
+    span.textContent = s.whatToDoInstead
+      ? ` What to do instead: ${endStop(s.whatToDoInstead)}`
+      : ' No advice is recorded for working around this, which is a gap in this'
+        + ' page rather than in the measurements.';
+    li.appendChild(span);
     ul.appendChild(li);
   }
 }
@@ -2475,6 +2520,7 @@ function buildRoster() {
   }
 
   buildLedger();
+  buildScopeLimits();
   buildLimits();
 }
 
