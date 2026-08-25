@@ -94,21 +94,32 @@ export function hpMultiplier(f) {
 
 /**
  * Fortress damage reduction from the fortress's CURRENT HP, 0..1.
- * DR = 0.15 * (fortressHP / 50 + 1). MEASURED at levels 1-5 (see
- * PROVENANCE['FORTRESS.dr']).
  *
- * Two deliberate choices at the edges, both unmeasured and both flagged by
- * simulate() when they bind:
- *   - No fortress, or a destroyed one, returns 0. The formula's "+1" would
- *     say 0.15 at zero HP; nobody has measured a destroyed fortress.
- *   - The result is clamped to 1. At level 6 the raw formula returns 1.05,
- *     so it must saturate or the level-5 cap is real; unmeasured either way.
+ * TWO SEGMENTS, meeting exactly at 50 HP and 30%:
+ *   hp <  10   0            the fortress confers nothing
+ *   hp <= 50   0.05 + 0.005 x hp
+ *   hp >  50   0.15 + 0.003 x hp, capped at 0.90
+ *
+ * This used to be the second line alone, which is right for every FULL
+ * fortress -- 0.30/0.45/0.60/0.75/0.90 at levels 1-5 -- and wrong by up to
+ * eight points for any fortress that has been battered below 50. Since every
+ * fortress this project submitted was full, the low segment only ever appeared
+ * in the closing rounds of a long battle, and it was chased for two sweeps as
+ * a "late-round output drift" in the ATTACKER before anyone read the column
+ * the site had been printing all along. See PROVENANCE['FORTRESS.dr.lowSegment'].
+ *
+ * The 0.90 cap is the site's, read at 250.4 and 251.3 HP where the old formula
+ * would give 90.1 and 90.4. A destroyed fortress still returns 0 rather than
+ * the formula's floor.
  */
 export function fortressDR(fortressHP) {
   const hp = Number(fortressHP);
   if (!Number.isFinite(hp) || hp <= 0) return 0;
-  const dr = FORTRESS.drSlopePer50HP * (hp / FORTRESS.hpPerLevel + 1);
-  return Math.min(1, Math.max(0, dr));
+  if (hp < FORTRESS.inertBelowHP) return 0;
+  const dr = hp <= FORTRESS.lowSegmentBelowHP
+    ? FORTRESS.lowIntercept + FORTRESS.lowSlopePerHP * hp
+    : FORTRESS.drSlopePer50HP * (hp / FORTRESS.hpPerLevel + 1);
+  return Math.min(FORTRESS.maxDR, Math.max(0, dr));
 }
 
 /**
@@ -1903,7 +1914,10 @@ function runSimulation(config, derivation, caveats) {
     // 2. Attacker takes it. No fortress on the attacking side does anything
     //    in this model, because nobody has measured one.
     const selfBomb = bomb ? bomb.toAtk : 0;
-    let atkLostThis = Math.min(defOutput + selfBomb, atk.pool);
+    // Uncapped here for the same reason: allocate() caps each row against what
+    // it has left and drops the surplus, so the side total falls out of the
+    // split rather than being imposed on it.
+    let atkLostThis = defOutput + selfBomb;
     // Deaths come from the per-row split, because a mixture's rows have
     // different per-unit HP and a stack-level division would be meaningless.
     const atkAlloc = allocate(atk, atkLostThis);
@@ -1935,17 +1949,17 @@ function runSimulation(config, derivation, caveats) {
         });
       }
     }
-    if (atkLostThis < defOutput - EPS) {
+    if (atkLostThis < defOutput + selfBomb - EPS) {
       derivation.push({
-        label: `${tag}Attacker loss capped by pool`,
-        formula: `incoming ${round4(defOutput)} exceeds the remaining pool ${round4(atk.pool)}; the `
+        label: `${tag}Attacker loss capped by its rows`,
+        formula: `incoming ${round4(defOutput + selfBomb)} exceeds what the rows can absorb; the `
           + 'stack is wiped. A wiped land stack still deals its full damage (measured).',
         value: atkLostThis,
       });
     }
     derivation.push({
       label: `${tag}Attacker HP lost`,
-      formula: `min(defender output ${round4(defOutput)}, pool ${round4(atk.pool)}) = ${round4(atkLostThis)}`,
+      formula: `defender output ${round4(defOutput)} split across the rows and capped in each = ${round4(atkLostThis)}`,
       value: atkLostThis,
     });
     derivation.push({
@@ -2130,13 +2144,21 @@ function runSimulation(config, derivation, caveats) {
     if (atkOutput !== null) {
       // The ability is additive and is NOT reduced by fortress DR here -- see
       // the caveat pushed above; building damage is the measured precedent.
+      // THE FULL SWING GOES TO THE SPLIT, and the caps happen per ROW inside
+      // it. This used to cap the total at the side's remaining pool FIRST,
+      // which quietly shrank every row's share including the hero's: with 10.5
+      // HP of units and a hero on 42.4, a 74.2 swing was cut to 52.9 before
+      // being divided, so the hero took 15.1 where the site takes 21.2. The
+      // side-level cap is redundant once each row is capped against what it
+      // has left -- the sum of the shares cannot exceed the pool by
+      // construction -- and it was doing damage on its way to being redundant.
       const delivered = atkOutput * (1 - dr) + (bomb ? bomb.toDef : 0);
-      defLostThis = Math.min(delivered, def.pool);
+      defLostThis = delivered;
       derivation.push({
         label: `${tag}Defender HP lost`,
         formula: dr > 0
-          ? `min(${round4(atkOutput)} x (1 - ${round4(dr)}) = ${round4(delivered)}, pool ${round4(def.pool)}) = ${round4(defLostThis)}`
-          : `min(attacker output ${round4(atkOutput)}, pool ${round4(def.pool)}) = ${round4(defLostThis)}`,
+          ? `${round4(atkOutput)} x (1 - ${round4(dr)}) = ${round4(delivered)}, split across the rows and capped in each`
+          : `attacker output ${round4(atkOutput)}, split across the rows and capped in each`,
         value: defLostThis,
       });
       atk.damageDealt += delivered;

@@ -406,12 +406,44 @@ export const BUILDINGS = {
 // ---------------------------------------------------------------------------
 // FORTRESS
 // ---------------------------------------------------------------------------
+// THE CURVE HAS TWO SEGMENTS, and for most of this project it had one.
+//
+//   hp <  10   DR = 0            the fortress confers NOTHING
+//   hp <= 50   DR = 0.05 + 0.005 x hp
+//   hp >  50   DR = 0.15 + 0.003 x hp,  capped at 0.90
+//
+// The two lines meet exactly at 50 HP and 30%, so the join is invisible from
+// above and the old single formula was right for every full fortress at every
+// level: 0.30, 0.45, 0.60, 0.75, 0.90 at levels 1-5. It is wrong for anything
+// under 50, by up to eight points.
+//
+// A pool below 50 only happens to a fortress that is being ground down, and
+// every fortress this project ever SUBMITTED was full. So the second segment
+// showed up nowhere except in the last rounds of a long battle -- which is
+// precisely where the engine's numbers went wrong, and it was chased for two
+// sweeps as a mysterious "late-round output drift" in the attacker.
+//
+// The site had been printing the answer on every fortress row since the first
+// request. dr_before and dr_after were parsed, recorded and never read: 73
+// distinct (HP, DR) pairs were on disk before a single request was spent on
+// this, and they fit the segment above 50 for all 58 points and refuse the
+// other 13. The twelve requests that followed were only to pin the floor.
 export const FORTRESS = {
-  drSlopePer50HP: 0.15,   // DR = 0.15 * (fortressHP / 50 + 1)
+  drSlopePer50HP: 0.15,   // DR = 0.15 * (fortressHP / 50 + 1), hp >= 50 only
   drOffset: 0.15,         // the "+1" term: any fortress at all costs 15%
   hpPerLevel: 50,
   maxMeasuredLevel: 5,
-  provenance: { dr: 'FORTRESS.dr', hp: 'BUILDINGS.fortressHP' },
+  // The low segment, measured directly off the site's own DR column.
+  lowSegmentBelowHP: 50,
+  lowIntercept: 0.05,
+  lowSlopePerHP: 0.005,
+  // Below this the row carries no "DR:" clause at all -- the same signature a
+  // building that confers nothing gives. 9.5 HP prints none, 10 prints 10.0%,
+  // so the cut is at 10 and the drop is a step, not a taper.
+  inertBelowHP: 10,
+  maxDR: 0.90,
+  provenance: { dr: 'FORTRESS.dr', lowSegment: 'FORTRESS.dr.lowSegment',
+    hp: 'BUILDINGS.fortressHP' },
 };
 
 // ---------------------------------------------------------------------------
@@ -1554,7 +1586,6 @@ export const SCOPE_LIMITS = [
 ];
 
 export const NOT_MEASURED = [
-    { key: 'late_round_output', what: 'Why a worn-down attacker\u2019s output runs low here from round seven, and when.', why: 'exp_fort_drift read the site\u2019s own per-round form back for nine rounds of a real battle \u2014 three attacker rows\u2019 survivors and remaining HP, the defender\u2019s, its hero\u2019s and its fortress\u2019s. Rounds one to six agree in EVERY quantity, to the one decimal the form prints. From round seven the damage this engine deals is short by 2.2%, then 5.6%, then 8.3%, on inputs that still match the site exactly at the start of each of those rounds \u2014 same survivors, same HP, same fortress, so the same damage reduction. It is therefore in the output term itself and not in the state feeding it. Fortress DR timing was checked against the numbers and ruled out: taking the DR from the fortress\u2019s end-of-round HP predicts 5.6% at round seven where 2.2% is observed, and mid-round predicts 2.8%; neither tracks the growth. The residual is what keeps the fought-out attacker totals inside 1.5% rather than 0.5%. AND IT IS NOT KEYED ON THE ROUND NUMBER. Behind a level-3 fortress the same army shows it by round five \u2014 660.07 printed against 651.95 here \u2014 where behind a level-4 one round five is exact. The weaker building lets the defender wear the attacker down faster, so whatever the trigger is, it is a state the attacker reaches and not a round it survives to.', closedBy: 'a deep single-type ladder with no fortress and no hero \u2014 one unit against one unit, updateCounts on, ten or twelve rounds. Every law that could be implicated here is stacked on top of the others in this battle; a bare pair separates the output term from the mixture, the building and the hero at once, and the readback makes each round checkable rather than only the total.' },
     { key: 'bombardment_melee_split', what: 'How a HERO\u2019s bombardment ability divides its total when the attacker is standing ON its target, at 0 km.', why: 'Everything else about the ability is measured hard. Its total is 5 x level for T\u014dg\u014d and a three-level staircase for Lucien, read at a distance where the target is alone in the blast; it lasts 6 rounds and 9 rounds respectively; its radius is centred on the target, 40 km for T\u014dg\u014d and 20/30/40/50 km by level for Lucien; and from 10 km out to the radius it is divided by HP POOL SHARE, which reproduces every reading exactly \u2014 41.39 predicted against 41.39 printed, and a friendly stack 20 km away losing 12.40 against a predicted 12.50. At 0 km it is NOT pool share. A hundred submarines attacking fifty give the defender 0.2918 of the total where pool share says 0.3325, and a battleship stack against light cruisers goes the other way. Post-round pools, an attenuation term and a power law were each tried against both cells and each fits one and misses the other.', closedBy: 'a melee cell where the attacker cannot be hit back, which would separate "the split changed" from "the attacker\u2019s output attenuated". Nothing on the form provides one \u2014 melee is exactly where return fire exists \u2014 so the likelier route is a third stack: put a friendly stack of known pool inside the blast at 0 km and read its share directly, the way the friendly-fire cell did at 10 km.' },
 
 
@@ -1570,6 +1601,28 @@ export const NOT_MEASURED = [
 // measured, how well, and what it is NOT evidence for.
 
 export const PROVENANCE = {
+  'FORTRESS.dr.lowSegment': {
+    confidence: 'measured',
+    source: 'results.jsonl \u2014 73 distinct (fortress HP, DR) pairs already on disk from every sweep that ever put a fortress on the board, plus experiment=fortress_dr_low, twelve requests to pin the floor.',
+    method: 'The site PRINTS its own damage reduction on the building row, dr_before and dr_after. This project has been parsing and recording those two fields since the first fortress request and had never read them. DR = 0.15 x (hp/50 + 1) is exact for all 58 archived readings at 50 HP and above and wrong for all 13 below it, by up to eight points. Below 50 the site is on a second straight line, DR% = 5 + 0.5 x hp, which meets the first exactly at 50 HP and 30%. The ladder read seven fresh points from 10 to 48 HP off the DR column directly \u2014 10.0, 10.5, 12.5, 17.5, 22.5, 27.5, 29.0 \u2014 every one exact, no inference through a damage figure at all.',
+    tolerance: 'Exact at every point, on both segments. The floor is a STEP, not a taper: 9.5 HP renders no DR clause at all (the same signature a building that confers nothing gives) and 10 HP renders 10.0%.',
+    notEvidenceFor: 'Any building but the fortress \u2014 the other seven mitigate nothing at any HP. Nor a fortress above 250: the 0.90 ceiling is read at 250.4 and 251.3 HP, where the formula would want 90.1 and 90.4, and nothing was submitted higher.',
+  },
+  'FORTRESS.dr.blindSpot': {
+    confidence: 'measured',
+    note: 'Every fortress this project ever SUBMITTED was at 100% of a whole level, so a pool below 50 arose only as the last gasp of one being ground down \u2014 which is to say, only in the closing rounds of a long battle, and only in the handful of runs that lasted that long. The single-formula DR was therefore right for every number anyone had checked and wrong for the ones nobody could. That is the fifth time in this project a law survived only because the data had never varied the axis that would break it, and the third time the axis was \u201cthe thing is damaged\u201d. The others: a building\u2019s HP bar read as a fraction of the whole pool, a damaged row\u2019s HP fraction multiplied in twice, and a hero\u2019s output frozen at its opening HP.',
+  },
+  'FORTRESS.dr.foundBy': {
+    confidence: 'measured',
+    note: 'Chased for two sweeps as a \u201clate-round output drift\u201d in the ATTACKER \u2014 2.2%, 5.6%, 8.3% from round seven \u2014 because the attacker\u2019s state matched the site exactly at the start of every one of those rounds, so the error had to be in the output term. It was not: the output was right and the DEFENDER\u2019s mitigation was wrong. What settled it was reading the site\u2019s own DR column instead of solving for it. The lesson is cheap and worth writing down: when a quantity will not reproduce, check whether the source PRINTS the intermediate before deriving it from the total. Seventy-three readings of the answer were already in results.jsonl.',
+  },
+  'DAMAGE.perRowCapOnly': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=fort_drift round 9.',
+    method: 'A round\u2019s full swing goes to the allocation and each ROW is capped against what it has left; the side total falls out of the split. Capping the total at the side\u2019s remaining pool FIRST shrinks every row\u2019s share, the hero\u2019s included: with 10.5 HP of armoured cars and a hero on 42.4, a 74.2 swing was cut to 52.9 before being divided, giving the hero 15.1 where the site takes 21.2. The side-level cap is redundant once each row is capped \u2014 the shares cannot sum past the pool by construction \u2014 and it was doing harm on its way to being redundant.',
+    tolerance: 'Exact. With this and the DR segment, every real-army row reproduces: worst relative error 0.0034% across all round counts, both hero levels and three fortress pools.',
+    notEvidenceFor: 'The allocation WEIGHTS, which are unchanged, or the discard rule, which was measured separately in the same round.',
+  },
   'DAMAGE.surplusDiscarded': {
     confidence: 'measured',
     source: 'results.jsonl, experiment=fort_drift \u2014 the site\u2019s own per-round form readback, rounds 1-9, plus an isolated reproduction away from the real army.',
@@ -1582,8 +1635,8 @@ export const PROVENANCE = {
     note: 'For as long as the real-army rows had been on file this suite printed \u201cthe site finishes the fortress; this model leaves it at 97-100%\u201d. The fortress was never the defect. Everything about the building was already right \u2014 the per-round rate matched the site at every round it had been asked for, and exp_bughunt had settled the stop condition directly \u2014 and the missing 6.17 HP was the visible end of a surplus-damage rule one row away. Ten rows at three different pools now reproduce exactly, and the check is an assertion instead of a report. Recorded because the shape recurs: the number that will not reproduce is often the READOUT of a defect rather than the defect, and the cheapest move was reading what the archive already said before spending a request.',
   },
   'FORTRESS.residual.remaining': {
-    confidence: 'measured',
-    note: 'Fixing the surplus rule made the worst fought-out attacker total WORSE as a percentage \u2014 1.37% where the bound used to be 1%. That is not a regression: these battles now run the extra round the site runs, so they carry more of the late-round output residual that was always there. The tolerance moved up rather than the finding being trimmed to fit under it. See NOT_MEASURED.late_round_output.',
+    confidence: 'superseded',
+    note: 'SUPERSEDED. This recorded that fixing the surplus rule had made the worst fought-out attacker total WORSE as a percentage \u2014 1.37% where the bound had been 1% \u2014 because the battles now ran the extra round the site runs and carried more of the late-round residual with them. That reading was right and the residual is now closed: it was the fortress DR curve below 50 HP, not anything in the attacker. The bound is 0.05 HP, and the worst relative error across every real-army row is 0.0034%. Kept rather than deleted because the entry did its job \u2014 it said plainly that a bound had gone up, which is what made the residual worth another sweep instead of a shrug.',
   },
   'BATTLE.stopCondition': {
     confidence: 'measured',
@@ -1871,10 +1924,10 @@ export const PROVENANCE = {
   'FORTRESS.dr': {
     confidence: 'measured',
     source: 'results.jsonl, experiments=fortress (levels 1-5) and buildings (the L3 cell), reproduced on three separate runs.',
-    formula: 'DR = 0.15 * (fortressHP / 50 + 1), continuous in CURRENT HP. At full HP that is 0.15 * (level + 1).',
+    formula: 'DR = 0.15 * (fortressHP / 50 + 1) FOR hp >= 50, continuous in CURRENT HP. At full HP that is 0.15 * (level + 1). Below 50 HP the curve is a second line \u2014 see FORTRESS.dr.lowSegment \u2014 and below 10 HP the fortress confers nothing.',
     residual: 'Observed defender loss ratios 0.6999 / 0.5499 / 0.3998 / 0.2498 / 0.0997 against 0.70 / 0.55 / 0.40 / 0.25 / 0.10 — every level within 0.002.',
     note: 'The "+1" discontinuity is in the game: having ANY fortress costs the attacker 15% before levels count. The page prints the decay directly — "DR: 60% -> 57.5%" for a level-3 fortress that has taken 8.5 damage, and 0.15*(141.5/50+1) = 57.45%. The round\'s damage uses the START-OF-ROUND value. Only the defender\'s UNITS are protected: the fortress\'s own damage is not reduced, and the fortress does not reduce the defender\'s output.',
-    limits: 'Levels 1-5 only, and only against a land (infantry) attacker on the defending side. At level 6 the formula returns DR = 1.05, so it must saturate or the cap is real; unmeasured either way.',
+    limits: 'Levels 1-5 only, and only against a land (infantry) attacker on the defending side. THE CEILING IS MEASURED NOW and it is 0.90, not the 1.0 this engine used to clamp to: the site prints 90.0% at 250.4 and 251.3 HP where the formula wants 90.1 and 90.4. The clamp at 1 had been chosen for being unarguable \u2014 a damage reduction above 100% is nonsense \u2014 which is two-thirds of the way to a measurement and was never worth stopping at, since the number was printed on the row.',
   },
   'BUILDINGS.inert': {
     confidence: 'measured',

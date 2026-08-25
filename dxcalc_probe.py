@@ -11032,7 +11032,258 @@ def exp_fort_drift(p: Probe) -> None:
         print(f"     refused: {e}"[:96])
 
 
+def exp_late_drift(p: Probe) -> None:
+    """The residual exp_fort_drift left behind, and the one cheap way to split it.
+
+    From round seven of the real-army battle this engine deals 2.2%, then 5.6%,
+    then 8.3% less damage than the site -- on a state that matches the site's
+    OWN readback exactly at the start of every one of those rounds. Same
+    survivors, same remaining HP, same fortress, so the same damage reduction.
+    It is in the output term and not in the state feeding it.
+
+    Which is awkward, because both factors of the output term are measured to
+    exhaustion. m(f) = 0.05 + 0.95f was swept at 100/75/50/25/10 per cent for
+    five unit types on both sides -- fifty cells, every one exact -- so f down
+    to 0.10 is covered and the residual sits at f around 0.4 to 0.55. E(n) has
+    every rung from 1 to 113 measured. Neither is the suspect.
+
+    FOUR PRONGS, AND THE FIRST IS WORTH THE OTHER THREE.
+
+    G. IS THE SITE MEMORYLESS? Take the site's own round-6 and round-7 states
+       out of the readback and submit them as FRESH ONE-ROUND BATTLES. If a
+       one-round answer from a state equals the increment the multi-round
+       battle showed from that same state, then a round is a pure function of
+       the state at its start, the residual is reproducible in a single
+       request, and it can be chased with cheap cells for as long as it takes.
+       If it does NOT, the site carries something between rounds -- and no
+       measurement in this archive could ever have seen it, because this
+       archive is 2,600 single rounds.
+
+       This engine is memoryless by construction, and its one-round answer
+       from the round-6 state is its round-7 increment to three decimals. So
+       the two hypotheses are cleanly separated by one request each.
+
+    H. THE SINGLE-TYPE DEEP LADDER the gap named. Twenty heavy tanks against
+       twenty: no fortress, no hero, no trench, one row a side, so E(n) and
+       m(f) are the only two terms in the whole battle. Twelve rounds, neither
+       side wiped, both ending on five units at f = 0.39. If the residual
+       shows here it is in the core law. If it does not, the core law is clean
+       over twelve rounds and the residual needs a mixture, a building or a
+       hero -- which is a large narrowing bought cheaply.
+
+    I and J. STRIP ONE INGREDIENT. I removes the fortress from the real army,
+       J removes the hero. With H, every ingredient of the battle that shows
+       the residual has been taken away once.
+
+    Their round counts come from the engine's own fought= figure rather than
+    from the real army's schedule: without the fortress the battle is over by
+    round four, so asking for five, six and seven would buy three copies of
+    one answer.
+    """
+    import json as _json
+    import os as _os
+    base = _os.environ.get("BUGHUNT_DIR", ".")
+    engine = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                           "web", "engine.js")
+    pred_path = _os.path.join(base, "latedrift_pred.json")
+    if not _os.path.exists(pred_path):
+        print("  no latedrift_pred.json — run scripts/latedrift_predict.mjs "
+              "first. Nothing submitted.", file=sys.stderr)
+        return
+    if _os.path.exists(engine) and \
+            _os.path.getmtime(pred_path) < _os.path.getmtime(engine):
+        print("  latedrift_pred.json is older than web/engine.js — re-run "
+              "scripts/latedrift_predict.mjs. Nothing submitted.", file=sys.stderr)
+        return
+    pred = _json.load(open(pred_path))
+
+    abb, lvl, hhp = HERO_FIELDS
+    bldg = ("B.1.bldg.1.abb", "B.1.bldg.1.lvl", "B.1.bldg.1.hp")
+    full = HERO_FIELDS + bldg + composite_fields("A", 1, 3) \
+        + composite_fields("B", 1, 1)
+
+    # ---- G ---------------------------------------------------------------
+    print("\n  G. the site's own mid-battle states, resubmitted as ONE round")
+    print("     if a round is a pure function of the state it starts from,")
+    print("     these reproduce the increments the long battle showed.\n")
+    STATES = {
+        "g6": {"inf": (11, "120.4"), "ac": (6, "145.8"), "cav": (7, "110.9"),
+               "def": (4, "150.5"), "hero": "58.7", "fort": "42.2"},
+        "g7": {"inf": (10, "103.8"), "ac": (6, "127.7"), "cav": (6, "95.0"),
+               "def": (3, "77.5"), "hero": "51.4", "fort": "28.6"},
+    }
+    for key, st in STATES.items():
+        ov = settings(1)
+        ov.update(duel(1, "inf", st["inf"][0], "ac", st["def"][0]))
+        for i, code in enumerate(("inf", "ac", "cav"), start=1):
+            ov[f"A.1.{i}.unit"] = code
+            ov[f"A.1.{i}.count"] = str(st[code][0])
+            ov[f"A.1.{i}.hp"] = st[code][1]
+        ov["B.1.1.unit"] = "ac"
+        ov["B.1.1.count"] = str(st["def"][0])
+        ov["B.1.1.hp"] = st["def"][1]
+        ov.update({abb: "kangal", lvl: "9", hhp: st["hero"]})
+        # Level 1 with the pool in the top band: the bar is 0-50 whatever the
+        # level, so a 42.2 HP fortress is level 1 at 42.2 (fortress_hp_scale).
+        ov.update({"B.1.bldg.1.abb": "fortress", "B.1.bldg.1.lvl": "1",
+                   "B.1.bldg.1.hp": st["fort"]})
+        try:
+            p.submit(ov, create=full)
+        except (BareFormReturned, ValueError) as e:
+            print(f"     {key}: refused: {e}"[:96])
+            continue
+        d = dict(p.last_details)
+        record("late_drift",
+               {"prong": "G", "state": key, "rounds": 1, "cell": st,
+                "predicted": pred[key], "detail": d,
+                "summary": dict(p.last_summary)},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        e = pred[key]
+        nxt = e["site_next"]
+        print(f"     {key}  site one round : def "
+              f"{(d.get('B.1.1') or {}).get('lost')}, hero "
+              f"{(d.get('B.1.hero') or {}).get('lost')}, fort "
+              f"{(d.get('B.1.bldg.1') or {}).get('lost')}")
+        print(f"           long battle    : def {nxt['def']}, hero "
+              f"{nxt['hero']}, fort {nxt['fort']}")
+        print(f"           this engine    : def {e['def_lost']}, hero "
+              f"{e['hero_lost']}, fort {e['fort_lost']}")
+
+    # ---- H ---------------------------------------------------------------
+    print("\n  H. 20 heavy tanks vs 20, twelve rounds, nothing else on the board")
+    print(f"  {'rnd':>4} | {'A ct':>5}{'A hp':>10}{'A lost':>10}"
+          f" | {'B ct':>5}{'B hp':>10}{'B lost':>10}   engine A/B lost")
+    for rounds in range(1, 13):
+        ov = settings(rounds, update_counts=True)
+        ov.update(duel(1, "ht", 20, "ht", 20))
+        try:
+            p.submit(ov)
+        except (BareFormReturned, ValueError) as e:
+            print(f"  {rounds:>4} | refused: {e}"[:96])
+            continue
+        back = read_back(p)
+        d = dict(p.last_details)
+        record("late_drift",
+               {"prong": "H", "rounds": rounds, "unit": "ht", "n": 20,
+                "predicted": pred.get(f"h{rounds}"), "detail": d,
+                "form_back": back, "summary": dict(p.last_summary)},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        e = pred.get(f"h{rounds}") or {}
+        g = lambda k: back.get(k, "-")
+        print(f"  {rounds:>4} | {g('A.1.1.count'):>5}{g('A.1.1.hp'):>10}"
+              f"{str((d.get('A.1.1') or {}).get('lost')):>10}"
+              f" | {g('B.1.1.count'):>5}{g('B.1.1.hp'):>10}"
+              f"{str((d.get('B.1.1') or {}).get('lost')):>10}"
+              f"   {e.get('a_lost')}/{e.get('b_lost')}")
+
+    # ---- I and J ---------------------------------------------------------
+    RA = [("inf", 35, "453.6"), ("ac", 6, "318.1"), ("cav", 17, "378.1")]
+    for prong, fort, hero, ladder in (("I", False, True, (2, 3, 4)),
+                                      ("J", True, False, (5, 6, 7))):
+        print(f"\n  {prong}. the real army with "
+              f"{'NO FORTRESS' if not fort else 'NO HERO'}")
+        for rounds in ladder:
+            ov = settings(rounds, update_counts=True)
+            ov.update(duel(1, "inf", 35, "ac", 12))
+            for i, (u, n, hp) in enumerate(RA, start=1):
+                ov[f"A.1.{i}.unit"] = u
+                ov[f"A.1.{i}.count"] = str(n)
+                ov[f"A.1.{i}.hp"] = hp
+            ov["B.1.1.unit"] = "ac"
+            ov["B.1.1.count"] = "12"
+            ov["B.1.1.hp"] = "677.5"
+            create = composite_fields("A", 1, 3) + composite_fields("B", 1, 1)
+            if hero:
+                ov.update({abb: "kangal", lvl: "9", hhp: "83.1"})
+                create += HERO_FIELDS
+            if fort:
+                ov.update({"B.1.bldg.1.abb": "fortress",
+                           "B.1.bldg.1.lvl": "4", "B.1.bldg.1.hp": "100%"})
+                create += bldg
+            try:
+                p.submit(ov, create=create)
+            except (BareFormReturned, ValueError) as e:
+                print(f"     {rounds:>2}: refused: {e}"[:96])
+                continue
+            back = read_back(p)
+            d = dict(p.last_details)
+            record("late_drift",
+                   {"prong": prong, "rounds": rounds, "fortress": fort,
+                    "hero": hero, "predicted": pred.get(f"{prong.lower()}{rounds}"),
+                    "detail": d, "form_back": back,
+                    "summary": dict(p.last_summary)},
+                   {k: (v or {}).get("lost") for k, v in d.items()})
+            e = pred.get(f"{prong.lower()}{rounds}") or {}
+            g = lambda k: back.get(k, "-")
+            print(f"     {rounds:>2}: site inf {g('A.1.1.count')}/{g('A.1.1.hp')}"
+                  f"  ac {g('A.1.2.count')}/{g('A.1.2.hp')}"
+                  f"  cav {g('A.1.3.count')}/{g('A.1.3.hp')}"
+                  f"  def {g('B.1.1.count')}/{g('B.1.1.hp')}"
+                  f"  hero {g('B.1.hero.hp')}")
+            print(f"         eng  inf {e.get('inf')}  ac {e.get('ac')}"
+                  f"  cav {e.get('cav')}  def {e.get('def')}"
+                  f"  hero {e.get('hero_hp')}")
+
+
+def exp_fortress_dr_low(p: Probe) -> None:
+    """The fortress damage-reduction curve below 50 HP, which was never a curve.
+
+    exp_late_drift found the residual by reading a column this project has been
+    recording since the first fortress request and never looked at: the site
+    PRINTS its own damage reduction on the building row, dr_before and
+    dr_after. Seventy-three distinct (HP, DR) pairs were already on disk.
+
+        DR = 0.15 x (hp/50 + 1)   is exact for every one of the 58 readings at
+                                  50 HP and above, to the printed decimal
+        and wrong for all 13 below it, by up to 8 points
+
+    Below 50 the site is on a different straight line -- DR% = 5 + 0.5 x hp --
+    which meets the first exactly at 50 HP and 30%. That fits all thirteen to
+    the printed decimal. Every fortress in this project was entered at 100% and
+    a full level, so a pool under 50 only ever appeared as the LAST GASP of a
+    fortress being ground down, which is exactly the stretch of a battle where
+    the engine's numbers went wrong.
+
+    WHAT IS LEFT TO MEASURE is one thing: the floor. Two readings sit at zero,
+    at 4.8 and 6.2 HP, and the lowest non-zero is 10.3 at 10.1% -- which the
+    line predicts at 10.15. So a fortress under some threshold confers nothing
+    at all, and the three points on file bracket it between 6.2 and 10.3
+    without pinning it.
+
+    Twelve requests, and no inference in them: the site prints the number, so
+    each request reads a point off the curve directly instead of solving for it
+    through a damage figure. The attacker is a single infantry so the building
+    is barely touched and dr_before is the value for the HP as submitted.
+    """
+    print("\n  a level-1 fortress at each HP, reading the site's own DR column\n")
+    print(f"  {'hp':>6} | {'site DR':>8} | {'5 + 0.5h':>9} | {'0.15(h/50+1)':>13}")
+    print("  " + "-" * 46)
+    fields = ("B.1.bldg.1.abb", "B.1.bldg.1.lvl", "B.1.bldg.1.hp")
+    for hp in ("1", "5", "8", "9", "9.5", "10", "11", "15", "25", "35", "45", "48"):
+        ov = settings(1)
+        ov.update(duel(1, "inf", 1, "inf", 10))
+        ov.update({"B.1.bldg.1.abb": "fortress", "B.1.bldg.1.lvl": "1",
+                   "B.1.bldg.1.hp": hp})
+        try:
+            p.submit(ov, create=fields)
+        except (BareFormReturned, ValueError) as e:
+            print(f"  {hp:>6} | refused: {e}"[:96])
+            continue
+        d = dict(p.last_details)
+        b = d.get("B.1.bldg.1") or {}
+        record("fortress_dr_low",
+               {"fortress_hp": hp, "level": 1, "detail": d,
+                "summary": dict(p.last_summary)},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        dr = b.get("dr_before")
+        h = float(hp)
+        print(f"  {hp:>6} | {str(dr):>8} | {5 + 0.5 * h:9.2f} | "
+              f"{15 * (h / 50 + 1):13.2f}")
+
+
 EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
+    "fortress_dr_low": exp_fortress_dr_low,
+    "late_drift": exp_late_drift,
     "fort_drift": exp_fort_drift,
     "bughunt": exp_bughunt,
     "unit_stats": exp_unit_stats,

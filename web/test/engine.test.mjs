@@ -49,6 +49,7 @@ import {
   BOMBARDMENT, BOMBARDMENT_SPLIT, HERO_REACH,
   MUTUAL,
   MULTI_STACK, SCOPE_LIMITS, STACK_GROUP, STACK_GROUP_LABEL,
+  FORTRESS,
 } from '../data.js';
 import {
   heroBuff,
@@ -438,10 +439,35 @@ for (const [lvl, want] of [[1, 0.70], [2, 0.55], [3, 0.40], [4, 0.25], [5, 0.10]
 }
 check('a worn fortress mitigates less: 241.5 HP gives DR 87.45%',
   Math.abs(fortressDR(241.5) - 0.8745) < 1e-9, String(fortressDR(241.5)));
-check('fortressDR clamps to 1 rather than returning the raw 1.05 at level 6',
-  fortressDR(300) === 1, String(fortressDR(300)));
+// This used to assert a clamp at 1, chosen because the raw formula returns
+// 1.05 at a hypothetical level 6 and a damage reduction above 100% is
+// nonsense. The site's own number is 0.90, printed at 250.4 and 251.3 HP where
+// the formula wants 90.1 and 90.4 — so the ceiling is real, it is where the
+// level-5 cap sits, and it was measurable all along in the DR column nobody
+// read. A guard picked for being unarguable was two-thirds of the way to a
+// measurement.
+check('fortressDR saturates at the site\'s own 0.90, not at a notional 1',
+  fortressDR(300) === 0.90 && fortressDR(251.3) === 0.90,
+  `${fortressDR(300)} / ${fortressDR(251.3)}`);
 check('fortressDR(0) is 0 — a destroyed or absent fortress is not credited 15%',
   fortressDR(0) === 0);
+// THE LOW SEGMENT, read straight off the site's DR column. Seven points from
+// the ladder, exact; two more from the archive at 6.2 and 4.8 where the row
+// carries no DR clause at all.
+for (const [hp, want] of [[10, 0.100], [11, 0.105], [15, 0.125], [25, 0.175],
+  [35, 0.225], [45, 0.275], [48, 0.290], [50, 0.300]]) {
+  check(`fortressDR(${hp}) = ${want} — the segment below 50`,
+    Math.abs(fortressDR(hp) - want) < 1e-9, String(fortressDR(hp)));
+}
+check('and the two lines meet exactly at 50 HP, so the join is invisible above it',
+  Math.abs(fortressDR(50) - 0.30) < 1e-12
+  && Math.abs(FORTRESS.lowIntercept + FORTRESS.lowSlopePerHP * 50
+    - FORTRESS.drSlopePer50HP * 2) < 1e-12);
+check('a fortress under 10 HP confers NOTHING — 9.5 prints no DR, 10 prints 10.0%',
+  fortressDR(9.5) === 0 && fortressDR(9.99) === 0 && fortressDR(10) === 0.10);
+check('the old single formula would have over-credited a battered fortress by 8 points',
+  Math.abs(0.15 * (16.9 / 50 + 1) - fortressDR(16.9)) > 0.06,
+  `old ${(0.15 * (16.9 / 50 + 1)).toFixed(4)} vs ${fortressDR(16.9)}`);
 
 // ===========================================================================
 console.log('\n9. max HP integers, cross-checked against pools measured elsewhere');
@@ -3166,7 +3192,7 @@ console.log('\n14. coverage of the record itself');
     'bombardment_lucien2', 'togo_buff_clean',
     'mutual', 'mutual_law', 'mutual_order', 'mutual_control', 'mutual_rounds',
     'real_army', 'fortress_hp_scale', 'update_counts', 'update_counts_army',
-    'bughunt', 'fort_drift'];
+    'bughunt', 'fort_drift', 'late_drift', 'fortress_dr_low'];
   const notReplayed = Object.keys(counts).filter(
     (e) => !replayed.includes(e) && !replayedLater.includes(e));
   console.log(`  note  replayed: ${replayed.map((e) => `${e} ${counts[e] || 0}`).join(', ')}`);
@@ -3576,16 +3602,18 @@ console.log('\n17. provenance notes cannot contradict the data beside them');
   // different KIND of gap, one with a route, so the suite pins the count and
   // then asserts each gap against what it actually claims rather than against
   // a blanket "unclosable".
-  // Four now. exp_fort_drift closed the fortress residual and, in closing it,
-  // separated out a SECOND thing that was hiding inside it: the attacker's
-  // output runs low from round seven. That was always in the data as "endgame
-  // drift" and was never a gap of its own, because nothing could see past the
-  // defect in front of it. A gap count that went DOWN here would have meant
-  // the sweep had found one thing; it went up because it found two.
-  check('four gaps remain', NOT_MEASURED.length === 4,
+  // Three again. It went to four when exp_fort_drift separated a second thing
+  // out of the fortress residual — the attacker's output running low from
+  // round seven — and back to three when exp_late_drift found that the
+  // attacker's output had been right all along and the DEFENDER's mitigation
+  // was wrong. The count is pinned in both directions on purpose: a gap
+  // appearing without anyone noticing is as bad as one closing silently.
+  check('three gaps remain', NOT_MEASURED.length === 3,
     NOT_MEASURED.map((g) => g.key).join(', '));
-  check('and the newest one is the late-round output residual',
-    NOT_MEASURED.some((g) => g.key === 'late_round_output'),
+  check('and the late-round output residual is NOT among them — it was closed, '
+    + 'not forgotten',
+    !NOT_MEASURED.some((g) => g.key === 'late_round_output')
+    && /superseded/i.test(PROVENANCE['FORTRESS.residual.remaining'].confidence),
     NOT_MEASURED.map((g) => g.key).join(', '));
   const unclosable = NOT_MEASURED.filter(
     (g) => /nothing available|no black-box|not known|nobody has proposed/i
@@ -4380,20 +4408,18 @@ console.log('\n23. a real army');
       // found the two causes -- damage allocated by opening counts instead of
       // survivors, and a hero whose output never wore down -- and the drift is
       // now under 1%. An assertion that once could not be made is made.
-      // 1.5%, and the number is a MEASUREMENT rather than a tolerance picked
-      // to make the line green. Seven of the eight fought-out rows land inside
-      // 0.7%; the eighth is 1.37%, and fort_drift says exactly where it comes
-      // from — the attacker's output runs low from round 7 by 2.2%, 5.6% and
-      // 8.3%, on a state that matches the site's own readback to the decimal
-      // in every round before it. See NOT_MEASURED.late_round_output. The
-      // bound went UP when the surplus-discard defect was fixed, because these
-      // battles now run the extra round the site runs and there is more of the
-      // late-round residual in them. A tolerance that fell would have been the
-      // more comfortable outcome and the wrong one to report.
+      // 0.05 HP — the resolution of the number the site prints, not a
+      // percentage. This line has been walked down twice: it was 5% when the
+      // real army first arrived, 1% after the survivor-weighting and
+      // hero-decay defects, and 1.5% after the surplus-discard fix, which made
+      // it WORSE because these battles started running the extra round the
+      // site runs and carried more of the residual with them. Reading the
+      // fortress DR column closed that residual, and the worst relative error
+      // across every real-army row is now 0.0034%.
       check(`real army fought out (fort ${fortLevel}, hero lv${m.hero_level}): attacker total`,
-        Math.abs(r.attacker.hpLost - wantA) <= wantA * 0.015,
+        Math.abs(r.attacker.hpLost - wantA) <= 0.05,
         `${r.attacker.hpLost.toFixed(2)} vs ${wantA} — `
-          + `${((r.attacker.hpLost - wantA) / wantA * 100).toFixed(2)}%`);
+          + `${((r.attacker.hpLost - wantA) / wantA * 100).toFixed(4)}%`);
       // THE LINE THIS SUITE COULD NOT ASSERT. For as long as the real-army
       // rows have been on file this was a cannotReproduce reading "the site
       // finishes the fortress; this model leaves it at 97-100%". It is an
@@ -4411,22 +4437,19 @@ console.log('\n23. a real army');
             - BUILDINGS.fortress.hpPerLevel * (1 - fortPct / 100)}, `
           + `destroyed=${r.defender.buildings[0].destroyed}`);
     } else {
-      // Rounds 6-8: reported with the actual figures rather than asserted at a
-      // tolerance chosen to make them pass — but reported only when they
-      // actually differ. This used to print unconditionally, so a row reading
-      // "recorded 772.76, engine 772.7563" sat in the unreproduced list
-      // looking like a failure. Six of the eight lines it printed were exact.
-      // A list of things that could not be reproduced is worth nothing if
-      // things that were reproduced are in it.
-      const note = 'the late-round output residual — NOT_MEASURED.late_round_output';
-      if (Math.abs(r.attacker.hpLost - wantA) > 0.05) {
-        cannotReproduce(`real army, ${m.rounds} rd (fort ${fortLevel}, hero lv${m.hero_level}), attacker`,
-          wantA, r.attacker.hpLost, note);
-      }
-      if (Math.abs(r.defender.hpLost - wantB) > 0.05) {
-        cannotReproduce(`real army, ${m.rounds} rd (fort ${fortLevel}, hero lv${m.hero_level}), defender`,
-          wantB, r.defender.hpLost, note);
-      }
+      // ASSERTED NOW, at the printed resolution. For most of this project
+      // these rounds could only be REPORTED: they were the "endgame drift",
+      // 1-4% and unexplained, and the suite printed them rather than pretend
+      // a tolerance around them meant anything. Three defects later — damage
+      // allocated by opening counts, a hero whose output never wore down, a
+      // saturated row's surplus passed on instead of dropped — and one
+      // unread column later, they are ordinary lines.
+      check(`real army, ${m.rounds} rd (fort ${fortLevel}, hero lv${m.hero_level}), attacker ${wantA}`,
+        Math.abs(r.attacker.hpLost - wantA) <= 0.05,
+        `engine ${r.attacker.hpLost.toFixed(2)}`);
+      check(`real army, ${m.rounds} rd (fort ${fortLevel}, hero lv${m.hero_level}), defender ${wantB}`,
+        Math.abs(r.defender.hpLost - wantB) <= 0.05,
+        `engine ${r.defender.hpLost.toFixed(2)}`);
     }
   }
   check('the real-army readings were replayed', replayed >= 4, String(replayed));
@@ -5037,15 +5060,208 @@ check('six consecutive rounds match the site in every quantity it reports',
 // low from round 7 on a state that matches the site exactly in every round
 // before it, and the shortfall grows. It is declared rather than absorbed.
 {
-  const gap = NOT_MEASURED.find((g) => g.key === 'late_round_output');
-  check('the leftover residual is declared as a gap, with its size',
-    !!gap && /2\.2|round 7/i.test(gap.why), gap ? gap.why.slice(0, 80) : 'absent');
+  // This block used to check that the leftover residual was DECLARED as a gap.
+  // exp_late_drift closed it, so what is checked now is that it closed rather
+  // than quietly evaporated — and what closed it, which is not what two sweeps
+  // of chasing assumed.
+  check('the leftover residual is closed, and by the fortress rather than the attacker',
+    !NOT_MEASURED.some((g) => g.key === 'late_round_output')
+    && /DR column|damage reduction/i.test(PROVENANCE['FORTRESS.dr.foundBy'].note),
+    PROVENANCE['FORTRESS.dr.foundBy'].note.slice(0, 90));
   check('and the surplus rule that WAS settled is recorded as measured',
     PROVENANCE['DAMAGE.surplusDiscarded'].confidence === 'measured'
     && /discard/i.test(PROVENANCE['DAMAGE.surplusDiscarded'].method));
   check('the old caveat claiming the remainder rule is unknown is gone',
     !/no measured mixture ever saturated/i.test(
       readFileSync(new URL('../engine.js', import.meta.url), 'utf8')));
+}
+
+// ===========================================================================
+// 27. THE LATE-ROUND RESIDUAL — which was never in the attacker at all
+// ===========================================================================
+// Two sweeps chased this as a drift in the ATTACKER'S OUTPUT. The reasoning
+// was sound and the conclusion was wrong: the attacker's survivors, its
+// remaining HP, its deaths and the fortress's HP all matched the site's own
+// readback exactly at the start of every divergent round, so the error had to
+// be in the output term. It was not. The output was right and the DEFENDER'S
+// MITIGATION was wrong.
+//
+// exp_late_drift asked four questions and the cheap one paid for the rest.
+//
+//   G. IS THE SITE MEMORYLESS? Take the site's own round-6 and round-7 states
+//      out of the readback and resubmit them as fresh ONE-ROUND battles. They
+//      reproduce the increments the long battle showed, so a round is a pure
+//      function of the state it starts from and the whole residual is
+//      reproducible in a single request. That also means 2,600 single-round
+//      readings were never handicapped by being single rounds.
+//   H. A single-type deep ladder, 20 heavy tanks against 20 over twelve
+//      rounds with nothing else on the board: exact at every round, down to
+//      f = 0.39. E(n), m(f), the death rule and the round loop are clean.
+//   I, J. The real army with the fortress removed, and with the hero removed.
+//
+// And the G cells carried the answer in a column this project has been
+// parsing since its first fortress request and had never read: the site
+// PRINTS its own damage reduction. It said 26.1% where the engine computed
+// 27.665%. Seventy-three (HP, DR) pairs were already sitting in results.jsonl.
+console.log('\n27. THE LATE-ROUND RESIDUAL');
+
+const ld = rows.filter((r) => r.experiment === 'late_drift');
+const drl = rows.filter((r) => r.experiment === 'fortress_dr_low');
+check('the late-drift sweep is on disk, all twenty cells',
+  ld.length === 20, String(ld.length));
+check('and the DR ladder, all twelve',
+  drl.length === 12, String(drl.length));
+
+// --- G: the site is memoryless -------------------------------------------
+// The most valuable single fact this sweep produced, and it cost two requests.
+{
+  const g = ld.filter((r) => r.meta.prong === 'G');
+  check('two mid-battle states were resubmitted as one-round battles',
+    g.length === 2, String(g.length));
+  for (const r of g) {
+    const nx = r.meta.predicted.site_next;
+    // The long battle's increments come from readbacks printed to one decimal
+    // and differenced, so 0.15 is two of those roundings, not slack.
+    check(`${r.meta.state}: one round from that state = what the long battle did next`,
+      Math.abs(r.readings['B.1.1'] - nx.def) <= 0.15
+      && Math.abs(r.readings['B.1.hero'] - nx.hero) <= 0.15
+      && Math.abs(r.readings['B.1.bldg.1'] - nx.fort) <= 0.15,
+      `one round ${r.readings['B.1.1']}/${r.readings['B.1.hero']}/${r.readings['B.1.bldg.1']}`
+        + ` vs long battle ${nx.def}/${nx.hero}/${nx.fort}`);
+    // And the engine now reproduces the one-round answer directly.
+    const st = r.meta.cell;
+    const sim = simulate({
+      attacker: { rows: [
+        { unit: 'inf', count: st.inf[0], hpPct: (Number(st.inf[1]) / (st.inf[0] * 20)) * 100 },
+        { unit: 'ac', count: st.ac[0], hpPct: (Number(st.ac[1]) / (st.ac[0] * 60)) * 100 },
+        { unit: 'cav', count: st.cav[0], hpPct: (Number(st.cav[1]) / (st.cav[0] * 25)) * 100 },
+      ] },
+      defender: {
+        rows: [{ unit: 'ac', count: st.def[0], hpPct: (Number(st.def[1]) / (st.def[0] * 60)) * 100 }],
+        hero: { code: 'kangal', level: 9, hpPct: (Number(st.hero) / 90) * 100 },
+        buildings: [{ code: 'fortress', level: 1, hpPct: (Number(st.fort) / 50) * 100 }],
+      },
+      rounds: 1,
+    });
+    check(`${r.meta.state}: and this engine reproduces it`,
+      near(sim.defender.rows.find((x) => !x.isHero).hpLost, r.readings['B.1.1'], 0.06)
+      && near(sim.defender.rows.find((x) => x.isHero).hpLost, r.readings['B.1.hero'], 0.06)
+      && near(sim.defender.buildings[0].hpLost, r.readings['B.1.bldg.1'], 0.06),
+      `${sim.defender.rows.find((x) => !x.isHero).hpLost.toFixed(2)} vs ${r.readings['B.1.1']}`);
+  }
+}
+
+// --- H: the core law is clean over twelve rounds --------------------------
+{
+  const h = ld.filter((r) => r.meta.prong === 'H').sort((a, b) => a.meta.rounds - b.meta.rounds);
+  check('the single-type ladder runs a full twelve rounds', h.length === 12);
+  for (const r of h) {
+    const sim = simulate({ attacker: { unit: 'ht', count: 20 },
+      defender: { unit: 'ht', count: 20 }, rounds: r.meta.rounds });
+    check(`ht 20v20 x${r.meta.rounds}: ${r.readings['A.1.1']} / ${r.readings['B.1.1']}`,
+      near(sim.attacker.hpLost, r.readings['A.1.1'], 0.06)
+      && near(sim.defender.hpLost, r.readings['B.1.1'], 0.06),
+      `${sim.attacker.hpLost.toFixed(2)} / ${sim.defender.hpLost.toFixed(2)}`);
+    // The readback's own survivor counts, not inferred from the damage.
+    check(`ht 20v20 x${r.meta.rounds}: survivors match the site's form`,
+      (20 - sim.attacker.rows[0].deaths) === Number(r.meta.form_back['A.1.1.count'])
+      && (20 - sim.defender.rows[0].deaths) === Number(r.meta.form_back['B.1.1.count']),
+      `${20 - sim.attacker.rows[0].deaths}/${r.meta.form_back['A.1.1.count']}`);
+  }
+  // The point of the ladder: it goes deep enough to be worth something. Both
+  // sides end on five units at f = 0.39, well down the m(f) curve, and nothing
+  // drifts. Whatever was wrong needed a fortress; it was never the core law.
+  const last = h[h.length - 1];
+  check('and it ends deep — five units a side at 39% HP, still exact',
+    Number(last.meta.form_back['A.1.1.count']) === 5
+    && Number(last.meta.form_back['A.1.1.hp']) / (5 * 260) < 0.40,
+    `${last.meta.form_back['A.1.1.count']} units, ${last.meta.form_back['A.1.1.hp']} HP`);
+}
+
+// --- I and J: strip the fortress, strip the hero --------------------------
+{
+  const RA = () => ({ rows: [
+    { unit: 'inf', count: 35, hpPct: (453.6 / 700) * 100 },
+    { unit: 'ac', count: 6, hpPct: (318.1 / 360) * 100 },
+    { unit: 'cav', count: 17, hpPct: (378.1 / 425) * 100 },
+  ] });
+  for (const r of ld.filter((x) => x.meta.prong === 'I' || x.meta.prong === 'J')) {
+    const m = r.meta;
+    const sim = simulate({
+      attacker: RA(),
+      defender: {
+        rows: [{ unit: 'ac', count: 12, hpPct: (677.5 / 720) * 100 }],
+        ...(m.hero ? { hero: { code: 'kangal', level: 9, hpPct: (83.1 / 90) * 100 } } : {}),
+        ...(m.fortress ? { buildings: [{ code: 'fortress', level: 4, hpPct: 100 }] } : {}),
+      },
+      rounds: m.rounds,
+    });
+    const back = m.form_back;
+    const rowsOf = sim.attacker.rows.filter((x) => !x.isHero);
+    check(`${m.prong}${m.rounds} (${m.fortress ? 'fortress' : 'no fortress'}, `
+      + `${m.hero ? 'hero' : 'no hero'}): every row against the site's form`,
+      rowsOf.every((x, i) => near(x.pool - x.hpLost, Number(back[`A.1.${i + 1}.hp`]), 0.06))
+      && near(sim.defender.rows.find((x) => !x.isHero).pool
+        - sim.defender.rows.find((x) => !x.isHero).hpLost,
+      Number(back['B.1.1.hp']), 0.06),
+      rowsOf.map((x, i) => `${(x.pool - x.hpLost).toFixed(2)}/${back[`A.1.${i + 1}.hp`]}`).join(' '));
+  }
+}
+
+// --- the DR ladder itself -------------------------------------------------
+// No inference at all in these twelve: the site prints the number, so each
+// request reads a point off the curve rather than solving for it through a
+// damage figure.
+{
+  for (const r of drl) {
+    const hp = Number(r.meta.fortress_hp);
+    const site = (r.meta.detail['B.1.bldg.1'] || {}).dr_before;
+    if (site === undefined || site === null) {
+      check(`a ${hp} HP fortress renders no DR clause at all`,
+        hp < 10 && fortressDR(hp) === 0, `engine ${fortressDR(hp)}`);
+    } else {
+      check(`fortress at ${hp} HP: the site prints ${site}%`,
+        Math.abs(fortressDR(hp) * 100 - site) < 0.05,
+        `engine ${(fortressDR(hp) * 100).toFixed(2)}%`);
+    }
+  }
+  const inert = drl.filter((r) => !(r.meta.detail['B.1.bldg.1'] || {}).dr_before);
+  check('five rungs below 10 HP confer nothing, and the lowest that does is 10',
+    inert.length === 5
+    && inert.every((r) => Number(r.meta.fortress_hp) < 10)
+    && Math.max(...inert.map((r) => Number(r.meta.fortress_hp))) === 9.5,
+    inert.map((r) => r.meta.fortress_hp).join(','));
+}
+
+// --- and the column that was there all along ------------------------------
+// The archive is checked against the corrected curve wholesale: every
+// (HP, DR) pair any sweep ever recorded, including 58 that the old formula
+// already fitted and 13 it never could.
+{
+  const pairs = new Set();
+  for (const r of rows) {
+    for (const d of Object.values((r.meta && r.meta.detail) || {})) {
+      if (!d || typeof d !== 'object' || d.dr_before === undefined) continue;
+      if (d.pool !== undefined) pairs.add(`${d.pool.toFixed(2)}|${d.dr_before}`);
+      if (d.level !== undefined && d.hp_top_level !== undefined) {
+        pairs.add(`${((d.level - 1) * 50 + d.hp_top_level).toFixed(2)}|${d.dr_after}`);
+      }
+    }
+  }
+  const pts = [...pairs].map((k) => k.split('|').map(Number))
+    .filter(([hp, dr]) => dr > 0);
+  check('the archive already held 60+ readings of the answer',
+    pts.length >= 60, String(pts.length));
+  const bad = pts.filter(([hp, dr]) => Math.abs(fortressDR(hp) * 100 - dr) > 0.2);
+  check('and the corrected curve fits every one of them',
+    bad.length === 0,
+    bad.map(([hp, dr]) => `${hp}->${dr} vs ${(fortressDR(hp) * 100).toFixed(2)}`).join(', '));
+  const oldFormula = (hp) => Math.min(1, 0.15 * (hp / 50 + 1));
+  const wouldFail = pts.filter(([hp, dr]) => Math.abs(oldFormula(hp) * 100 - dr) > 0.2);
+  check('where the single formula it replaced missed a dozen of them',
+    wouldFail.length >= 10 && wouldFail.every(([hp]) => hp < 50 || hp > 250),
+    `${wouldFail.length} misses, worst `
+      + `${Math.max(...wouldFail.map(([hp, dr]) => Math.abs(oldFormula(hp) * 100 - dr))).toFixed(2)} points`);
 }
 
 // ===========================================================================
