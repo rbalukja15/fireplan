@@ -1,0 +1,31 @@
+{
+  "name": "Trenchline — S1914 Combat Calculator",
+  "short_name": "Trenchline",
+  "description": "Supremacy 1914 combat calculator: client-side battle simulation with probe-verified math and one-click export to dxCalc.",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#202416",
+  "theme_color": "#202416",
+  "icons": [
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

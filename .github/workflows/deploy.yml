@@ -1,0 +1,53 @@
+name: trenchline
+
+on:
+  push:
+    # The claude/ branch entry gives immediate Pages feedback while Trenchline
+    # is developed there — drop it from this list once merged to main.
+    branches: [main, claude/supremacy-noxiaz-evaluation-l32ocd]
+  workflow_dispatch:
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: trenchline
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: trenchline/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build:web
+      - run: npm run build:ext
+      - run: npm run zip:ext
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: trenchline/dist/web
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trenchline-extension
+          path: |
+            trenchline/dist/trenchline-chrome.zip
+            trenchline/dist/trenchline-firefox.zip
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

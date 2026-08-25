@@ -1,0 +1,174 @@
+<!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml" lang="en-US" xml:lang="en-US"><head><title>dxter's Supremacy 1914 battle calculator (dxcalc)</title><link rev="made" href="call.of.war.calc@gmail.com"/><link rel="shortcut icon" href="ico/s1914.favicon.ico" type="image/x-icon"><link rel="icon" href="ico/s1914.favicon.ico" type="image/x-icon"><meta name="keywords" content="Supremacy 1914, s1914, battle calculator, battle, calculator, combat, dxcalc, dxter, attack, ww1, wwI, mmo, strategy, real time strategy game" /><meta name="copyright" content="copyright 2015 dxter" /><meta http-equiv="Content-Type" content="text/html;charset=UTF-8" /><link rel="stylesheet" type="text/css" href="css/s1914.css?1693964503"/><script type="text/javascript" src="js/google-analytics.js"></script>
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-19935128-4"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', 'UA-19935128-4');
+</script>
+<script type="text/javascript" src="js/bytro.js?1784577104"></script><script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script><script type="text/javascript">//<![CDATA[
+if (top != self) { top.location.replace(self.location.href) }
+//]]></script></head><body style="background-color:#CDE8F6"><form method="post" action="/s1914" enctype="multipart/form-data" id="battleForm" target="_self"><div style=text-align:center><b style=font-size:x-large;text-align:center>dxter's <em style=color:#555555>Supremacy 1914</em> battle calculator</b><a href='share/s1914.info.html' target='help' style=padding-left:50px><img src=images/help.png alt='Help' title=Information width=25px></a></div><div></div><div style=margin:10px><ins class="adsbygoogle" style="display:inline-block;width:728px;height:90px" data-ad-client="ca-pub-6213686270453569" data-ad-slot="6299855543"></ins><script>(adsbygoogle = window.adsbygoogle || []).push({});</script></div><div id=A style=background-color:#ccffcc;padding:10px><a href=share/s1914.info.html#army target=help>Army</a> A<button type="button" onclick="addStack('A')" style=margin-left:10px;margin-right:5px;background-color:rgb(190,250,250) title="Add a stack to this Army.">add stack</button> <input type="button" value="Start Battle" title="Start the battle." onclick="onAttack('MainSubmitButton','Start Battle')" style=margin-left:10px;background-color:rgb(255,190,190)><hr style="margin-top:3px;margin-bottom:2px" size=5><div id=A.1 style=margin-left:10px><a href=share/s1914.info.html#stack_info target=help>Stack</a> A1 <span title="What enemy stack, if any, is this stack attacking? See the help page under Attack targets for more information."><a href=share/s1914.info.html#targets target=help>vs</a>
+<select id=A.1.target name=A.1.target><option value="0">Defend</option><option value="B.1" selected>Stack B1</option></select></span> <span title="Specify the terrain where this stack is."><a href=share/s1914.info.html#terrain target=help>in</a>
+<select id=A.1.terrain name=A.1.terrain><option value="land" selected>land</option><option value="sea">sea</option><option value="air">air</option><option value="patrol">patrol</option><option value="debark">debark</option></select></span> <span title="Position of stack on imaginary line so that distances betweeen stacks can be calculated. Default of zero is OK for melee.  See help for more info."><a href=share/s1914.info.html#positions target=help>at</a>
+<select id=A.1.position name=A.1.position><option value="0" selected>0 km</option><option value="1">1 km</option><option value="2">2 km</option><option value="3">3 km</option><option value="10">10 km</option><option value="20">20 km</option><option value="30">30 km</option><option value="40">40 km</option><option value="50">50 km</option><option value="75">75 km</option><option value="150">150 km</option></select></span><span title="Select trench level if stack is in a trench.">
+<select id="A.1.trench" name="A.1.trench"><option value="0" selected>Trench</option><option value="1">TL 1</option><option value="2">TL 2</option><option value="3">TL 3</option><option value="4">TL 4</option><option value="5">TL 5</option><option value="6">TL 6</option><option value="7">TL 7</option><option value="8">TL 8</option><option value="9">TL 9</option><option value="10">TL 10</option><option value="11">TL 11</option><option value="12">TL 12</option><option value="13">TL 13</option><option value="14">TL 14</option><option value="15">TL 15</option><option value="16">TL 16</option><option value="17">TL 17</option><option value="18">TL 18</option><option value="19">TL 19</option><option value="20">TL 20</option></select></span> <button type="button" id=A.1.addBuilding onclick="addBuilding('A','1')" title="Associate a building with this stack." style=background-color:rgb(190,250,250)>bldg</button> <button type="button" id=A.1.addHero onclick="addHero('A','1')" title="Associate a hero with this stack." style=background-color:rgb(190,250,250)>hero</button> <button type="button" id=A.1.addUnit onclick="addUnit('A','1')" style=background-color:rgb(190,250,250) title="Add a unit to the stack.">unit</button> <button id=A.1.removeStack type="button" onclick="removeStack('A','1')" title="Remove this stack." style="background-color:rgb(250,250,190);margin-bottom:5px;">cut</button><div hidden id=A.1.bldg.0 style=margin-left:5px>
+<select id=A.1.bldg.0.abb name=A.1.bldg.0.abb title="Select a building type from the list.">
+<option value=fortress selected>Fortress</option>
+<option value=recruiting>Recruiting</option>
+<option value=railway>Railway</option>
+<option value=workshop>Workshop</option>
+<option value=factory>Factory</option>
+<option value=barracks>Barracks</option>
+<option value=aerodrome>Aerodrome</option>
+<option value=harbor>Harbor</option>
+</select> <select id=A.1.bldg.0.lvl name=A.1.bldg.0.lvl title="Select the level of the building."><option value=1 selected>lvl 1</option><option value=2>lvl 2</option><option value=3>lvl 3</option><option value=4>lvl 4</option><option value=5>lvl 5</option></select> <label title="Current hit points or hit point percentage (like 100%) of this building"><a href=share/s1914.info.html#forts target=help>HP</a> <input type="text" pattern="[\d.]+%?" style=width:3.2em id=A.1.bldg.0.hp name=A.1.bldg.0.hp value=100%></label> <button id=A.1.bldg.0.remove type="button" onclick="removeBuilding('A','1','0')" title="Remove this building" style="background-color:rgb(250,250,190)">cut</button></div><div id=A.1.1 style=margin-left:10px>
+<select id=A.1.1.unit name=A.1.1.unit title="Select a unit type from the list.">
+<optgroup label=Land><option value="inf" selected>Infantry</option>
+<option value="cav">Cavalry</option>
+<option value="ac">Armored Car</option>
+<option value="lart">Light Artillery</option>
+<option value="art">Artillery</option>
+<option value="rrg">Railgun</option>
+<option value="lt">Tank</option>
+<option value="ht">Heavy Tank</option>
+<option value="convoy">Airplane Convoy</option>
+<option value="st">Stormtrooper</option>
+</optgroup>
+<optgroup label=Air><option value="bal">Balloon</option>
+<option value="int">Fighter</option>
+<option value="tac">Bomber</option>
+<option value="zep">Zeppelin</option>
+</optgroup>
+<optgroup label=Naval><option value="sub">Submarine</option>
+<option value="cl">Light Cruiser</option>
+<option value="bb">Battleship</option>
+</optgroup>
+</select> <label title="Input the number of units of this type in the stack."><a href=share/s1914.info.html#unit_count target=help>Count</a> <input type="text" pattern="\d+" style=width:2.5em id=A.1.1.count name=A.1.1.count value=10></label> <label title="Current hit points of this unit type or the percentage followed by % (e.g 80.5%). See the help page on hits points for more info."><a href=share/s1914.info.html#unit_hp target=help>HP</a> <input type="text" pattern="[\d.]+%?" style=width:50px id=A.1.1.hp name=A.1.1.hp value=100%></label> <button id=A.1.1.remove type="button" onclick="removeUnit('A','1','1')"title="Remove this unit from stack." style="background-color:rgb(250,250,190)">cut</button> <span class=hpLeft style=color:red>Lost 200.0 HP (100%) all 10 died</span></div><div id=A.1.2 style=margin-left:10px>
+<select id=A.1.2.unit name=A.1.2.unit title="Select a unit type from the list.">
+<optgroup label=Land><option value="inf">Infantry</option>
+<option value="cav">Cavalry</option>
+<option value="ac">Armored Car</option>
+<option value="lart">Light Artillery</option>
+<option value="art" selected>Artillery</option>
+<option value="rrg">Railgun</option>
+<option value="lt">Tank</option>
+<option value="ht">Heavy Tank</option>
+<option value="convoy">Airplane Convoy</option>
+<option value="st">Stormtrooper</option>
+</optgroup>
+<optgroup label=Air><option value="bal">Balloon</option>
+<option value="int">Fighter</option>
+<option value="tac">Bomber</option>
+<option value="zep">Zeppelin</option>
+</optgroup>
+<optgroup label=Naval><option value="sub">Submarine</option>
+<option value="cl">Light Cruiser</option>
+<option value="bb">Battleship</option>
+</optgroup>
+</select> <label title="Input the number of units of this type in the stack."><a href=share/s1914.info.html#unit_count target=help>Count</a> <input type="text" pattern="\d+" style=width:2.5em id=A.1.2.count name=A.1.2.count value=2></label> <label title="Current hit points of this unit type or the percentage followed by % (e.g 80.5%). See the help page on hits points for more info."><a href=share/s1914.info.html#unit_hp target=help>HP</a> <input type="text" pattern="[\d.]+%?" style=width:50px id=A.1.2.hp name=A.1.2.hp value=100%></label> <button id=A.1.2.remove type="button" onclick="removeUnit('A','1','2')"title="Remove this unit from stack." style="background-color:rgb(250,250,190)">cut</button> <span class=hpLeft style=color:red>Lost 40.0 HP (100%) all 2 died</span></div></div><div style=margin:10px>
+<table class=resultTable>
+<tr class=resultRow>
+<th title="Remaining hit points of all stacks.">HP final</th>
+<th title="The total hit points lost by all the stacks during the battle.">HP lost</th>
+<th title="The percentage of the initial HP that was lost in the battle.">%lost</th>
+<th>food</th>
+<th>fish</th>
+<th>iron</th>
+<th>wood</th>
+<th>coal</th>
+<th>oil</th>
+<th>gas</th>
+<th>cash</th>
+<th>hours</th>
+</tr>
+<tr class=resultRow>
+<td>0.00</td>
+<td>240.00</td>
+<td>100</td>
+<td>0</td>
+<td>0</td>
+<td>6000</td>
+<td>0</td>
+<td>0</td>
+<td>4000</td>
+<td>0</td>
+<td>$20000</td>
+<td>76</td>
+</tr>
+</table>
+</div>
+</div><div style=margin:10px><ins class="adsbygoogle" style="display:inline-block;width:728px;height:90px" data-ad-client="ca-pub-6213686270453569" data-ad-slot="6299855543"></ins><script>(adsbygoogle = window.adsbygoogle || []).push({});</script></div><div id=B style=background-color:#ccccff;padding:10px><a href=share/s1914.info.html#army target=help>Army</a> B<button type="button" onclick="addStack('B')" style=margin-left:10px;margin-right:5px;background-color:rgb(190,250,250) title="Add a stack to this Army.">add stack</button> <input type="button" value="Start Battle" title="Start the battle." onclick="onAttack('MainSubmitButton','Start Battle')" style=margin-left:10px;background-color:rgb(255,190,190)><hr style="margin-top:3px;margin-bottom:2px" size=5><div id=B.1 style=margin-left:10px><a href=share/s1914.info.html#stack_info target=help>Stack</a> B1 <span title="What enemy stack, if any, is this stack attacking? See the help page under Attack targets for more information."><a href=share/s1914.info.html#targets target=help>vs</a>
+<select id=B.1.target name=B.1.target><option value="0">Defend</option><option value="A.1">Stack A1</option></select></span> <span title="Specify the terrain where this stack is."><a href=share/s1914.info.html#terrain target=help>in</a>
+<select id=B.1.terrain name=B.1.terrain><option value="land" selected>land</option><option value="sea">sea</option><option value="air">air</option><option value="patrol">patrol</option><option value="debark">debark</option></select></span> <span title="Position of stack on imaginary line so that distances betweeen stacks can be calculated. Default of zero is OK for melee.  See help for more info."><a href=share/s1914.info.html#positions target=help>at</a>
+<select id=B.1.position name=B.1.position><option value="0" selected>0 km</option><option value="1">1 km</option><option value="2">2 km</option><option value="3">3 km</option><option value="10">10 km</option><option value="20">20 km</option><option value="30">30 km</option><option value="40">40 km</option><option value="50">50 km</option><option value="75">75 km</option><option value="150">150 km</option></select></span><span title="Select trench level if stack is in a trench.">
+<select id="B.1.trench" name="B.1.trench"><option value="0" selected>Trench</option><option value="1">TL 1</option><option value="2">TL 2</option><option value="3">TL 3</option><option value="4">TL 4</option><option value="5">TL 5</option><option value="6">TL 6</option><option value="7">TL 7</option><option value="8">TL 8</option><option value="9">TL 9</option><option value="10">TL 10</option><option value="11">TL 11</option><option value="12">TL 12</option><option value="13">TL 13</option><option value="14">TL 14</option><option value="15">TL 15</option><option value="16">TL 16</option><option value="17">TL 17</option><option value="18">TL 18</option><option value="19">TL 19</option><option value="20">TL 20</option></select></span> <button type="button" id=B.1.addBuilding onclick="addBuilding('B','1')" title="Associate a building with this stack." style=background-color:rgb(190,250,250)>bldg</button> <button type="button" id=B.1.addHero onclick="addHero('B','1')" title="Associate a hero with this stack." style=background-color:rgb(190,250,250)>hero</button> <button type="button" id=B.1.addUnit onclick="addUnit('B','1')" style=background-color:rgb(190,250,250) title="Add a unit to the stack.">unit</button> <button id=B.1.removeStack type="button" onclick="removeStack('B','1')" title="Remove this stack." style="background-color:rgb(250,250,190);margin-bottom:5px;">cut</button><div hidden id=B.1.bldg.0 style=margin-left:5px>
+<select id=B.1.bldg.0.abb name=B.1.bldg.0.abb title="Select a building type from the list.">
+<option value=fortress selected>Fortress</option>
+<option value=recruiting>Recruiting</option>
+<option value=railway>Railway</option>
+<option value=workshop>Workshop</option>
+<option value=factory>Factory</option>
+<option value=barracks>Barracks</option>
+<option value=aerodrome>Aerodrome</option>
+<option value=harbor>Harbor</option>
+</select> <select id=B.1.bldg.0.lvl name=B.1.bldg.0.lvl title="Select the level of the building."><option value=1 selected>lvl 1</option><option value=2>lvl 2</option><option value=3>lvl 3</option><option value=4>lvl 4</option><option value=5>lvl 5</option></select> <label title="Current hit points or hit point percentage (like 100%) of this building"><a href=share/s1914.info.html#forts target=help>HP</a> <input type="text" pattern="[\d.]+%?" style=width:3.2em id=B.1.bldg.0.hp name=B.1.bldg.0.hp value=100%></label> <button id=B.1.bldg.0.remove type="button" onclick="removeBuilding('B','1','0')" title="Remove this building" style="background-color:rgb(250,250,190)">cut</button></div><div id=B.1.1 style=margin-left:10px>
+<select id=B.1.1.unit name=B.1.1.unit title="Select a unit type from the list.">
+<optgroup label=Land><option value="inf" selected>Infantry</option>
+<option value="cav">Cavalry</option>
+<option value="ac">Armored Car</option>
+<option value="lart">Light Artillery</option>
+<option value="art">Artillery</option>
+<option value="rrg">Railgun</option>
+<option value="lt">Tank</option>
+<option value="ht">Heavy Tank</option>
+<option value="convoy">Airplane Convoy</option>
+<option value="st">Stormtrooper</option>
+</optgroup>
+<optgroup label=Air><option value="bal">Balloon</option>
+<option value="int">Fighter</option>
+<option value="tac">Bomber</option>
+<option value="zep">Zeppelin</option>
+</optgroup>
+<optgroup label=Naval><option value="sub">Submarine</option>
+<option value="cl">Light Cruiser</option>
+<option value="bb">Battleship</option>
+</optgroup>
+</select> <label title="Input the number of units of this type in the stack."><a href=share/s1914.info.html#unit_count target=help>Count</a> <input type="text" pattern="\d+" style=width:2.5em id=B.1.1.count name=B.1.1.count value=12></label> <label title="Current hit points of this unit type or the percentage followed by % (e.g 80.5%). See the help page on hits points for more info."><a href=share/s1914.info.html#unit_hp target=help>HP</a> <input type="text" pattern="[\d.]+%?" style=width:50px id=B.1.1.hp name=B.1.1.hp value=100%></label> <button id=B.1.1.remove type="button" onclick="removeUnit('B','1','1')"title="Remove this unit from stack." style="background-color:rgb(250,250,190)">cut</button> <span class=hpLeft style=color:red>Lost 175.9 HP (73.3%) 6 died</span></div></div><div style=margin:10px>
+<table class=resultTable>
+<tr class=resultRow>
+<th title="Remaining hit points of all stacks.">HP final</th>
+<th title="The total hit points lost by all the stacks during the battle.">HP lost</th>
+<th title="The percentage of the initial HP that was lost in the battle.">%lost</th>
+<th>food</th>
+<th>fish</th>
+<th>iron</th>
+<th>wood</th>
+<th>coal</th>
+<th>oil</th>
+<th>gas</th>
+<th>cash</th>
+<th>hours</th>
+</tr>
+<tr class=resultRow>
+<td>64.11</td>
+<td>175.89</td>
+<td>73.3</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>0</td>
+<td>$0</td>
+<td>29</td>
+</tr>
+</table>
+</div>
+</div><div style=margin:10px> <input type="button" value="Start Battle" title="Start the battle." onclick="onAttack('MainSubmitButton','Start Battle')" style=background-color:rgb(255,190,190)><label style=margin-left:10px title="The maximum number of rounds to fight. For a single round set to 1. For controlling patrol tics fractional values can be used."><a href=share/s1914.info.html#max_rounds target=help>Max Rounds</a> <input type="number" id="maxRounds" name="maxRounds" min=0.25 max=1000 step=0.25 value=100 style=width:4em;></label><label style=margin-left:10px title="Update troop counts and condition after battle."><a href=share/s1914.info.html#update_counts target=help>Update Counts</a><input type="checkbox" id="updateCounts" name="updateCounts"></label><label style=margin-left:10px title="Open results in new tab"><a href=share/s1914.info.html#new_tab target=help>New Tab</a><input type="checkbox" id="newWindow" name="newWindow" onclick='setNewWindow(this.form)'></label><label  style=margin-left:10px title="If checked randomness will be added to the battle."><a href=share/s1914.info.html#sim_var target=help>Simulate Variance</a><input type="checkbox" id="simulateVariance" name="simulateVariance"></label></div></tr></table></form>
+<p style=font-weight:bold;color:red>Army B Won in round 8.</p><img src="s1914_images/com4.jpg" style='max-width:750px;'><hr/>
+</body>
+</html>
