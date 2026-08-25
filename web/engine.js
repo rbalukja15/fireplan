@@ -1903,7 +1903,7 @@ function runSimulation(config, derivation, caveats) {
     // 2. Attacker takes it. No fortress on the attacking side does anything
     //    in this model, because nobody has measured one.
     const selfBomb = bomb ? bomb.toAtk : 0;
-    const atkLostThis = Math.min(defOutput + selfBomb, atk.pool);
+    let atkLostThis = Math.min(defOutput + selfBomb, atk.pool);
     // Deaths come from the per-row split, because a mixture's rows have
     // different per-unit HP and a stack-level division would be meaningless.
     const atkAlloc = allocate(atk, atkLostThis);
@@ -1914,6 +1914,9 @@ function runSimulation(config, derivation, caveats) {
       pt.row.deaths += d;
       atkDeathsThis += d;
     }
+    // The same on this side, for the same reason. Symmetry is not decoration
+    // here: a mutual attack puts the mixture and the hero on the A side too.
+    atkLostThis = atkAlloc.parts.reduce((t, pt) => t + pt.share, 0);
     if (atk.rows.length > 1) {
       derivation.push({
         label: `${tag}Attacker damage split across rows`,
@@ -1924,9 +1927,12 @@ function runSimulation(config, derivation, caveats) {
         value: atkLostThis,
       });
       if (atkAlloc.overflow) {
-        caveats.push('A unit row was destroyed and the surplus damage was passed '
-          + 'to the others. No measured mixture ever saturated a single row, so '
-          + 'what the game really does with the remainder is unknown.');
+        derivation.push({
+          label: `${tag}Attacker surplus discarded`,
+          formula: 'An attacking row could not absorb its share and the surplus '
+            + 'is DROPPED, not passed to the others — see the defender note.',
+          value: round4(atkAlloc.discarded),
+        });
       }
     }
     if (atkLostThis < defOutput - EPS) {
@@ -2156,6 +2162,11 @@ function runSimulation(config, derivation, caveats) {
       pt.row.deaths += d;
       defDeathsThis += d;
     }
+    // WHAT LANDED, not what was swung. The two differ only when a row
+    // saturates, and the difference is the whole of the fortress residual:
+    // charging the side for damage no row could absorb drove its pool
+    // negative and ended the battle a round early.
+    defLostThis = defAlloc.parts.reduce((t, pt) => t + pt.share, 0);
     if (def.rows.length > 1 && !def.withheldLoss) {
       derivation.push({
         label: `${tag}Defender damage split across rows`,
@@ -2166,9 +2177,14 @@ function runSimulation(config, derivation, caveats) {
         value: defLostThis,
       });
       if (defAlloc.overflow) {
-        caveats.push('A defending unit row was destroyed and the surplus damage '
-          + 'was passed to the others. No measured mixture ever saturated a '
-          + 'single row, so the remainder rule is unknown.');
+        derivation.push({
+          label: `${tag}Defender surplus discarded`,
+          formula: 'A defending row could not absorb its share and the surplus '
+            + 'is DROPPED, not passed to the others — measured on the site\'s own '
+            + 'per-round readback (fort_drift): the defender\'s units end round 9 '
+            + 'at 0 and its hero at 21.2, having absorbed 31.7 of a ~74 HP swing.',
+          value: round4(defAlloc.discarded),
+        });
       }
     }
     derivation.push({
@@ -2664,25 +2680,38 @@ function allocate(side, incoming) {
   }
   const sum = w.reduce((a, b) => a + b, 0);
   const out = [];
-  let spare = 0;
+  let discarded = 0;
   targets.forEach((r, i) => {
     const want = sum > 0 ? incoming * (w[i] / sum) : incoming / (targets.length || 1);
-    const got = Math.min(want, r.pool === null ? want : r.pool);
-    spare += want - got;
+    // AGAINST WHAT IS LEFT, not against what the row started with. This read
+    // r.pool -- the row's FULL pool -- so a row already down to 15 HP would
+    // happily absorb 49 more, and the surplus came out of the side's total as
+    // if it had landed. On a single-row side it never showed: the incoming
+    // total is capped at the side's remaining pool before it gets here, so
+    // `want` could not exceed what was left anyway. It takes a mixture, or a
+    // hero, for a row to saturate while the side has HP elsewhere.
+    const left = r.pool === null ? null : Math.max(0, r.pool - (r.hpLost || 0));
+    const got = Math.min(want, left === null ? want : left);
+    discarded += want - got;
     out.push({ row: r, share: got });
   });
-  // A row that cannot absorb its share passes the remainder on. Unmeasured --
-  // no measured mixture ever saturated a single row -- so it is flagged.
-  if (spare > EPS) {
-    for (const o of out) {
-      if (spare <= EPS) break;
-      const room = (o.row.pool === null) ? 0 : o.row.pool - o.share;
-      const take = Math.min(room, spare);
-      o.share += take;
-      spare -= take;
-    }
-  }
-  return { parts: out, overflow: spare > EPS };
+  // THE SURPLUS IS DISCARDED, NOT PASSED ON, and that is measured now.
+  //
+  // This used to hand a saturated row's remainder to the others, with a
+  // caveat admitting no measured mixture had ever saturated a row. It has now:
+  // the real army's twelve armoured cars enter round 9 with 10.5 HP between
+  // them and Kangal on 42.4, and the site's own readback has the units at 0
+  // and the hero at 21.2 afterwards -- 31.7 HP applied out of the ~74 the
+  // attacker swung. Redistributing instead killed the hero in the same round,
+  // ended the battle one round early, and left the fortress 6.17 HP short of
+  // the destruction the site reports. The isolated version is starker still:
+  // six heavy tanks against five infantry, a hero and a level-5 fortress take
+  // the fortress to 208.3 on the site and 157.78 here, purely because the
+  // hero soaked a round's worth of surplus it should never have seen.
+  //
+  // A round's swing is therefore an UPPER BOUND on what it can take off a
+  // side, and each row is its own bound within that.
+  return { parts: out, discarded, overflow: discarded > EPS };
 }
 
 

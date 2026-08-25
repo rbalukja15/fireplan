@@ -10835,7 +10835,205 @@ def exp_bughunt(p: Probe) -> None:
               "there is none.")
 
 
+def exp_fort_drift(p: Probe) -> None:
+    """The one number in this project the engine has never reproduced.
+
+    Fought to the end, the site destroys the real army's level-4 fortress --
+    200.0, "destroyed" -- and this engine stops at 193.83 with 6.17 HP of it
+    standing. It has been printed as an unreproduced measurement for as long as
+    the real-army rows have been on file.
+
+    WHAT IS ALREADY KNOWN, ALL OF IT FROM THE ARCHIVE AND FOR FREE.
+
+      * It is not the building-damage rate. The engine's cumulative fortress
+        total matches the site at every round the site has been asked for:
+        38.06/38.1, 71.02/71.0, 99.00/99.0, 141.68/141.7, 157.78/157.8,
+        171.35/171.4, 183.12/183.1. Seven rounds, exact.
+      * It is not the stop condition. exp_bughunt settled that directly: a
+        fortress whose garrison is dead takes no further damage, at 5 rounds,
+        8 or 100.
+      * It is not the smaller fortresses. The same army against a pool of 150
+        or 155 finishes the building and the engine agrees exactly. Only the
+        full 200 is short, and only by 6.17.
+      * The DEFENDER is where the two actually part company, and it starts at
+        round 7: site 631.68 against engine 629.99, then 707.66 against 701.95.
+        The engine under-damages the defender late, which leaves the attacker
+        stronger for longer in the site's battle than in this one -- and a
+        stronger attacker is exactly what the last few HP of fortress need.
+
+    So the fortress is not the defect. It is the READOUT of a defect, and the
+    defect is in the last three rounds of the defender's arithmetic. Rounds 1-6
+    are exact and round 7 is not.
+
+    WHAT THIS SWEEP ADDS. updateCounts rewrites the returned form with the
+    site's own survivor counts and remaining HP, which is how the previous two
+    defects in this area were found. That ladder exists on file for the 155-HP
+    fortress at rounds 1-5 -- the stretch where nothing is wrong. Here it runs
+    against the 200-HP fortress at rounds 1-9, over the rounds that actually
+    diverge, so the first quantity to go wrong can be named: an attacker row's
+    survivors, its HP, the defender's, or the hero's.
+
+    Two controls come with it, because the hero is the obvious suspect and a
+    suspect deserves a test rather than a story:
+
+      * The same battle with NO HERO. The engine says that one destroys the
+        fortress in 7 rounds -- a weaker defender lets the attacker live longer
+        and hit the building harder. If the site agrees there and disagrees
+        only when the hero is present, the hero's late-battle contribution is
+        where to look.
+      * exp_bughunt's prong A with a hero ADDED. That configuration is measured
+        and its fortress survives; adding a hero must not change that, and if
+        it does, the stop condition finding needs revisiting.
+
+    And one methodological control: round 9 submitted with updateCounts OFF.
+    Everything here is read through a switch this project has used exactly
+    once. If the two disagree, the ladder is measuring the switch.
+    """
+    import json as _json
+    import os as _os
+    base = _os.environ.get("BUGHUNT_DIR", ".")
+    engine = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                           "web", "engine.js")
+    pred_path = _os.path.join(base, "fortdrift_pred.json")
+    if not _os.path.exists(pred_path):
+        print("  no fortdrift_pred.json — run scripts/fortdrift_predict.mjs "
+              "first. Nothing submitted.", file=sys.stderr)
+        return
+    if _os.path.exists(engine) and \
+            _os.path.getmtime(pred_path) < _os.path.getmtime(engine):
+        print("  fortdrift_pred.json is older than web/engine.js — re-run "
+              "scripts/fortdrift_predict.mjs. Nothing submitted.", file=sys.stderr)
+        return
+    pred = _json.load(open(pred_path))
+
+    ATK = [("inf", 35, "453.6"), ("ac", 6, "318.1"), ("cav", 17, "378.1")]
+    abb, lvl, hhp = HERO_FIELDS
+    hero_fields = HERO_FIELDS
+    bldg_fields = ("B.1.bldg.1.abb", "B.1.bldg.1.lvl", "B.1.bldg.1.hp")
+    fields = hero_fields + bldg_fields \
+        + composite_fields("A", 1, 3) + composite_fields("B", 1, 1)
+
+    def army(rounds: Any, update: bool, hero: bool) -> dict[str, str]:
+        ov = settings(rounds, update_counts=update)
+        ov.update(duel(1, "inf", 35, "ac", 12))
+        for i, (u, n, hp) in enumerate(ATK, start=1):
+            ov[f"A.1.{i}.unit"] = u
+            ov[f"A.1.{i}.count"] = str(n)
+            ov[f"A.1.{i}.hp"] = hp
+        ov["B.1.1.unit"] = "ac"
+        ov["B.1.1.count"] = "12"
+        ov["B.1.1.hp"] = "677.5"
+        if hero:
+            ov.update({abb: "kangal", lvl: "9", hhp: "83.1"})
+        ov.update({"B.1.bldg.1.abb": "fortress", "B.1.bldg.1.lvl": "4",
+                   "B.1.bldg.1.hp": "100%"})
+        return ov
+
+    print("\n  1. the real army against a FULL level-4 fortress, round by round")
+    print("     site above, engine below; * marks the first quantity to part company\n")
+    print(f"  {'rnd':>4} | {'inf ct':>7}{'inf hp':>9} | {'ac ct':>6}{'ac hp':>9}"
+          f" | {'cav ct':>7}{'cav hp':>9} | {'def ct':>7}{'def hp':>9}"
+          f"{'hero hp':>9}{'fort hp':>9}")
+    for rounds in range(1, 10):
+        try:
+            p.submit(army(rounds, True, True), create=fields)
+        except (BareFormReturned, ValueError) as e:
+            print(f"  {rounds:>4} | refused: {e}"[:96])
+            continue
+        back = read_back(p)
+        d = dict(p.last_details)
+        record("fort_drift",
+               {"rounds": rounds, "hero_level": 9, "fortress": "lvl4 100%",
+                "update_counts": True, "predicted": pred.get(f"r{rounds}"),
+                "detail": d, "form_back": back,
+                "summary": dict(p.last_summary)},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        g = lambda k: back.get(k, "-")
+        # The fortress comes back as a LEVEL plus a top-band HP, not a pool.
+        # pool = (level - 1) x 50 + top-band, measured in fortress_hp_scale.
+        try:
+            fort = (float(g("B.1.bldg.1.lvl")) - 1) * 50 + float(g("B.1.bldg.1.hp"))
+        except (TypeError, ValueError):
+            fort = None
+        print(f"  {rounds:>4} | {g('A.1.1.count'):>7}{g('A.1.1.hp'):>9}"
+              f" | {g('A.1.2.count'):>6}{g('A.1.2.hp'):>9}"
+              f" | {g('A.1.3.count'):>7}{g('A.1.3.hp'):>9}"
+              f" | {g('B.1.1.count'):>7}{g('B.1.1.hp'):>9}"
+              f"{g('B.1.hero.hp'):>9}"
+              f"{('-' if fort is None else f'{fort:.2f}'):>9}")
+        e = pred.get(f"r{rounds}") or {}
+        if e:
+            print(f"  {'eng':>4} | {e['inf']['alive']:>7}{e['inf']['hpLeft']:>9}"
+                  f" | {e['ac']['alive']:>6}{e['ac']['hpLeft']:>9}"
+                  f" | {e['cav']['alive']:>7}{e['cav']['hpLeft']:>9}"
+                  f" | {e['def']['alive']:>7}{e['def']['hpLeft']:>9}"
+                  f"{e['hero_hp']:>9}{e['fort_hp']:>9}")
+
+    print("\n  2. round 9 with updateCounts OFF — is the switch changing the battle?")
+    try:
+        p.submit(army(9, False, True), create=fields)
+        d = dict(p.last_details)
+        record("fort_drift",
+               {"rounds": 9, "hero_level": 9, "fortress": "lvl4 100%",
+                "update_counts": False, "predicted": pred.get("r9"),
+                "detail": d, "summary": dict(p.last_summary)},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        b = d.get("B.1.bldg.1") or {}
+        print(f"     fortress lost {b.get('lost')}, destroyed={b.get('destroyed')}; "
+              f"defender {(d.get('B.1.1') or {}).get('lost')}")
+    except (BareFormReturned, ValueError) as e:
+        print(f"     refused: {e}"[:96])
+
+    print("\n  3. THE SAME BATTLE WITH NO HERO, fought out")
+    print(f"     engine says {pred['no_hero_100']}")
+    try:
+        p.submit(army(100, False, False), create=bldg_fields
+                 + composite_fields("A", 1, 3) + composite_fields("B", 1, 1))
+        d = dict(p.last_details)
+        record("fort_drift",
+               {"rounds": 100, "hero_level": None, "fortress": "lvl4 100%",
+                "update_counts": False, "predicted": pred["no_hero_100"],
+                "detail": d, "summary": dict(p.last_summary)},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        b = d.get("B.1.bldg.1") or {}
+        print(f"     site: fortress lost {b.get('lost')}, "
+              f"destroyed={b.get('destroyed')}; defender "
+              f"{(d.get('B.1.1') or {}).get('lost')}")
+        if "B.1.hero" in d:
+            print("     ! a hero row came back on a request that set no hero — "
+                  "the no-hero control did NOT control for the hero.",
+                  file=sys.stderr)
+    except (BareFormReturned, ValueError) as e:
+        print(f"     refused: {e}"[:96])
+
+    print("\n  4. exp_bughunt's prong A with a hero added, fought out")
+    print(f"     engine says {pred['prongA_with_hero_100']}")
+    print("     its fortress survived at 159.8 of 250 with no hero; a hero "
+          "must not change that")
+    try:
+        ov = settings(100)
+        ov.update(duel(1, "ht", 6, "inf", 5))
+        ov.update({abb: "kangal", lvl: "9", hhp: "100%"})
+        ov.update({"B.1.bldg.1.abb": "fortress", "B.1.bldg.1.lvl": "5",
+                   "B.1.bldg.1.hp": "100%"})
+        p.submit(ov, create=hero_fields + bldg_fields)
+        d = dict(p.last_details)
+        record("fort_drift",
+               {"rounds": 100, "hero_level": 9, "fortress": "lvl5 100%",
+                "tag": "prongA_with_hero", "update_counts": False,
+                "predicted": pred["prongA_with_hero_100"],
+                "detail": d, "summary": dict(p.last_summary)},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        b = d.get("B.1.bldg.1") or {}
+        print(f"     site: fortress lost {b.get('lost')}, "
+              f"destroyed={b.get('destroyed')}; defender "
+              f"{(d.get('B.1.1') or {}).get('lost')}")
+    except (BareFormReturned, ValueError) as e:
+        print(f"     refused: {e}"[:96])
+
+
 EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
+    "fort_drift": exp_fort_drift,
     "bughunt": exp_bughunt,
     "unit_stats": exp_unit_stats,
     "repair_cost": exp_repair_cost,
