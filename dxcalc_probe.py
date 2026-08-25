@@ -1090,7 +1090,8 @@ def guard_payload(payload: dict[str, str]) -> None:
 # Payload helpers
 # --------------------------------------------------------------------------
 
-def settings(rounds: str | float = "1", variance: bool = False) -> dict[str, str]:
+def settings(rounds: str | float = "1", variance: bool = False,
+             update_counts: bool = False) -> dict[str, str]:
     """Global form switches.
 
     simulateVariance MUST be off for a deterministic reading — with it on the
@@ -1101,7 +1102,12 @@ def settings(rounds: str | float = "1", variance: bool = False) -> dict[str, str
     return {
         "maxRounds": str(rounds),
         "simulateVariance": "on" if variance else "",
-        "updateCounts": "",
+        # UPDATE COUNTS rewrites the returned FORM with the post-battle unit
+        # counts and HP instead of echoing what was sent. It is off by default
+        # because every experiment here reads the result spans, and it stayed
+        # off for the whole project -- so the server's own survivor counts, the
+        # one quantity this rig has always INFERRED, were never once read.
+        "updateCounts": "on" if update_counts else "",
         "newWindow": "",
     }
 
@@ -10341,6 +10347,106 @@ def exp_fortress_hp_scale(p: Probe) -> None:
               f"{str(dr0):>11}{str(dr1):>10}   {meaning}")
 
 
+def read_back(p: Probe) -> dict[str, str]:
+    """The FORM as the server returned it, which with updateCounts on carries
+    the POST-BATTLE counts and HP rather than an echo of what was sent."""
+    fs = FormScraper()
+    fs.feed(p.last_response)
+    return dict(fs.fields)
+
+
+def exp_update_counts(p: Probe) -> None:
+    """Read the server's OWN survivor counts, for the first time.
+
+    settings() has sent updateCounts="" since the first request, so every one
+    of the 2,585 readings on file reports HP LOST and nothing else. Survivors,
+    remaining pool and deaths have always been INFERRED here -- deaths from
+    floor(damage / per-unit HP), survivors from count minus deaths -- and that
+    inference is what every multi-round result is built on. The switch that
+    would check it has been sitting in the form the whole time.
+
+    With it on the server rewrites the form it returns, so A.1.1.count comes
+    back as what SURVIVED and A.1.1.hp as what they have left. That is a direct
+    reading of three quantities this project has only ever computed.
+
+    IT IS ALSO THE OBVIOUS DIAGNOSTIC for the one known wrong answer in the
+    model. Against a real army the engine is exact at round 1 and drifts to
+    about 4% by round 10, seeded by roughly half a hit point in the DEFENDER'S
+    ROUND-TWO output. Output depends on survivors and on their HP; both are
+    now readable per round instead of inferred, so the round where the two
+    diverge can be pointed at rather than reasoned about.
+    """
+    print("\n  1. a battle whose every number this project already knows\n")
+    print("     10 infantry vs 10 infantry, one round. Measured long ago:")
+    print("     A loses 50.0 with 2 dead, B loses 40.0 with 2 dead.\n")
+    ov = settings(1, update_counts=True)
+    ov.update(duel(1, "inf", 10, "inf", 10))
+    try:
+        p.submit(ov)
+    except (BareFormReturned, ValueError) as e:
+        print(f"  refused: {e}"[:96])
+        return
+    back = read_back(p)
+    d = dict(p.last_details)
+    record("update_counts", {"label": "10 inf v 10 inf", "rounds": 1,
+                             "detail": d, "form_back": back,
+                             "summary": dict(p.last_summary)},
+           {k: (v or {}).get("lost") for k, v in d.items()})
+    print(f"  {'slot':10}{'lost':>8}{'inferred left':>15}{'server says':>13}"
+          f"{'inferred HP':>13}{'server HP':>11}")
+    for slot, n0, pool0 in (("A.1.1", 10, 200.0), ("B.1.1", 10, 200.0)):
+        det = d.get(slot) or {}
+        lost = det.get("lost")
+        died = det.get("died")
+        left_inf = None if died is None else n0 - int(died)
+        hp_inf = None if lost is None else pool0 - lost
+        print(f"  {slot:10}{str(lost):>8}{str(left_inf):>15}"
+              f"{back.get(slot + '.count', '-'):>13}"
+              f"{('-' if hp_inf is None else f'{hp_inf:.2f}'):>13}"
+              f"{back.get(slot + '.hp', '-'):>11}")
+
+    print("\n  2. the real army, round by round — where do the two diverge?\n")
+    ATK = [("inf", 35, "453.6"), ("ac", 6, "318.1"), ("cav", 17, "378.1")]
+    abb, lvl, hhp = HERO_FIELDS
+    fields = HERO_FIELDS + ("B.1.bldg.1.abb", "B.1.bldg.1.lvl",
+                            "B.1.bldg.1.hp") \
+        + composite_fields("A", 1, 3) + composite_fields("B", 1, 1)
+    print(f"  {'rnd':>4} | {'inf ct':>7}{'inf hp':>9} | {'ac ct':>6}{'ac hp':>9}"
+          f" | {'cav ct':>7}{'cav hp':>9} | {'def ct':>7}{'def hp':>9}"
+          f"{'hero hp':>9}{'fort hp':>9}")
+    for rounds in (1, 2, 3, 4, 5):
+        ov = settings(rounds, update_counts=True)
+        ov.update(duel(1, "inf", 35, "ac", 12))
+        for i, (u, n, hp) in enumerate(ATK, start=1):
+            ov[f"A.1.{i}.unit"] = u
+            ov[f"A.1.{i}.count"] = str(n)
+            ov[f"A.1.{i}.hp"] = hp
+        ov["B.1.1.unit"] = "ac"
+        ov["B.1.1.count"] = "12"
+        ov["B.1.1.hp"] = "677.5"
+        ov.update({abb: "kangal", lvl: "9", hhp: "83.1"})
+        ov.update({"B.1.bldg.1.abb": "fortress", "B.1.bldg.1.lvl": "4",
+                   "B.1.bldg.1.hp": "5"})
+        try:
+            p.submit(ov, create=fields)
+        except (BareFormReturned, ValueError) as e:
+            print(f"  {rounds:>4} | refused: {e}"[:96])
+            continue
+        back = read_back(p)
+        d = dict(p.last_details)
+        record("update_counts_army",
+               {"rounds": rounds, "hero_level": 9, "fortress": "lvl4 hp5",
+                "detail": d, "form_back": back,
+                "summary": dict(p.last_summary)},
+               {k: (v or {}).get("lost") for k, v in d.items()})
+        g = lambda k: back.get(k, "-")
+        print(f"  {rounds:>4} | {g('A.1.1.count'):>7}{g('A.1.1.hp'):>9}"
+              f" | {g('A.1.2.count'):>6}{g('A.1.2.hp'):>9}"
+              f" | {g('A.1.3.count'):>7}{g('A.1.3.hp'):>9}"
+              f" | {g('B.1.1.count'):>7}{g('B.1.1.hp'):>9}"
+              f"{g('B.1.hero.hp'):>9}{g('B.1.bldg.1.hp'):>9}")
+
+
 EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "unit_stats": exp_unit_stats,
     "repair_cost": exp_repair_cost,
@@ -10358,6 +10464,7 @@ EXPERIMENTS: dict[str, Callable[[Probe], None]] = {
     "mutual_order": exp_mutual_order,
     "real_army": exp_real_army,
     "fortress_hp_scale": exp_fortress_hp_scale,
+    "update_counts": exp_update_counts,
     "range_roster": exp_range_roster,
     "return_fire": exp_return_fire,
     "mixed_range": exp_mixed_range,

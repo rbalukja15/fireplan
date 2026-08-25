@@ -1463,6 +1463,21 @@ export const NOT_MEASURED = [
 // measured, how well, and what it is NOT evidence for.
 
 export const PROVENANCE = {
+  'ALLOCATION.survivors': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=update_counts_army \u2014 the site\u2019s own post-round counts, read back through updateCounts.',
+    method: 'At round two the site splits incoming damage 0.4572 / 0.1887 / 0.3542 across 29 infantry, 6 armoured cars and 15 cavalry. Weighting by survivors predicts 0.4567 / 0.1890 / 0.3543; weighting by the opening counts of 35 / 6 / 17 predicts 0.4828 / 0.1655 / 0.3517. There is nothing to argue about.',
+    tolerance: 'Exact: with survivor weighting the engine reproduces every row\u2019s count AND remaining HP for four consecutive rounds.',
+    notEvidenceFor: 'The target factors themselves, which are unchanged \u2014 infantry 0.50, cavalry 0.75, a hero 0.40, everything else 1.00. Only the count they multiply was wrong. Invisible in the record twice over: in round one nothing has died yet, and a single-type stack takes everything however it is weighted \u2014 and every mixed-stack reading on file is a single round.',
+  },
+  'HEROES.ownHpDecays': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=update_counts_army.',
+    method: 'The form comes back with the hero\u2019s own HP in it. Kangal enters round two on 79.5 of 90 and contributes 20 x m(0.8833) = 17.78; this engine was charging 20 x m(83.1/90) = 18.54, its opening figure.',
+    tolerance: 'Exact. The engine now tracks the hero\u2019s HP against the server\u2019s readback to the printed 0.1 for four rounds running.',
+    notEvidenceFor: 'The BUFF, which does not scale with the hero\u2019s HP and is unchanged. That a hero\u2019s own output scales with its HP at all was measured earlier; what was wrong was applying it once at setup instead of every round.',
+  },
+
   'BUILDINGS.hpBar': {
     confidence: 'measured',
     source: 'results.jsonl, experiment=fortress_hp_scale \u2014 four settings of the same level-4 fortress, one round each.',
@@ -1488,8 +1503,8 @@ export const PROVENANCE = {
   },
   'REAL_ARMY.endgameDrift': {
     confidence: 'measured',
-    source: 'The same ladder, round by round.',
-    note: 'The attacker\u2019s cumulative loss runs 0.0% out at round 1, 0.1% at round 2, 0.3% at 3, 0.8% at 5, 1.2% at 6, 1.7% at 7, 2.4% at 8 and 5.0% by round 10, and the defender\u2019s mirrors it in the other direction. That shape is a compounding loop rather than a separate law: a defender that takes slightly too little keeps a slightly higher m(f), so it deals slightly more, so the attacker takes more still. The seed is about 0.5 HP in the defender\u2019s ROUND TWO output \u2014 164.84 against the site\u2019s 164.34 \u2014 and where that half-point comes from is not known. What the model does still get right at the end is the outcome: the defender is the side destroyed, at exactly its 760.60, with the fortress at 97-100%.',
+    source: 'results.jsonl, experiments real_army and update_counts_army.',
+    note: 'LARGELY CLOSED, and by the switch nobody had ever flipped. The attacker\u2019s cumulative loss used to run 0.8% out by round 5 and 5% by round 10; it is now 0.30% on a battle fought to the end. Turning updateCounts on makes the site rewrite the returned FORM with its own post-battle counts and HP, which turned an argument about compounding into a per-round comparison and found two causes at once. Incoming damage is split across rows by (target factor x SURVIVING count) and this engine weighted by the count the battle STARTED with; and a hero\u2019s own output scales with its own HP, which was baked in once from its opening HP so the hero fired at full strength all battle. With both fixed the engine reproduces the site row by row and the hero too, exactly, through round four; round five \u2014 where the defender drops from five units to two \u2014 still parts by about 8% on that one stack, and what remains of the drift is there.',
   },
   'BUILDING_DAMAGE.perRow': {
     confidence: 'measured',

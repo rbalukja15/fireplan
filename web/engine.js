@@ -447,7 +447,21 @@ export function allocationWeights(rows) {
     const code = r && r.unit && (r.unit.code || r.unit);
     const f = TARGET_FACTOR[code] === undefined
       ? TARGET_FACTOR_DEFAULT : TARGET_FACTOR[code];
-    return Math.max(0, f * Math.max(0, num(r && r.count, 0)));
+    // SURVIVORS, not the count the battle started with. A row that has lost
+    // half its units draws half the fire it used to, and this used to weight
+    // by r.count for the whole battle.
+    //
+    // Invisible in the entire record twice over: in round one nothing has died
+    // yet, and in a single-type stack one row takes everything however it is
+    // weighted -- and every mixed-stack reading on file is a single round. It
+    // took the server's OWN post-round counts, read back through updateCounts,
+    // to separate them: at round two the site splits 0.4572/0.1887/0.3542
+    // across 29 infantry, 6 armoured cars and 15 cavalry, which is exactly the
+    // survivor weighting, where the opening counts give 0.4828/0.1655/0.3517.
+    const alive = (r && r.deaths !== undefined && r.deaths !== null)
+      ? Math.max(0, num(r.count, 0) - num(r.deaths, 0))
+      : num(r && r.count, 0);
+    return Math.max(0, f * Math.max(0, alive));
   });
 }
 
@@ -2078,7 +2092,8 @@ function runSimulation(config, derivation, caveats) {
           derivation.push({
             label: `${tag}Attacker output: ${pt.row.unit.label}`,
             formula: `${pt.coef} x ${round4(pt.row.effective)} effective x `
-              + `m(${round4(pt.row.hpPct / 100)})=${round4(pt.mul)}`
+              + `m(${round4(pt.row.lastFrac === undefined
+                ? pt.row.hpPct / 100 : pt.row.lastFrac)})=${round4(pt.mul)}`
               + (pt.heroM && pt.heroM !== 1 ? ` x hero ${round4(pt.heroM)}` : '')
               + ` = ${round4(pt.out)}`,
             value: pt.out,
@@ -2468,6 +2483,11 @@ function stackOutput(side, coefFor, scale, mulEach) {
     // figure of 218.17, the same number times the 1.54 trench bonus.
     const out = c * r.effective * unitScale * mm * mFor(r.unit) * k
       * (r.trenchOutput === undefined ? 1 : r.trenchOutput);
+    // Record the fraction m() was actually given. The derivation used to print
+    // r.hpPct/100 beside a multiplier computed from liveFrac, so the line read
+    // "m(0.648)=0.438" -- a mismatch that was itself a bug for months, and the
+    // thing that finally gave it away.
+    r.lastFrac = frac;
     // ACCUMULATE ACROSS ROUNDS. This assigned, so after a three-round battle
     // every row carried its LAST round's damage while the stack total carried
     // all three -- rows summing to 123.46 against a stack of 508.25. The
@@ -2602,6 +2622,21 @@ function refreshRound(side) {
     r.liveCount = alive;
     const full = alive * r.perUnitMaxHP;
     r.liveFrac = full > 0 ? Math.min(1, (r.pool - r.hpLost) / full) : 0;
+  }
+  // THE HERO WEARS DOWN TOO. Its own output scales with its own HP by the same
+  // m(f) a unit obeys -- that much was measured -- but the multiplier was
+  // baked in once at setup from the hero's OPENING HP and never revisited, so
+  // a hero fired at full strength all battle however battered it got.
+  //
+  // Invisible in the record: every hero reading on file is a single round, and
+  // in round one the opening HP IS the current HP. It took the server's own
+  // per-round readback to separate them -- at round two the site has Kangal on
+  // 79.5 of 90 and contributing 20 x m(0.8833) = 17.78, where this engine was
+  // still charging 20 x m(83.1/90) = 18.54.
+  if (side.hero && side.hero.poolFull > 0) {
+    const heroLeft = Math.max(0, side.hero.pool - (side.hero.hpLost || 0));
+    side.hero.atk = side.hero.atkFull
+      * hpMultiplier(heroLeft / side.hero.poolFull);
   }
   const live = side.rows.map((r) => ({
     unit: r.unit,

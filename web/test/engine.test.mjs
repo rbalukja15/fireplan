@@ -3158,7 +3158,7 @@ console.log('\n14. coverage of the record itself');
     'bombardment_law', 'bombardment_own', 'bombardment_finish',
     'bombardment_lucien2', 'togo_buff_clean',
     'mutual', 'mutual_law', 'mutual_order', 'mutual_control', 'mutual_rounds',
-    'real_army', 'fortress_hp_scale'];
+    'real_army', 'fortress_hp_scale', 'update_counts', 'update_counts_army'];
   const notReplayed = Object.keys(counts).filter(
     (e) => !replayed.includes(e) && !replayedLater.includes(e));
   console.log(`  note  replayed: ${replayed.map((e) => `${e} ${counts[e] || 0}`).join(', ')}`);
@@ -4327,9 +4327,15 @@ console.log('\n23. a real army');
         && Math.abs(r.defender.hpLost - wantB) < 0.05,
         `defender lost ${r.defender.hpLost.toFixed(2)} of ${wantB}, `
           + `attacker wiped=${r.attacker.wiped}`);
-      cannotReproduce(`real army fought out (fort ${fortLevel}, hero lv${m.hero_level}), attacker total`,
-        wantA, r.attacker.hpLost,
-        'tracks to 1% through round 5 then compounds — REAL_ARMY.endgameDrift');
+      // This used to be reported rather than asserted, because the model drifted
+      // up to 5% by the end. Reading the server's OWN per-round survivor counts
+      // found the two causes -- damage allocated by opening counts instead of
+      // survivors, and a hero whose output never wore down -- and the drift is
+      // now under 1%. An assertion that once could not be made is made.
+      check(`real army fought out (fort ${fortLevel}, hero lv${m.hero_level}): attacker total`,
+        Math.abs(r.attacker.hpLost - wantA) <= wantA * 0.01,
+        `${r.attacker.hpLost.toFixed(2)} vs ${wantA} — `
+          + `${((r.attacker.hpLost - wantA) / wantA * 100).toFixed(2)}%`);
       cannotReproduce(`real army fought out (fort ${fortLevel}, hero lv${m.hero_level}), fortress total`,
         BUILDINGS.fortress.poolAtLevel[fortLevel]
           - BUILDINGS.fortress.hpPerLevel * (1 - fortPct / 100),
@@ -4345,6 +4351,92 @@ console.log('\n23. a real army');
     }
   }
   check('the real-army readings were replayed', replayed >= 4, String(replayed));
+
+
+  // ---- THE SERVER'S OWN SURVIVOR COUNTS ----------------------------------
+  // settings() sent updateCounts="" for the whole project, so every reading on
+  // file is HP lost and nothing else: survivors, remaining pool and deaths
+  // were always INFERRED. Turning the switch on makes the site rewrite the
+  // form it returns with the post-battle figures, which checks the death rule
+  // everything else is built on -- and found two defects nothing else could.
+  {
+    const uc = rows.filter((x) => x.experiment === 'update_counts');
+    check('the server\'s own survivor counts are on file at last', uc.length >= 1,
+      `${uc.length} readings`);
+    for (const rec of uc) {
+      const back = rec.meta.form_back || {};
+      const d = rec.meta.detail || {};
+      // 10 inf v 10 inf, one round: A loses 50.0 with 2 dead, B loses 40.0.
+      const r = simulate({ attacker: { rows: [{ unit: 'inf', count: 10 }] },
+        defender: { rows: [{ unit: 'inf', count: 10 }] }, rounds: 1 });
+      for (const [slot, side] of [['A.1.1', r.attacker], ['B.1.1', r.defender]]) {
+        const srvLeft = Number(back[`${slot}.count`]);
+        const srvHp = Number(back[`${slot}.hp`]);
+        if (!Number.isFinite(srvLeft)) continue;
+        check(`${slot}: the engine's survivor count matches the server's own`,
+          side.unitsLeft === srvLeft, `${side.unitsLeft} vs ${srvLeft}`);
+        check(`${slot}: and so does the HP it says they have left`,
+          Math.abs((side.pool - side.hpLost) - srvHp) < 0.05,
+          `${(side.pool - side.hpLost).toFixed(2)} vs ${srvHp}`);
+      }
+      void d;
+    }
+  }
+
+  // Incoming damage is split by (target factor x SURVIVING count). Weighting
+  // by the opening count is right in round one and wrong from round two, and
+  // right always for a single-type stack -- which is every mixed-stack reading
+  // on file, all of them one round.
+  {
+    const two = simulate({
+      attacker: { rows: [{ unit: 'inf', count: 35, hpPct: (453.6 / 700) * 100 },
+        { unit: 'ac', count: 6, hpPct: (318.1 / 360) * 100 },
+        { unit: 'cav', count: 17, hpPct: (378.1 / 425) * 100 }] },
+      defender: { rows: [{ unit: 'ac', count: 12, hpPct: (677.5 / 720) * 100 }],
+        hero: { code: 'kangal', level: 9, hpPct: (83.1 / 90) * 100 },
+        buildings: [{ code: 'fortress', level: 4, hpPct: 10 }] },
+      rounds: 2 });
+    const byUnit = {};
+    for (const x of two.attacker.rows) byUnit[x.unit] = x;
+    // The server's readback after two rounds: 24 infantry on 294.9, 6 armoured
+    // cars on 258.7, 13 cavalry on 259.2.
+    for (const [u, left, hp, start] of [['inf', 24, 294.9, 453.6],
+      ['ac', 6, 258.7, 318.1], ['cav', 13, 259.2, 378.1]]) {
+      check(`round 2, ${u}: ${left} left on ${hp} HP, as the server reports`,
+        byUnit[u].count - byUnit[u].deaths === left
+        && Math.abs((start - byUnit[u].hpLost) - hp) < 0.1,
+        `${byUnit[u].count - byUnit[u].deaths} left on `
+          + `${(start - byUnit[u].hpLost).toFixed(1)}`);
+    }
+    check('allocationWeights uses survivors, not the opening count',
+      (() => {
+        const w = allocationWeights([{ unit: { code: 'inf' }, count: 35, deaths: 6 }]);
+        return Math.abs(w[0] - 0.5 * 29) < 1e-9;
+      })(), 'a row that has lost units draws less fire');
+  }
+
+  // A hero wears down like anything else. Its own output scales with its own
+  // HP -- measured long ago -- but the multiplier was baked in once from its
+  // OPENING HP, so it fired at full strength all battle.
+  {
+    const r2 = simulate({
+      attacker: { rows: [{ unit: 'inf', count: 35, hpPct: (453.6 / 700) * 100 },
+        { unit: 'ac', count: 6, hpPct: (318.1 / 360) * 100 },
+        { unit: 'cav', count: 17, hpPct: (378.1 / 425) * 100 }] },
+      defender: { rows: [{ unit: 'ac', count: 12, hpPct: (677.5 / 720) * 100 }],
+        hero: { code: 'kangal', level: 9, hpPct: (83.1 / 90) * 100 },
+        buildings: [{ code: 'fortress', level: 4, hpPct: 10 }] },
+      rounds: 2 });
+    const line = r2.derivation.find((x) => /^R2 Defender hero/.test(x.label));
+    check('a hero\'s round-2 contribution uses its CURRENT HP, not its opening HP',
+      line && Math.abs(line.value - 17.78) < 0.05,
+      line ? `${line.value.toFixed(2)} — 18.54 is the opening-HP figure, `
+        + '17.78 is what the site gives' : 'no R2 hero line');
+    const hero = r2.defender.rows.find((x) => x.isHero);
+    check('...and the hero is on 75.0 HP after two rounds, as the server says',
+      Math.abs((83.1 - hero.hpLost) - 75.0) < 0.05,
+      `${(83.1 - hero.hpLost).toFixed(2)}`);
+  }
 
   // The three defects, asserted directly so none can quietly return.
   {
