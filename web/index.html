@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Battle Calculator — Supremacy 1914</title>
+<meta name="description" content="An offline battle calculator for Supremacy 1914 that shows its working and states how well each number is measured.">
+<link rel="stylesheet" href="./styles.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%E2%9A%94%EF%B8%8F%3C/text%3E%3C/svg%3E">
+</head>
+<body>
+
+<a class="skip" href="#result">Skip to result</a>
+
+<header class="site-head">
+  <div class="wrap head-inner">
+    <div class="brand">
+      <h1>Battle Calculator</h1>
+      <p class="tagline">Supremacy&nbsp;1914 &mdash; lead figures are variance&#8209;off, with the &plusmn;10% band beside them</p>
+    </div>
+    <p class="offline-note" title="This page performs no network requests at all.">
+      <span class="dot" aria-hidden="true"></span>
+      Runs entirely in your browser. Never contacts dxcalc.com.
+    </p>
+  </div>
+</header>
+
+<!-- Fatal-load banner: shown only if the engine or data module fails to load. -->
+<div class="wrap" id="fatal" hidden>
+  <div class="banner banner-unknown" role="alert">
+    <p class="banner-title">The model did not load</p>
+    <p class="banner-body" id="fatal-body"></p>
+  </div>
+</div>
+
+<noscript>
+  <div class="wrap">
+    <div class="banner banner-unknown">
+      <p class="banner-title">This calculator needs JavaScript</p>
+      <p class="banner-body">
+        The whole model runs in your browser — there is no server to compute it instead, by
+        design. With scripting off there is nothing to show, so the page shows nothing rather
+        than a form that silently does not work.
+      </p>
+    </div>
+  </div>
+</noscript>
+
+<main class="wrap" id="app" hidden>
+
+  <!-- ------------------------------------------------------------------ -->
+  <!-- CONFIDENCE BANNER: the integrity feature. Driven by coverage.level. -->
+  <!-- ------------------------------------------------------------------ -->
+  <div id="coverage" class="banner">
+    <p class="banner-title"><span class="banner-icon" aria-hidden="true"></span><span id="coverage-headline"></span></p>
+    <p class="banner-body" id="coverage-reason"></p>
+    <ul class="caveats" id="coverage-caveats"></ul>
+  </div>
+
+  <!-- The page's only live region. The banner and the verdict are both rewritten
+       on every keystroke; announcing both, in full, would read two paragraphs of
+       prose aloud each time a digit changes. app.js posts one short debounced
+       line here instead — confidence level first, then the outcome. -->
+  <p id="live" class="visually-hidden" role="status" aria-live="polite"></p>
+
+  <!-- ------------------------------------------------------------------ -->
+  <!-- STACK BUILDERS                                                     -->
+  <!-- ------------------------------------------------------------------ -->
+  <form id="builders" class="builders" novalidate>
+    <div id="stack-attacker"></div>
+    <div id="stack-defender"></div>
+  </form>
+
+  <div class="global-row" id="global-row">
+    <div class="field field-mode" id="mode-field" hidden>
+      <label for="mode">Air mode</label>
+      <select id="mode" name="mode" aria-describedby="mode-note">
+        <option value="strike">Direct strike</option>
+        <option value="patrol">Patrol</option>
+      </select>
+      <p class="field-note" id="mode-note"></p>
+    </div>
+    <div class="field field-rounds">
+      <label class="ctl ctl-check" for="fight-out" title="Fight until one side is destroyed, which is what the game does and what the source calculator defaults to.">
+        <input type="checkbox" id="fight-out" checked> Fight to the finish
+      </label>
+      <label for="rounds" id="rounds-label">Stop after (rounds)</label>
+      <input type="number" id="rounds" name="rounds" value="1" min="0.25" max="1000" step="0.25" inputmode="decimal" aria-describedby="rounds-note">
+      <p class="field-note" id="rounds-note"></p>
+    </div>
+    <div class="field field-terrain">
+      <label for="terrain">Terrain</label>
+      <select id="terrain" name="terrain" aria-describedby="terrain-note">
+        <option value="land">Land</option>
+        <option value="sea">Sea</option>
+        <option value="debark">Debark</option>
+      </select>
+      <p class="field-note" id="terrain-note">Embarkation is a <strong>class change</strong>: a non-naval unit in sea or debark attacks and defends on a flat column (1.0, or 0.5 against air), holds a flat 10&nbsp;HP whatever it is, and is hit on the attacker&rsquo;s naval column.</p>
+    </div>
+    <div class="field field-terrain">
+      <label for="def-terrain">Defender&rsquo;s terrain</label>
+      <select id="def-terrain" name="def-terrain" aria-describedby="def-terrain-note">
+        <option value="">Same as attacker</option>
+        <option value="land">Land</option>
+        <option value="sea">Sea</option>
+        <option value="air">Air</option>
+        <option value="debark">Debark</option>
+      </select>
+      <p class="field-note" id="def-terrain-note">Terrain is <em>per side</em>, and the target&rsquo;s is what picks the coefficient column: a battleship deals 6.0 per effective unit to fighters in the air and 40.0 to the same fighters embarked at sea.</p>
+    </div>
+    <div class="field field-distance">
+      <label for="distance">Distance (km)</label>
+          <label class="ctl ctl-check" title="Both stacks attacking each other. Measured: this resolves as TWO engagements — A attacks, then B attacks with whatever survived — and the side letter is worth up to a whole stack.">
+            <input type="checkbox" id="mutual"> Both stacks attacking
+          </label>
+      <input type="number" id="distance" name="distance" value="0" min="0" max="500" step="1" inputmode="numeric" aria-describedby="distance-note">
+      <p class="field-note" id="distance-note">Range is a yes/no gate, not a falloff, and every unit's is measured by bisection: melee 5&nbsp;km, light artillery 30, artillery 50, cruiser 40, battleship 75, railgun 150. A row that cannot reach is inert. Past 5&nbsp;km the <em>defender does not fire back at all</em>.</p>
+    </div>
+    <div class="global-actions">
+      <!-- THE PAGE NO LONGER FIGHTS THE BATTLE AS YOU TYPE. See the comment on
+           recompute() in app.js: a figure that changes on every keystroke
+           belongs to a stack you were half way through entering, and it
+           invites you not to read it. Editing marks the outcome stale; this
+           button, Enter, Reset and Swap sides fight it. -->
+      <button type="button" id="run" class="btn btn-go">Start battle</button>
+      <button type="button" id="swap" class="btn">Swap sides</button>
+      <button type="button" id="reset" class="btn">Reset</button>
+      <button type="button" id="share" class="btn">Copy link</button>
+    </div>
+  </div>
+
+  <!-- ------------------------------------------------------------------ -->
+  <!-- RESULT                                                             -->
+  <!-- ------------------------------------------------------------------ -->
+  <section id="result" class="result" aria-labelledby="result-h">
+    <div class="result-head">
+      <h2 id="result-h">Outcome</h2>
+      <span class="conf-chip" id="result-chip"></span>
+      <!-- Polite, not assertive: this fires on every keystroke, and a screen
+           reader interrupting the user mid-number to say the figures are old
+           would be worse than the figures being old. -->
+      <p class="stale-note" id="stale-note" role="status" aria-live="polite" hidden>
+        The inputs have changed &mdash; these figures are from the previous battle.
+        Press <strong>Start battle</strong>.
+      </p>
+    </div>
+
+    <p class="verdict" id="verdict"></p>
+
+    <!-- Raised only when the engine's own figures contradict each other. -->
+    <p class="sanity" id="sanity" role="alert" hidden></p>
+
+    <div class="scoreboard">
+      <article class="score score-attacker" aria-labelledby="sb-a-h">
+        <h3 id="sb-a-h" class="score-h"><span class="side-tag side-tag-attacker">Attacker</span> <span id="sb-a-name"></span></h3>
+        <dl class="score-grid">
+          <div class="score-cell score-cell-lead">
+            <dt>HP lost</dt>
+            <dd class="figure figure-lead" id="sb-a-hplost">&mdash;</dd>
+            <dd class="figure-sub" id="sb-a-pct"></dd>
+            <dd class="figure-sub figure-band" id="sb-a-band"></dd>
+          </div>
+          <div class="score-cell">
+            <dt>Units killed</dt>
+            <dd class="figure" id="sb-a-deaths">&mdash;</dd>
+          </div>
+          <div class="score-cell">
+            <dt>Units left</dt>
+            <dd class="figure" id="sb-a-left">&mdash;</dd>
+          </div>
+          <div class="score-cell">
+            <dt>Damage dealt</dt>
+            <dd class="figure figure-small" id="sb-a-dealt">&mdash;</dd>
+          </div>
+          <div class="score-cell">
+            <dt>HP pool</dt>
+            <dd class="figure figure-small" id="sb-a-pool">&mdash;</dd>
+          </div>
+        </dl>
+
+        <!-- Per-row itemisation. A stack is a mixture, so the totals above are
+             a sum over these; damage is split by (attack x count). -->
+        <div class="rowsplit">
+          <h4 class="rowsplit-h" id="sb-a-rows-h">By unit type</h4>
+          <div class="table-scroll">
+            <table class="rowsplit-table" aria-labelledby="sb-a-rows-h">
+              <thead>
+                <tr>
+                  <th scope="col">Unit</th>
+                  <th scope="col" class="c-val">Effective</th>
+                  <th scope="col" class="c-val">HP lost</th>
+                  <th scope="col" class="c-val">Killed</th>
+                  <th scope="col" class="c-val">Left</th>
+                  <th scope="col" class="c-val">Dealt</th>
+                </tr>
+              </thead>
+              <tbody id="sb-a-rows"></tbody>
+            </table>
+          </div>
+          <p class="rowsplit-note" id="sb-a-rows-note"></p>
+        </div>
+
+        <ul class="score-buildings" id="sb-a-bldg"></ul>
+
+        <!-- The recovery bill. The source page prints eleven summary columns
+             and this app modelled two of them; these are the other nine. -->
+        <div class="repair" id="sb-a-repair">
+          <h4 class="repair-h" id="sb-a-repair-h">Recovery bill</h4>
+          <p class="repair-time" id="sb-a-repair-time">&mdash;</p>
+          <ul class="repair-res" id="sb-a-repair-res"></ul>
+          <p class="repair-note" id="sb-a-repair-note"></p>
+        </div>
+      </article>
+
+      <article class="score score-defender" aria-labelledby="sb-d-h">
+        <h3 id="sb-d-h" class="score-h"><span class="side-tag side-tag-defender">Defender</span> <span id="sb-d-name"></span></h3>
+        <dl class="score-grid">
+          <div class="score-cell score-cell-lead">
+            <dt>HP lost</dt>
+            <dd class="figure figure-lead" id="sb-d-hplost">&mdash;</dd>
+            <dd class="figure-sub" id="sb-d-pct"></dd>
+            <dd class="figure-sub figure-band" id="sb-d-band"></dd>
+          </div>
+          <div class="score-cell">
+            <dt>Units killed</dt>
+            <dd class="figure" id="sb-d-deaths">&mdash;</dd>
+          </div>
+          <div class="score-cell">
+            <dt>Units left</dt>
+            <dd class="figure" id="sb-d-left">&mdash;</dd>
+          </div>
+          <div class="score-cell">
+            <dt>Damage dealt</dt>
+            <dd class="figure figure-small" id="sb-d-dealt">&mdash;</dd>
+          </div>
+          <div class="score-cell">
+            <dt>HP pool</dt>
+            <dd class="figure figure-small" id="sb-d-pool">&mdash;</dd>
+          </div>
+        </dl>
+
+        <div class="rowsplit">
+          <h4 class="rowsplit-h" id="sb-d-rows-h">By unit type</h4>
+          <div class="table-scroll">
+            <table class="rowsplit-table" aria-labelledby="sb-d-rows-h">
+              <thead>
+                <tr>
+                  <th scope="col">Unit</th>
+                  <th scope="col" class="c-val">Effective</th>
+                  <th scope="col" class="c-val">HP lost</th>
+                  <th scope="col" class="c-val">Killed</th>
+                  <th scope="col" class="c-val">Left</th>
+                  <th scope="col" class="c-val">Dealt</th>
+                </tr>
+              </thead>
+              <tbody id="sb-d-rows"></tbody>
+            </table>
+          </div>
+          <p class="rowsplit-note" id="sb-d-rows-note"></p>
+        </div>
+
+        <ul class="score-buildings" id="sb-d-bldg"></ul>
+
+        <!-- The recovery bill. The source page prints eleven summary columns
+             and this app modelled two of them; these are the other nine. -->
+        <div class="repair" id="sb-d-repair">
+          <h4 class="repair-h" id="sb-d-repair-h">Recovery bill</h4>
+          <p class="repair-time" id="sb-d-repair-time">&mdash;</p>
+          <ul class="repair-res" id="sb-d-repair-res"></ul>
+          <p class="repair-note" id="sb-d-repair-note"></p>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <!-- ------------------------------------------------------------------ -->
+  <!-- SHOW THE WORKING                                                   -->
+  <!-- ------------------------------------------------------------------ -->
+  <details class="working" id="working">
+    <summary>
+      <span class="working-title">Show the working</span>
+      <span class="working-count" id="working-count"></span>
+    </summary>
+    <p class="working-lede">
+      Every figure above comes out of this chain. If a step is not here, the app is not
+      claiming it.
+    </p>
+    <div class="table-scroll">
+      <table class="deriv">
+        <caption class="visually-hidden">Derivation of the result, step by step</caption>
+        <thead>
+          <tr><th scope="col" class="c-step">#</th><th scope="col">Step</th><th scope="col">Formula</th><th scope="col" class="c-val">Value</th></tr>
+        </thead>
+        <tbody id="deriv-body"></tbody>
+      </table>
+    </div>
+  </details>
+
+  <!-- ------------------------------------------------------------------ -->
+  <!-- STANDING LIMITS + ROSTER                                           -->
+  <!-- ------------------------------------------------------------------ -->
+  <section class="limits" aria-labelledby="limits-h">
+    <h2 id="limits-h">What this model does not know</h2>
+    <p class="limits-lede">
+      True of every result on this page, whatever the banner above says. Two different
+      things, kept apart on purpose: the first list is measured and simply not computed
+      here, so the answer exists and you have to apply it yourself. The second is where
+      nobody has an answer yet. Neither is a gap in the arithmetic.
+    </p>
+
+    <!-- TWO LISTS, AND THEY ARE NOT THE SAME LIST.
+
+         Below this one is NOT_MEASURED: things nobody has measured. This one is
+         SCOPE_LIMITS: things that HAVE been measured, are written down in
+         data.js, and that this page still does not compute. Multi-stack is the
+         whole reason the distinction exists — the laws are known to the printed
+         decimal, and folding them into "what this model does not know" would
+         quietly downgrade a fact the reader is now responsible for applying by
+         hand into an open question they can shrug at. Each entry therefore ends
+         with what to do about it instead. -->
+    <h3 class="limits-sub" id="scope-h">What it does not do, though the answer is known</h3>
+    <ul class="limits-list" id="scope-list"></ul>
+
+    <h3 class="limits-sub" id="gaps-h">What nobody has measured</h3>
+    <!-- RENDERED FROM data.js NOT_MEASURED, never hand-written.
+
+         This list used to be prose in the HTML, and it went stale in the worst
+         possible way: it still told the reader that a stack saturates in ROSTER
+         order and that incoming damage splits by attack x count. Both of those
+         were measured and OVERTURNED, and the engine three sections up computes
+         neither of them. It also said multi-round battles and range had never
+         been exercised, months after both were measured and modelled.
+
+         A limitations list that contradicts the model is worse than none: it is
+         the confident wrong answer this project keeps hitting, aimed at exactly
+         the reader who came here to check. There is one list of gaps, it lives
+         in data.js beside the constants, and this is a view of it. -->
+    <ul class="limits-list" id="limits-list"></ul>
+  </section>
+
+  <details class="roster" id="roster">
+    <summary><span class="working-title">Unit reference &amp; provenance</span></summary>
+    <p class="working-lede">
+      Attack and defence below are <strong>same-class only</strong> &mdash; the value a unit shows
+      when fighting its own kind. Cross-class values exist for air attacking ground and ground
+      defending against air; everything else is unmeasured.
+    </p>
+    <div class="table-scroll">
+      <table class="deriv roster-table">
+        <caption class="visually-hidden">Unit statistics and how each was obtained</caption>
+        <thead>
+          <tr>
+            <th scope="col">Unit</th><th scope="col">Class</th>
+            <th scope="col" class="c-val">Max HP</th>
+            <th scope="col" class="c-val">Attack</th>
+            <th scope="col" class="c-val">Defence</th>
+            <th scope="col">How it was obtained</th>
+          </tr>
+        </thead>
+        <tbody id="roster-body"></tbody>
+      </table>
+    </div>
+
+    <h3 class="ledger-h">Provenance of every constant</h3>
+    <p class="working-lede" id="roster-lede">
+      Where each constant in the model came from and how well it is pinned down. Nothing in
+      this app is used that is not listed here.
+    </p>
+    <dl class="ledger" id="ledger"></dl>
+  </details>
+
+</main>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <p>
+      A clean-room implementation of measured game mechanics. No affiliation with
+      dxcalc.com or Bytro Labs. Constants were recovered by black-box measurement and
+      carry the confidence labels shown throughout.
+    </p>
+  </div>
+</footer>
+
+<!-- Mobile-only sticky summary: the number you actually came for. -->
+<div class="stickybar" id="stickybar" hidden>
+  <a class="stickybar-inner" href="#result">
+    <span class="sb-side sb-side-a"><b id="st-a">&mdash;</b><small>attacker dead</small></span>
+    <span class="sb-conf" id="st-conf"></span>
+    <span class="sb-side sb-side-d"><b id="st-d">&mdash;</b><small>defender dead</small></span>
+  </a>
+</div>
+
+<!-- ---------------------------------------------------------------------- -->
+<!-- STACK BUILDER TEMPLATE. {s} is replaced with the side key by app.js so  -->
+<!-- every id/for pair stays unique and every control keeps a real label.    -->
+<!--                                                                        -->
+<!-- A stack is a MIXTURE of distinct unit types, not one type: 25 infantry, -->
+<!-- 10 artillery and 3 tanks fight as one stack, and the size factor        -->
+<!-- saturates across the whole of it. The unit rows below are built by      -->
+<!-- app.js, because how many there are and which types each may offer both  -->
+<!-- depend on what the rest of the stack already holds.                     -->
+<!-- ---------------------------------------------------------------------- -->
+<template id="stack-tpl">
+  <section class="stack stack-{s}" aria-labelledby="{s}-h">
+    <header class="stack-head">
+      <h2 id="{s}-h"><span class="side-tag side-tag-{s}">{S}</span></h2>
+      <p class="stack-summary" id="{s}-summary"></p>
+    </header>
+
+    <div class="rows-block">
+      <div class="rows-head">
+        <h3 id="{s}-rows-h">Units in this stack</h3>
+        <button type="button" class="btn btn-small" id="{s}-addrow" data-add-row="{s}">+ Add unit</button>
+      </div>
+
+      <ul class="urows" id="{s}-rows" aria-labelledby="{s}-rows-h"></ul>
+
+      <p class="field-note" id="{s}-rows-note"></p>
+
+      <!-- Stack-wide saturation readout. The one thing this app can teach that
+           a per-unit calculator cannot: the whole stack saturates together. -->
+      <p class="sat-line" id="{s}-sat"></p>
+    </div>
+
+    <div class="stack-body">
+      <div class="field field-trench">
+        <label for="{s}-trench">Trench level</label>
+        <select id="{s}-trench" name="{s}-trench" aria-describedby="{s}-trench-note"></select>
+        <p class="field-note" id="{s}-trench-note"></p>
+      </div>
+    </div>
+
+    <div class="hero-block">
+      <div class="bldg-head">
+        <h3>Hero</h3>
+      </div>
+      <div class="hero-row">
+        <label class="hero-field">
+          <span>Hero</span>
+          <select id="{s}-hero"></select>
+        </label>
+        <label class="hero-field hero-lvl">
+          <span>Level</span>
+          <input type="number" id="{s}-hero-lvl" min="1" max="20" step="1" value="10" inputmode="numeric">
+        </label>
+        <label class="hero-field hero-hp">
+          <span>Hero HP&nbsp;%</span>
+          <input type="text" id="{s}-hero-hp" pattern="[\d.]+%?" value="100%" inputmode="decimal" autocomplete="off" spellcheck="false" title="Either a percentage (85%) or the hero's absolute hit points (34.2).">
+        </label>
+      </div>
+      <p class="field-note" id="{s}-hero-note"></p>
+    </div>
+
+    <div class="bldg-block">
+      <div class="bldg-head">
+        <h3>Buildings</h3>
+        <button type="button" class="btn btn-small" data-add-bldg="{s}">+ Add</button>
+      </div>
+      <ul class="bldg-list" id="{s}-bldgs"></ul>
+      <p class="field-note" id="{s}-bldg-note">Only a fortress changes the fighting. The rest just soak damage.</p>
+    </div>
+  </section>
+</template>
+
+<script type="module" src="./app.js"></script>
+
+<!-- A classic script, deliberately: it runs in the one case app.js cannot.
+     Opened straight off disk, browsers refuse to load an ES module at all
+     (CORS, origin "null"), so nothing in app.js executes — including the
+     file:// explanation showFatal() carries, which could only ever appear if
+     app.js had already run. Without this the page is a header above an empty
+     space with no clue why. -->
+<script>
+window.addEventListener('load', function () {
+  setTimeout(function () {
+    if (window.__appBooted) return;
+    var app = document.getElementById('app');
+    var fatal = document.getElementById('fatal');
+    var body = document.getElementById('fatal-body');
+    if (!app || !fatal || !body || !app.hidden || !fatal.hidden) return;
+    body.textContent = location.protocol === 'file:'
+      ? 'The page was opened directly from disk. Browsers refuse to load JavaScript modules over file://, so app.js never ran and nothing here was computed. Serve the folder over HTTP instead — "python3 -m http.server" inside this directory, then open http://localhost:8000/.'
+      : 'app.js did not run, so nothing on this page was computed. The usual cause is that one of the three files — app.js, engine.js, data.js — is missing or was served with the wrong content type. Rather than leave a form that silently does nothing, the calculator says so.';
+    fatal.hidden = false;
+  }, 2500);
+});
+</script>
+</body>
+</html>

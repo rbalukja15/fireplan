@@ -1,0 +1,5339 @@
+#!/usr/bin/env node
+/**
+ * Does web/engine.js reproduce the battles that were actually fought?
+ *
+ * The engine is only trustworthy insofar as it predicts real measurements, so
+ * this suite replays ../../results.jsonl row by row and compares the engine's
+ * prediction against what dxcalc.com actually printed. Nothing here is a
+ * self-consistency check against a constant the engine itself carries: every
+ * expected value below came off the wire.
+ *
+ * It also asserts the honesty properties, which matter as much as the numbers:
+ * simulate() never throws, an unmeasured matchup is never labelled 'measured',
+ * an 'unknown' matchup yields withheld numbers rather than invented ones, and
+ * derivation[] is populated for every result.
+ *
+ * TOLERANCES, and why
+ * -------------------
+ * The source page prints HP lost to 0.1 in each unit span and to 0.01 in the
+ * summary table, and percentages to 3 significant figures. So:
+ *
+ *   HP lost, from the summary table (meta.detail.*.lost_source == 1) ±0.005
+ *   HP lost, from a span                                            ±0.05
+ *   A stack POOL is never printed at all. It is pool = lost / pct, so the
+ *     assertion is that the engine's pool falls inside the interval implied by
+ *     both print precisions — a bracket, never a point. Quoting a derived pool
+ *     to 2 decimals is a documented failure mode of this project.
+ *   Death counts are integers and are asserted exactly.
+ *
+ * Run:  node web/test/engine.test.mjs
+ */
+
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+
+import {
+  UNITS, CLASS_ATTACK, TRENCH_POOL, TRENCH_POOL_BRACKET, TRENCH_OUTPUT, PROVENANCE, NOT_MEASURED,
+  UNIT_RANGE, MELEE_RANGE, EMBARKED_MAXHP, CLASS_ATTACK_CORROBORATED,
+  EMBARKED_TERRAIN, EMBARKED_CLASS_CHANGE_TERRAIN,
+  PATROL,
+  BUILDINGS,
+  BUILDING_DAMAGE_FLOOR, BUILDING_DAMAGE_PER_EFFECTIVE_UNIT,
+  GROUND_DEFENCE_VS_AIR,
+  CLASS_DEFENCE, EMBARKED_ATTACK, EMBARKED_DEFENCE,
+  MAX_UNIT_ROWS,
+  HEROES_OTHER_TERRAIN,
+  HEROES,
+  REPAIR_COST, REPAIR_HOURS, HERO_REPAIR,
+  BOMBARDMENT, BOMBARDMENT_SPLIT, HERO_REACH,
+  MUTUAL,
+  MULTI_STACK, SCOPE_LIMITS, STACK_GROUP, STACK_GROUP_LABEL,
+  FORTRESS,
+} from '../data.js';
+import {
+  heroBuff,
+  heroHpBuff,
+  allocationWeights,
+  effectiveUnits, hpMultiplier, fortressDR, trenchFactors, coverageOf, simulate,
+  combatClass, attackCoefficient, targetClassFor,
+} from '../engine.js';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const RESULTS = join(HERE, '..', '..', 'results.jsonl');
+
+const rows = readFileSync(RESULTS, 'utf8')
+  .split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
+
+let ok = 0;
+const failures = [];
+const unreproduced = [];
+
+function check(label, cond, detail = '') {
+  if (cond) {
+    ok += 1;
+    console.log(`  PASS  ${label}`);
+  } else {
+    failures.push({ label, detail });
+    console.log(`  FAIL  ${label}\n        ${detail}`);
+  }
+}
+
+const NOTE_MELEE = 'the ability is exact outside melee; at 0 km its split is measurably NOT pool share and nothing explains it yet — NOT_MEASURED.bombardment_melee_split';
+
+/** A measurement the engine could not reproduce. Reported, never papered over. */
+function cannotReproduce(what, expected, got, note) {
+  unreproduced.push({ what, expected, got, note });
+}
+
+function near(a, b, tol) {
+  return a !== null && a !== undefined && Number.isFinite(a) && Math.abs(a - b) <= tol + 1e-12;
+}
+
+/** Decimal places the recorder actually stored, which fixes the print source. */
+function decimals(x) {
+  const s = String(x);
+  const i = s.indexOf('.');
+  return i < 0 ? 0 : s.length - i - 1;
+}
+
+function lostTol(value, detail) {
+  if (detail && detail.lost_source === 1) return 0.005;   // summary table, 2 dp
+  return decimals(value) >= 2 ? 0.005 : 0.05;             // else the span, 1 dp
+}
+
+/** pool = lost / pct, widened by both print precisions. */
+function poolBracket(lost, pct, lostSource) {
+  const u = lostSource === 1 ? 0.005 : 0.05;
+  const upct = 0.5 * 10 ** (Math.floor(Math.log10(Math.abs(pct))) - 2);
+  return [(lost - u) / ((pct + upct) / 100), (lost + u) / ((pct - upct) / 100)];
+}
+
+function inBracket(x, [lo, hi]) {
+  return Number.isFinite(x) && x >= lo - 1e-9 && x <= hi + 1e-9;
+}
+
+function fmt(x) {
+  if (x === null || x === undefined) return String(x);
+  // A row of three figures is sometimes the honest unit to report — three
+  // attacker rows drifting together are one fact, not three. Number(x) on
+  // "93.43, 115.24, 85.73" is NaN, and "engine NaN" in the unreproduced list
+  // tells the reader nothing about how far out anything is.
+  if (typeof x === 'string' && Number.isNaN(Number(x))) return x;
+  return Number(x).toFixed(4);
+}
+
+const withReadings = (name) => rows.filter(
+  (r) => r.experiment === name && r.readings && Object.keys(r.readings).length,
+);
+
+console.log(`Replaying ${rows.length} recorded requests from results.jsonl\n`);
+
+// ===========================================================================
+console.log('1. semantics — the three asymmetric duels that fixed HP LOST vs HP LEFT');
+// ===========================================================================
+for (const r of withReadings('semantics')) {
+  const { atk, def } = r.meta;
+  const res = simulate({
+    attacker: { unit: 'inf', count: atk },
+    defender: { unit: 'inf', count: def },
+    rounds: 1,
+  });
+  const eA = r.readings['A.1.1'];
+  const eB = r.readings['B.1.1'];
+  check(`${atk} inf vs ${def} inf: attacker loses ${eA}`,
+    near(res.attacker.hpLost, eA, lostTol(eA)), `engine ${fmt(res.attacker.hpLost)}`);
+  check(`${atk} inf vs ${def} inf: defender loses ${eB}`,
+    near(res.defender.hpLost, eB, lostTol(eB)), `engine ${fmt(res.defender.hpLost)}`);
+  if (!near(res.attacker.hpLost, eA, lostTol(eA))) cannotReproduce(`semantics ${atk}v${def} attacker`, eA, res.attacker.hpLost);
+  if (!near(res.defender.hpLost, eB, lostTol(eB))) cannotReproduce(`semantics ${atk}v${def} defender`, eB, res.defender.hpLost);
+}
+
+// ===========================================================================
+console.log('\n2. unit_stats — the same-class diagonal, all four runs of the roster');
+// ===========================================================================
+{
+  let run = 0; let seen = new Set();
+  for (const r of withReadings('unit_stats')) {
+    const code = r.meta.unit;
+    if (seen.has(code)) { run += 1; seen = new Set(); }
+    seen.add(code);
+    const res = simulate({
+      attacker: { unit: code, count: 10 },
+      defender: { unit: code, count: 10 },
+      rounds: 1,
+    });
+    const eA = r.readings['A.1.1'];
+    const eB = r.readings['B.1.1'];
+    const tag = `run ${run + 1} ${code} 10v10`;
+    check(`${tag}: attacker loses ${eA} (defence ${UNITS[code].def} x E(10))`,
+      near(res.attacker.hpLost, eA, lostTol(eA)), `engine ${fmt(res.attacker.hpLost)}`);
+    check(`${tag}: defender loses ${eB} (attack ${UNITS[code].atk} x E(10))`,
+      near(res.defender.hpLost, eB, lostTol(eB)), `engine ${fmt(res.defender.hpLost)}`);
+    check(`${tag}: coverage is 'measured'`, res.coverage.level === 'measured', res.coverage.level);
+    if (!near(res.attacker.hpLost, eA, lostTol(eA))) cannotReproduce(`unit_stats ${tag} attacker`, eA, res.attacker.hpLost);
+    if (!near(res.defender.hpLost, eB, lostTol(eB))) cannotReproduce(`unit_stats ${tag} defender`, eB, res.defender.hpLost);
+  }
+  const skipped = rows.filter((r) => r.experiment === 'unit_stats'
+    && (!r.readings || !Object.keys(r.readings).length));
+  // Those rows are still empty — they were sent in AIR terrain, which aborts
+  // the batch. The unit itself is measured now, in LAND terrain, so the engine
+  // must produce numbers rather than withhold them.
+  check(`the ${skipped.length} old balloon rows are still empty, and all of them are bal`,
+    skipped.length > 0 && skipped.every((r) => r.meta.unit === 'bal'),
+    'they were sent in air terrain, where the batch aborts');
+  check('but the Balloon is measured now and the engine computes it',
+    Math.abs(simulate({ attacker: { unit: 'bal', count: 10 },
+      defender: { unit: 'bal', count: 10 }, rounds: 1 }).attacker.hpLost - 30) < 0.05,
+    '3.0 defence x E(10)');
+}
+
+// ===========================================================================
+console.log('\n3. hp_scaling — m(f) = 0.05 + 0.95f, 10 infantry at f HP vs 50 infantry');
+// ===========================================================================
+for (const r of withReadings('hp_scaling')) {
+  const pct = r.meta.hp_pct;
+  const res = simulate({
+    attacker: { unit: 'inf', count: 10, hpPct: pct },
+    defender: { unit: 'inf', count: 50 },
+    rounds: 1,
+  });
+  const eA = r.readings['A.1.1'];
+  const eB = r.readings['B.1.1'];
+  check(`attacker at ${pct}% HP loses ${eA}` + (pct <= 80 ? ' (wiped, capped by its pool)' : ''),
+    near(res.attacker.hpLost, eA, lostTol(eA)), `engine ${fmt(res.attacker.hpLost)}`);
+  check(`attacker at ${pct}% HP still deals ${eB} = 40 x m(${pct / 100})`,
+    near(res.defender.hpLost, eB, lostTol(eB)), `engine ${fmt(res.defender.hpLost)}`);
+  if (pct <= 80) {
+    check(`  and the wiped stack is reported wiped`, res.attacker.wiped === true, String(res.attacker.wiped));
+  }
+  if (!near(res.defender.hpLost, eB, lostTol(eB))) cannotReproduce(`hp_scaling ${pct}% defender`, eB, res.defender.hpLost);
+}
+
+// ===========================================================================
+console.log('\n4. air_vs_ground — 30 cells, both directions, post-fire attacker output');
+// ===========================================================================
+for (const r of withReadings('air_vs_ground')) {
+  const m = r.meta;
+  const d = m.detail || {};
+  const res = simulate({
+    attacker: { unit: m.atk, count: m.atk_n },
+    defender: { unit: m.target, count: m.def_n },
+    rounds: 1,
+  });
+  const tag = `${m.atk} x${m.atk_n} -> ${m.target} x${m.def_n}`;
+  const A = d['A.1.1'];
+  const B = d['B.1.1'];
+
+  check(`${tag}: air attacker loses ${A.lost} (${m.target} defence x E(${m.def_n}))`,
+    near(res.attacker.hpLost, A.lost, lostTol(A.lost, A)), `engine ${fmt(res.attacker.hpLost)}`);
+  check(`${tag}: ground defender loses ${B.lost} (post-fire output)`,
+    near(res.defender.hpLost, B.lost, lostTol(B.lost, B)), `engine ${fmt(res.defender.hpLost)}`);
+  check(`${tag}: deaths ${A.died} / ${B.died}`,
+    res.attacker.deaths === A.died && res.defender.deaths === B.died,
+    `engine ${res.attacker.deaths} / ${res.defender.deaths}`);
+  check(`${tag}: attacker pool inside the measured bracket`,
+    inBracket(res.attacker.pool, poolBracket(A.lost, A.pct, A.lost_source)),
+    `engine ${fmt(res.attacker.pool)} vs [${poolBracket(A.lost, A.pct, A.lost_source).map(fmt)}]`);
+  check(`${tag}: defender pool inside the measured bracket`,
+    inBracket(res.defender.pool, poolBracket(B.lost, B.pct, B.lost_source)),
+    `engine ${fmt(res.defender.pool)} vs [${poolBracket(B.lost, B.pct, B.lost_source).map(fmt)}]`);
+  check(`${tag}: coverage is 'measured' (the one measured cross-class pairing)`,
+    res.coverage.level === 'measured', res.coverage.level);
+
+  if (!near(res.defender.hpLost, B.lost, lostTol(B.lost, B))) {
+    cannotReproduce(`air_vs_ground ${tag} defender loss`, B.lost, res.defender.hpLost);
+  }
+  if (!near(res.attacker.hpLost, A.lost, lostTol(A.lost, A))) {
+    cannotReproduce(`air_vs_ground ${tag} attacker loss`, A.lost, res.attacker.hpLost);
+  }
+}
+check('the 10 balloon air_vs_ground rows are still empty — air terrain aborts the batch',
+  rows.filter((r) => r.experiment === 'air_vs_ground' && r.meta.atk === 'bal'
+    && (!r.readings || !Object.keys(r.readings).length)).length === 10);
+check('and the Balloon now has all three constants, from land terrain',
+  UNITS.bal.maxHP === 20 && UNITS.bal.atk === 3.0 && UNITS.bal.def === 3.0,
+  JSON.stringify({ hp: UNITS.bal.maxHP, atk: UNITS.bal.atk, def: UNITS.bal.def }));
+
+// ===========================================================================
+console.log('\n5. trenches — 10 infantry vs 10 infantry across the nine sampled levels');
+// ===========================================================================
+for (const r of withReadings('trenches')) {
+  const m = r.meta;
+  const d = m.detail;
+  const defTrench = m.trench || 0;
+  const atkTrench = m.atk_trench || 0;
+  const res = simulate({
+    attacker: { unit: 'inf', count: 10, trench: atkTrench },
+    defender: { unit: 'inf', count: 10, trench: defTrench },
+    rounds: 1,
+  });
+  const A = d['A.1.1'];
+  const B = d['B.1.1'];
+  const tag = m.label;
+
+  check(`${tag}: attacker loses ${A.lost}`
+    + (defTrench ? ` = 50 x trench output ${TRENCH_OUTPUT[defTrench]}` : ''),
+    near(res.attacker.hpLost, A.lost, lostTol(A.lost, A)), `engine ${fmt(res.attacker.hpLost)}`);
+  check(`${tag}: defender loses ${B.lost} (the trench does NOT reduce damage)`,
+    near(res.defender.hpLost, B.lost, lostTol(B.lost, B)), `engine ${fmt(res.defender.hpLost)}`);
+  check(`${tag}: deaths ${A.died} / ${B.died} (per-unit HP is trench-inflated)`,
+    res.attacker.deaths === A.died && res.defender.deaths === B.died,
+    `engine ${res.attacker.deaths} / ${res.defender.deaths}`);
+  check(`${tag}: defender pool inside the measured bracket`,
+    inBracket(res.defender.pool, poolBracket(B.lost, B.pct, B.lost_source)),
+    `engine ${fmt(res.defender.pool)} vs [${poolBracket(B.lost, B.pct, B.lost_source).map(fmt)}]`);
+  check(`${tag}: attacker pool inside the measured bracket`,
+    inBracket(res.attacker.pool, poolBracket(A.lost, A.pct, A.lost_source)),
+    `engine ${fmt(res.attacker.pool)} vs [${poolBracket(A.lost, A.pct, A.lost_source).map(fmt)}]`);
+
+  if (!near(res.attacker.hpLost, A.lost, lostTol(A.lost, A))) {
+    cannotReproduce(`trenches ${tag} attacker loss`, A.lost, res.attacker.hpLost);
+  }
+}
+// The carried pool multipliers must sit inside the brackets they came from,
+// and level 10 must NOT be tidied to 1.25.
+for (const lvl of Object.keys(TRENCH_POOL_BRACKET)) {
+  const [lo, hi] = TRENCH_POOL_BRACKET[lvl];
+  check(`trench L${lvl} pool multiplier ${TRENCH_POOL[lvl]} lies in its measured bracket [${lo}, ${hi}]`,
+    TRENCH_POOL[lvl] >= lo && TRENCH_POOL[lvl] <= hi);
+}
+check('trench L10 is carried as 1.24, and 1.25 is excluded by the measurement',
+  TRENCH_POOL[10] === 1.24 && 1.25 > TRENCH_POOL_BRACKET[10][1],
+  `bracket [${TRENCH_POOL_BRACKET[10]}]`);
+
+// ===========================================================================
+console.log('\n6. fortress — 30 infantry vs 30 infantry, levels 1-5');
+// ===========================================================================
+for (const r of rows.filter((x) => x.experiment === 'fortress')) {
+  const lvl = r.meta.level;
+  const res = simulate({
+    attacker: { unit: 'inf', count: 30 },
+    defender: {
+      unit: 'inf',
+      count: 30,
+      buildings: lvl ? [{ code: 'fortress', level: lvl }] : [],
+    },
+    rounds: 1,
+  });
+  const eB = r.readings['B.1.1'];
+  check(`fortress L${lvl}: defender loses ${eB}` + (lvl ? ` = 113.33 x (1 - 0.15 x ${lvl + 1})` : ' (control)'),
+    near(res.defender.hpLost, eB, lostTol(eB)), `engine ${fmt(res.defender.hpLost)}`);
+  if (!near(res.defender.hpLost, eB, lostTol(eB))) {
+    cannotReproduce(`fortress L${lvl} defender loss`, eB, res.defender.hpLost);
+  }
+  if (lvl === 0) {
+    check('fortress control: attacker loses 141.7 (5.0 x E(30) = 141.667)',
+      near(res.attacker.hpLost, r.readings['A.1.1'], lostTol(r.readings['A.1.1'])),
+      `engine ${fmt(res.attacker.hpLost)}`);
+  } else {
+    // The attacker slot in these six rows reads -8.5: the building's own result
+    // row overwrote it, a known and fixed rig defect. There is no attacker
+    // measurement to compare against here, so none is asserted.
+    check(`fortress L${lvl}: the fortress itself loses 8.5 HP, unreduced by its own DR`,
+      near(res.defender.buildings[0].hpLost, 8.5, 0.05),
+      `engine ${fmt(res.defender.buildings[0].hpLost)}`);
+    check(`fortress L${lvl}: the attacker's output is NOT reduced by the fortress`,
+      near(res.attacker.damageDealt / (1 - fortressDR(50 * lvl)), 113.3333, 0.001),
+      `engine delivered ${fmt(res.attacker.damageDealt)}`);
+  }
+}
+
+// ===========================================================================
+console.log('\n7. buildings — only the fortress mitigates; the other seven are inert');
+// ===========================================================================
+for (const r of rows.filter((x) => x.experiment === 'buildings')) {
+  const m = r.meta;
+  const b = m.type ? [{ code: m.type, level: m.level }] : [];
+  const res = simulate({
+    attacker: { unit: 'inf', count: 30 },
+    defender: { unit: 'inf', count: 30, buildings: b },
+    rounds: 1,
+  });
+  const tag = m.type ? `${m.type} L${m.level}` : 'control (no building)';
+  const eA = r.readings['A.1.1'];
+  const eB = r.readings['B.1.1'];
+  check(`${tag}: attacker loses ${eA}`,
+    near(res.attacker.hpLost, eA, lostTol(eA)), `engine ${fmt(res.attacker.hpLost)}`);
+  check(`${tag}: defender loses ${eB}` + (m.type === 'fortress' ? ' (mitigated)' : m.type ? ' (unchanged — inert)' : ''),
+    near(res.defender.hpLost, eB, lostTol(eB)), `engine ${fmt(res.defender.hpLost)}`);
+  if (!near(res.defender.hpLost, eB, lostTol(eB))) {
+    cannotReproduce(`buildings ${tag} defender loss`, eB, res.defender.hpLost);
+  }
+  const eBld = r.readings['B.1.bldg.1'];
+  if (eBld !== undefined) {
+    check(`${tag}: the building loses ${eBld} HP`,
+      near(res.defender.buildings[0].hpLost, eBld, lostTol(eBld)),
+      `engine ${fmt(res.defender.buildings[0].hpLost)}`);
+    if (m.bldg && m.bldg.pool) {
+      const br = poolBracket(m.bldg.lost, m.bldg.pct, undefined);
+      check(`${tag}: building HP pool inside the measured bracket`,
+        inBracket(res.defender.buildings[0].hpFull, br),
+        `engine ${fmt(res.defender.buildings[0].hpFull)} vs [${br.map(fmt)}]`);
+    }
+  }
+}
+
+// ===========================================================================
+console.log('\n8. the invariants HANDOVER §10 asks the app to assert against itself');
+// ===========================================================================
+check('E(30) = 28.3333', Math.abs(effectiveUnits(30) - 28.333333) < 1e-4, String(effectiveUnits(30)));
+check('E(50) = E(57) = E(113) = 35',
+  effectiveUnits(50) === 35 && effectiveUnits(57) === 35 && effectiveUnits(113) === 35);
+check('E(45) = 34.5833', Math.abs(effectiveUnits(45) - 34.583333) < 1e-4, String(effectiveUnits(45)));
+check('E(29) = 27.65', Math.abs(effectiveUnits(29) - 27.65) < 1e-9, String(effectiveUnits(29)));
+check('E(20) = 20 and E(10) = 10 (linear below 21)',
+  effectiveUnits(20) === 20 && effectiveUnits(10) === 10);
+check('m(0.1) = 0.145 — the 0.05 floor is real', Math.abs(hpMultiplier(0.1) - 0.145) < 1e-12);
+check('m(1) = 1', Math.abs(hpMultiplier(1) - 1) < 1e-12);
+{
+  const r = simulate({ attacker: { unit: 'inf', count: 30 }, defender: { unit: 'inf', count: 30 } });
+  check('30 inf vs 30 inf: attacker 141.67, defender 113.33',
+    near(r.attacker.hpLost, 141.6667, 0.001) && near(r.defender.hpLost, 113.3333, 0.001),
+    `${fmt(r.attacker.hpLost)} / ${fmt(r.defender.hpLost)}`);
+}
+{
+  const r = simulate({ attacker: { unit: 'tac', count: 10 }, defender: { unit: 'ac', count: 20 } });
+  check('10 tac vs 20 ac: attacker 160.00, defender exactly 240.00',
+    near(r.attacker.hpLost, 160, 1e-9) && near(r.defender.hpLost, 240, 1e-9),
+    `${fmt(r.attacker.hpLost)} / ${fmt(r.defender.hpLost)}`);
+}
+{
+  const r = simulate({ attacker: { unit: 'tac', count: 10 }, defender: { unit: 'ht', count: 20 } });
+  check('10 tac vs 20 ht: attacker 80.00, defender exactly 270.00',
+    near(r.attacker.hpLost, 80, 1e-9) && near(r.defender.hpLost, 270, 1e-9),
+    `${fmt(r.attacker.hpLost)} / ${fmt(r.defender.hpLost)}`);
+}
+{
+  // The cell that discriminates the correct post-fire law (36.833) from
+  // HANDOVER §4's approximation (36.667). The measurement says 36.83.
+  const r = simulate({ attacker: { unit: 'int', count: 10 }, defender: { unit: 'ac', count: 20 } });
+  check('10 int vs 20 ac: defender loses 36.83, NOT the 36.67 of the superseded law',
+    near(r.defender.hpLost, 36.83, 0.005) && !near(r.defender.hpLost, 36.667, 0.005),
+    `engine ${fmt(r.defender.hpLost)}`);
+}
+{
+  const r = simulate({
+    attacker: { unit: 'inf', count: 10 },
+    defender: { unit: 'inf', count: 10, trench: 20 },
+  });
+  check('trench 20 on the defender: attacker loses 87.5, defender pool x1.35',
+    near(r.attacker.hpLost, 87.5, 1e-9) && near(r.defender.pool, 270, 1e-9),
+    `${fmt(r.attacker.hpLost)} / pool ${fmt(r.defender.pool)}`);
+}
+{
+  const r = simulate({
+    attacker: { unit: 'inf', count: 10, trench: 20 },
+    defender: { unit: 'inf', count: 10 },
+  });
+  check('trench 20 on the attacker: defender still loses exactly 40.0, attacker pool x1.35',
+    near(r.defender.hpLost, 40, 1e-9) && near(r.attacker.pool, 270, 1e-9),
+    `${fmt(r.defender.hpLost)} / pool ${fmt(r.attacker.pool)}`);
+  check('  and its deaths fall from 2 to 1 on the inflated per-unit HP',
+    r.attacker.deaths === 1, String(r.attacker.deaths));
+}
+for (const [lvl, want] of [[1, 0.70], [2, 0.55], [3, 0.40], [4, 0.25], [5, 0.10]]) {
+  check(`fortress L${lvl}: defender's loss ratio ${want.toFixed(2)}`,
+    Math.abs((1 - fortressDR(50 * lvl)) - want) < 1e-9,
+    String(1 - fortressDR(50 * lvl)));
+}
+check('a worn fortress mitigates less: 241.5 HP gives DR 87.45%',
+  Math.abs(fortressDR(241.5) - 0.8745) < 1e-9, String(fortressDR(241.5)));
+// This used to assert a clamp at 1, chosen because the raw formula returns
+// 1.05 at a hypothetical level 6 and a damage reduction above 100% is
+// nonsense. The site's own number is 0.90, printed at 250.4 and 251.3 HP where
+// the formula wants 90.1 and 90.4 — so the ceiling is real, it is where the
+// level-5 cap sits, and it was measurable all along in the DR column nobody
+// read. A guard picked for being unarguable was two-thirds of the way to a
+// measurement.
+check('fortressDR saturates at the site\'s own 0.90, not at a notional 1',
+  fortressDR(300) === 0.90 && fortressDR(251.3) === 0.90,
+  `${fortressDR(300)} / ${fortressDR(251.3)}`);
+check('fortressDR(0) is 0 — a destroyed or absent fortress is not credited 15%',
+  fortressDR(0) === 0);
+// THE LOW SEGMENT, read straight off the site's DR column. Seven points from
+// the ladder, exact; two more from the archive at 6.2 and 4.8 where the row
+// carries no DR clause at all.
+for (const [hp, want] of [[10, 0.100], [11, 0.105], [15, 0.125], [25, 0.175],
+  [35, 0.225], [45, 0.275], [48, 0.290], [50, 0.300]]) {
+  check(`fortressDR(${hp}) = ${want} — the segment below 50`,
+    Math.abs(fortressDR(hp) - want) < 1e-9, String(fortressDR(hp)));
+}
+check('and the two lines meet exactly at 50 HP, so the join is invisible above it',
+  Math.abs(fortressDR(50) - 0.30) < 1e-12
+  && Math.abs(FORTRESS.lowIntercept + FORTRESS.lowSlopePerHP * 50
+    - FORTRESS.drSlopePer50HP * 2) < 1e-12);
+check('a fortress under 10 HP confers NOTHING — 9.5 prints no DR, 10 prints 10.0%',
+  fortressDR(9.5) === 0 && fortressDR(9.99) === 0 && fortressDR(10) === 0.10);
+check('the old single formula would have over-credited a battered fortress by 8 points',
+  Math.abs(0.15 * (16.9 / 50 + 1) - fortressDR(16.9)) > 0.06,
+  `old ${(0.15 * (16.9 / 50 + 1)).toFixed(4)} vs ${fortressDR(16.9)}`);
+
+// ===========================================================================
+console.log('\n9. max HP integers, cross-checked against pools measured elsewhere');
+// ===========================================================================
+{
+  // meta.max_hp_bounds cannot be re-derived from results.jsonl (the pool and
+  // percentage behind it were never written). The air_vs_ground rows give an
+  // INDEPENDENT bracket, but only for the 13 units that appear there.
+  const covered = new Set();
+  for (const r of withReadings('air_vs_ground')) {
+    const m = r.meta;
+    for (const [slot, code, n] of [['A.1.1', m.atk, m.atk_n], ['B.1.1', m.target, m.def_n]]) {
+      const d = m.detail[slot];
+      const [lo, hi] = poolBracket(d.lost, d.pct, d.lost_source);
+      const unit = UNITS[code];
+      if (!inBracket(unit.maxHP * n, [lo, hi])) {
+        cannotReproduce(`${code} maxHP ${unit.maxHP}`, `pool in [${lo.toFixed(2)}, ${hi.toFixed(2)}]`,
+          unit.maxHP * n);
+      }
+      covered.add(code);
+    }
+  }
+  check(`all ${covered.size} units appearing in air_vs_ground have max HP integers consistent `
+    + 'with an independently derived pool bracket',
+    unreproduced.filter((u) => u.what.includes('maxHP')).length === 0,
+    JSON.stringify(unreproduced.filter((u) => u.what.includes('maxHP'))));
+  const uncovered = Object.keys(UNITS).filter((c) => !covered.has(c));
+  check(`and the ${uncovered.length} that do not (${uncovered.join(', ')}) are flagged as having `
+    + 'no independent check',
+    uncovered.every((c) => c === 'bal'
+      || PROVENANCE[UNITS[c].provenance.maxHP].source.includes('no independent')
+      || UNITS[c].provenance.maxHP === 'UNITS.maxHP.noIndependentCheck'
+      || UNITS[c].provenance.maxHP === 'UNITS.balloon'),
+    uncovered.map((c) => `${c}:${UNITS[c].provenance.maxHP}`).join(' '));
+}
+
+// ===========================================================================
+console.log('\n10. honesty — simulate() never throws, and never overstates what it knows');
+// ===========================================================================
+{
+  const codes = Object.keys(UNITS);
+  let threw = 0; let noDerivation = 0; let mislabelled = 0; let fabricated = 0;
+  let measuredCells = 0; let estimatedCells = 0; let unknownCells = 0;
+  for (const a of codes) {
+    for (const d of codes) {
+      let res;
+      try {
+        res = simulate({
+          attacker: { unit: a, count: 30, hpPct: 55, trench: 7, buildings: [{ code: 'barracks', level: 9 }] },
+          defender: { unit: d, count: 45, hpPct: 100, trench: 20, buildings: [{ code: 'fortress', level: 3 }] },
+          rounds: 3,
+        });
+      } catch (err) {
+        threw += 1;
+        cannotReproduce(`simulate(${a} vs ${d}) threw`, 'a Result', String(err && err.message));
+        continue;
+      }
+      if (!Array.isArray(res.derivation) || res.derivation.length === 0) noDerivation += 1;
+      const cov = coverageOf(a, d);
+      if (cov.level !== 'measured' && res.coverage.level === 'measured') mislabelled += 1;
+      if (res.coverage.level === 'unknown'
+          && (res.attacker.hpLost !== null || res.defender.hpLost !== null)) fabricated += 1;
+      if (res.coverage.level === 'measured') measuredCells += 1;
+      else if (res.coverage.level === 'estimated') estimatedCells += 1;
+      else unknownCells += 1;
+    }
+  }
+  const n = codes.length * codes.length;
+  check(`simulate() never throws across all ${n} roster pairings (in a deliberately awkward `
+    + 'configuration: 55% HP, trench 7, an over-cap building, 3 rounds)', threw === 0, `${threw} threw`);
+  check(`derivation[] is populated for all ${n} results`, noDerivation === 0, `${noDerivation} empty`);
+  check('no result is labelled \'measured\' when the matchup is not', mislabelled === 0, `${mislabelled} mislabelled`);
+  check('every \'unknown\' result withholds its numbers instead of inventing them',
+    fabricated === 0, `${fabricated} fabricated`);
+  check(`the cross-product splits ${measuredCells} measured / ${estimatedCells} estimated / `
+    + `${unknownCells} unknown — and this configuration has 3 rounds and trench 7, so nothing `
+    + 'here should be measured', measuredCells === 0, `${measuredCells} claimed measured`);
+}
+{
+  // Same sweep in the clean configuration: one round, no trench, no buildings.
+  const codes = Object.keys(UNITS);
+  const seen = { measured: 0, estimated: 0, unknown: 0 };
+  for (const a of codes) {
+    for (const d of codes) {
+      const res = simulate({
+        attacker: { unit: a, count: 10 }, defender: { unit: d, count: 10 }, rounds: 1,
+      });
+      seen[res.coverage.level] += 1;
+      // A pairing may call itself measured only where BOTH halves are
+      // corroborated: the attack column by CLASS_ATTACK_CORROBORATED, the
+      // defence side by CLASS_DEFENCE, which read two independent attackers of
+      // every class against every defender. Anything else must say estimated.
+      const aCls = combatClass(a, 'land');
+      const dCls = combatClass(d, 'land');
+      const corroborated = CLASS_ATTACK_CORROBORATED
+        .some(([x, y]) => x === aCls && y === dCls);
+      if (res.coverage.level === 'measured' && !(corroborated && a !== 'bal' && d !== 'bal')) {
+        cannotReproduce(`coverage(${a} vs ${d})`, 'not measured', 'measured');
+      }
+    }
+  }
+  // This used to read "exactly 46 of 289", being 16 diagonals plus 3 fliers
+  // against 10 ground units -- everything else was unknown for want of a
+  // DEFENCE coefficient. CLASS_DEFENCE filled that side of the table, so no
+  // pairing is unknown any more and the split moved to 148/141/0. The
+  // assertion that matters is unchanged in spirit: a pairing is measured only
+  // where the record corroborates both halves, and the count is pinned so it
+  // cannot drift upward quietly.
+  // 46 -> 148 -> 256, as the record filled in. 46 was 16 diagonals plus three
+  // fliers against ten ground units, everything else unknown for want of a
+  // DEFENCE coefficient. CLASS_DEFENCE took it to 148 with nothing unknown.
+  // The second-target sweep then corroborated every column of CLASS_ATTACK,
+  // which is what moves a cell from estimated to measured, and took it to 256.
+  // The count is pinned so it cannot drift upward quietly.
+  check(`in a clean 1-round duel exactly 256 of ${codes.length ** 2} pairings are 'measured'`,
+    seen.measured === 256, JSON.stringify(seen));
+  check('and no pairing is unknown any more, because both tables are complete',
+    seen.unknown === 0, JSON.stringify(seen));
+  check('every one of the 33 that are not measured involves the Balloon',
+    (() => {
+      const notMeasured = [];
+      for (const a of codes) {
+        for (const d of codes) {
+          const r = simulate({ attacker: { unit: a, count: 10 },
+            defender: { unit: d, count: 10 }, rounds: 1 });
+          if (r.coverage.level !== 'measured') notMeasured.push(`${a}v${d}`);
+        }
+      }
+      return notMeasured.length === 33 && notMeasured.every((s) => s.includes('bal'));
+    })(),
+    'the Balloon is three readings in one terrain, which is the only terrain it runs in');
+  check('land attacking air is measured now, and numbered',
+    (() => {
+      const r = simulate({ attacker: { unit: 'inf', count: 20 }, defender: { unit: 'int', count: 40 } });
+      // 0.3 x E(20) = 6.0 out, 5.0 x E(40) = 166.67 back. Both measured.
+      return Math.abs(r.defender.hpLost - 6.0) < 0.05
+        && Math.abs(r.attacker.hpLost - 166.67) < 0.05;
+    })());
+  // This check used to demand that infantry-vs-fighter be 'estimated', because
+  // the air column rested on one reading. A second target was sent for every
+  // column and 25 of 26 came back identical, so it is measured now and the
+  // assertion is inverted rather than deleted: the thing being tested is that
+  // the label tracks the record, in whichever direction the record moves.
+  check('and it is measured now that a second target corroborated the column',
+    (() => {
+      const r = simulate({ attacker: { unit: 'inf', count: 20 }, defender: { unit: 'int', count: 40 } });
+      return r.coverage.level === 'measured'
+        && CLASS_ATTACK_CORROBORATED.some(([x, y]) => x === 'land' && y === 'air');
+    })());
+  // These two used to assert 'estimated'. They were right when the engine had
+  // no way to know that a coefficient is flat across targets WITHIN a class --
+  // but the off-diagonal sweep submitted eight land pairs including this exact
+  // one, and naval_matrix swept naval against naval in full. The readings were
+  // on disk; the old coverage cascade simply never consulted them. Calling
+  // them measured is the record catching up, not a relaxation.
+  check('land off-diagonal is measured — the off-diagonal sweep submitted this exact pair',
+    (() => {
+      const r = simulate({ attacker: { unit: 'inf', count: 10 }, defender: { unit: 'ht', count: 10 } });
+      return r.coverage.level === 'measured' && r.defender.hpLost > 0;
+    })());
+  check('sea off-diagonal is measured too, from the naval matrix',
+    simulate({ attacker: { unit: 'sub', count: 10 }, defender: { unit: 'bb', count: 10 } })
+      .coverage.level === 'measured');
+  // The warning did not go away, it moved to where it still applies: a cell
+  // that no column covers at all.
+  check('a pairing no column covers still says it could be wrong by any factor',
+    (() => {
+      const r = simulate({ attacker: { unit: 'bal', count: 10 }, defender: { unit: 'sub', count: 10 } });
+      return r.coverage.level !== 'measured';
+    })());
+  // The single-reading branch is unreachable at the moment, and that is a fact
+  // about the record rather than dead code: every one of the nine class pairs
+  // is corroborated. Asserting the coverage explicitly is what keeps the
+  // branch honest — remove a pair from the list and this fails immediately.
+  check('every one of the nine class pairs is corroborated by a second reading',
+    (() => {
+      const classes = ['land', 'air', 'naval'];
+      return classes.every((a) => classes.every((d) =>
+        CLASS_ATTACK_CORROBORATED.some(([x, y]) => x === a && y === d)));
+    })(), JSON.stringify(CLASS_ATTACK_CORROBORATED));
+  check('so no pairing is downgraded for resting on one cell',
+    !simulate({ attacker: { unit: 'inf', count: 20 }, defender: { unit: 'int', count: 40 } })
+      .coverage.reason.includes('single reading'));
+}
+check('multi-round downgrades a measured matchup to \'estimated\' and says every reading used 1 round',
+  (() => {
+    const r = simulate({
+      attacker: { unit: 'inf', count: 10 }, defender: { unit: 'inf', count: 10 }, rounds: 4,
+    });
+    return r.coverage.level === 'estimated'
+      && r.coverage.caveats.some((c) => /maxRounds = 1|4 rounds/.test(c));
+  })());
+// All 21 trench levels are measured now, so every one is exact and there are
+// no neighbours to bracket. What must still hold is that the tables are
+// complete, and that a level ABOVE the cap is refused rather than guessed.
+check('every trench level 0-20 is measured and exact',
+  Array.from({ length: 21 }, (_, i) => i).every((l) =>
+    TRENCH_POOL[l] !== undefined && TRENCH_OUTPUT[l] !== undefined
+    && trenchFactors(l).exact === true),
+  Array.from({ length: 21 }, (_, i) => i)
+    .filter((l) => !trenchFactors(l).exact).join(',') || 'all exact');
+check('a sampled trench level is exact', trenchFactors(15).exact === true && trenchFactors(0).exact === true);
+check('trench above 20 is clamped and flagged',
+  trenchFactors(25).level === 20 && trenchFactors(25).exact === false);
+// Eight of nine land types are measured now. Cavalry is one of them, so it
+// must COMPUTE; the heavy tank is the censored one and must still be withheld.
+check('building damage from a measured attacker is computed',
+  (() => {
+    const r = simulate({
+      attacker: { unit: 'cav', count: 30 },
+      defender: { unit: 'cav', count: 30, buildings: [{ code: 'fortress', level: 3 }] },
+    });
+    return Math.abs(r.defender.damageToBuildings - 2.0 * effectiveUnits(30)) < 1e-6;
+  })(), '2.00 per effective unit');
+// This asserted that the heavy tank's building damage is WITHHELD, because its
+// only reading was censored: it dealt exactly 250.00 against a fortress holding
+// 250.00, making 8.82 a floor. Read again with five tanks instead of thirty --
+// small enough that the fortress survives -- it is 9.00. Withholding a figure
+// that exists is as wrong as inventing one, so the assertion is inverted.
+check('the heavy tank is measured now, not censored, and is computed',
+  (() => {
+    const r = simulate({
+      attacker: { unit: 'ht', count: 30 },
+      defender: { unit: 'ht', count: 30, buildings: [{ code: 'fortress', level: 3 }] },
+    });
+    return Math.abs(r.defender.damageToBuildings - 9.0 * effectiveUnits(30)) < 1e-6
+      && BUILDING_DAMAGE_FLOOR.ht === undefined;
+  })());
+check('a fortress against an air attacker still computes, but is downgraded and caveated',
+  (() => {
+    const r = simulate({
+      attacker: { unit: 'tac', count: 10 },
+      defender: { unit: 'inf', count: 57, buildings: [{ code: 'fortress', level: 3 }] },
+    });
+    return r.coverage.level === 'estimated'
+      && r.coverage.caveats.some((c) => /land \(infantry\) attacker/.test(c));
+  })());
+// MEASURED now, and the answer is the opposite of the land law: a wiped AIR
+// stack deals nothing, while a wiped LAND stack still deals its full damage.
+// Only reachable through a damaged air stack — ground fire cannot wipe a
+// healthy one, which is why this sat open so long.
+check('a wiped air attacker deals ZERO, not a withheld number',
+  (() => {
+    const r = simulate({
+      attacker: { unit: 'tac', count: 1 },
+      defender: { unit: 'ac', count: 50 },
+    });
+    return r.attacker.wiped === true && r.defender.hpLost === 0;
+  })(), 'measured: 3 bombers at 5% HP are wiped and the defender loses 0.00');
+check('while a wiped LAND attacker still deals full damage',
+  (() => {
+    const r = simulate({
+      attacker: { unit: 'inf', count: 1 },
+      defender: { unit: 'ht', count: 50 },
+    });
+    return r.attacker.wiped === true && r.defender.hpLost > 0;
+  })(), 'the two laws differ, and both are measured');
+check('every derivation entry carries a label, a formula and a value key',
+  (() => {
+    const r = simulate({
+      attacker: { unit: 'int', count: 10 },
+      defender: { unit: 'inf', count: 57, buildings: [{ code: 'fortress', level: 2 }] },
+    });
+    return r.derivation.length > 5 && r.derivation.every(
+      (e) => typeof e.label === 'string' && typeof e.formula === 'string' && 'value' in e,
+    );
+  })());
+{
+  // The app must never put user traffic on dxcalc.com. That is a property of
+  // the source, not of a run, so it is asserted against the source.
+  const src = ['../data.js', '../engine.js']
+    .map((f) => readFileSync(join(HERE, f), 'utf8')).join('\n');
+  const banned = /\bfetch\s*\(|XMLHttpRequest|WebSocket|EventSource|navigator\.sendBeacon|import\s*\(|https?:\/\/(?!\s)/g;
+  const hits = src.match(banned) || [];
+  check('engine.js and data.js contain no network call of any kind — no fetch, no XHR, no '
+    + 'WebSocket, no URL, no dynamic import', hits.length === 0, `found: ${hits.join(', ')}`);
+  // Comments may name the site; code may not.
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  check('and dxcalc.com appears nowhere in the executable code (only in comments explaining '
+    + 'why it must not)', !/dxcalc\.com/.test(code),
+    (code.match(/.*dxcalc\.com.*/g) || []).join(' | '));
+}
+check('every constant in UNITS points at a PROVENANCE note that exists',
+  Object.values(UNITS).every((u) => Object.values(u.provenance).every((k) => PROVENANCE[k])),
+  Object.values(UNITS).flatMap((u) => Object.values(u.provenance).filter((k) => !PROVENANCE[k])).join(' '));
+// This used to pass with a malformed entry present: an edit removed a gap's
+// `key:` line and left the rest of the object behind, and the check said
+// nothing. Naming the offender is what makes it speak up.
+const malformed = NOT_MEASURED.filter(
+  (g) => !g.key || !g.what || !g.why || !g.closedBy);
+// No floor on the COUNT. There used to be one (>= 20), from when the list had
+// 26 entries and the worry was that gaps would be quietly dropped rather than
+// closed. That is backwards now: the list shrinking is the point, and a floor
+// would eventually force keeping a gap that no longer exists. What must hold
+// is that whatever remains is well-formed and honest.
+check(`NOT_MEASURED lists ${NOT_MEASURED.length} open gaps, each with key/what/why/closedBy`,
+  NOT_MEASURED.length >= 1 && malformed.length === 0,
+  malformed.length ? JSON.stringify(malformed[0]).slice(0, 140) : 'all well-formed');
+check('and every gap key is unique',
+  new Set(NOT_MEASURED.map((g) => g.key)).size === NOT_MEASURED.length);
+check('the land off-diagonal gap is gone from the list, having been closed',
+  !NOT_MEASURED.some((g) => g.key === 'land_off_diagonal'),
+  'eight single-type off-diagonal duels reproduced the diagonal exactly');
+
+// ===========================================================================
+console.log('\n11. patrol — replayed as an explicitly estimated band');
+// ===========================================================================
+// The engine now implements patrol. Its ATTRITION coefficient is a band, not
+// a number, so every patrol result is labelled estimated -- but a band is only
+// honest if the numbers inside it actually reproduce the battles that were
+// fought. All nine measured cells are replayed here against a 1.5% tolerance,
+// which is the width the band itself implies, not a tolerance chosen to pass.
+{
+  const airCell = {};
+  for (const r of rows) {
+    if (r.experiment !== 'air_vs_ground') continue;
+    const b = (r.meta.detail || {})['B.1.1'] || {};
+    if (b.lost != null) airCell[`${r.meta.atk}/${r.meta.target}`] = { lost: b.lost, defN: r.meta.def_n };
+  }
+  const seen = new Set();
+  let worstErr = 0;
+  for (const r of rows) {
+    const m = r.meta || {};
+    if (r.experiment !== 'patrol' || m.error || m.rounds !== '1' || m.terrain !== 'patrol') continue;
+    const ref = airCell[`${m.unit}/${m.target}`];
+    const b = (m.detail || {})['B.1.1'] || {};
+    if (!ref || b.lost == null) continue;
+    seen.add(`${m.unit}/${m.target}`);
+    const res = simulate({
+      mode: 'patrol',
+      attacker: { unit: m.unit, count: m.atk_n, hpPct: 100 },
+      defender: { unit: m.target, count: m.def_n, hpPct: 100 },
+      rounds: 1,
+    });
+    const err = Math.abs(res.defender.hpLost - b.lost) / b.lost;
+    worstErr = Math.max(worstErr, err);
+    check(`patrol ${m.unit} vs ${m.target}: engine ${res.defender.hpLost.toFixed(2)} vs measured ${b.lost}`,
+      err <= 0.015, `${(err * 100).toFixed(2)}% off`);
+    check(`patrol ${m.unit} vs ${m.target} is never labelled measured`,
+      res.coverage.level === 'estimated', res.coverage.level);
+  }
+  // Nine distinct cells; tac/inf appears twice because the maxRounds ladder
+  // re-flew it, so count cells rather than rows.
+  check('all nine measured patrol cells were replayed', seen.size === 9,
+    `${seen.size} distinct: ${[...seen].join(' ')}`);
+  check(`worst patrol error is inside the band the coefficient implies`,
+    worstErr <= 0.015, `${(worstErr * 100).toFixed(2)}%`);
+
+  // The maxRounds halves. These ARE measured and must be exact in kind:
+  // patrol scales, a strike does not.
+  const strike = (rr) => simulate({
+    mode: 'strike', attacker: { unit: 'tac', count: 10, hpPct: 100 },
+    defender: { unit: 'inf', count: 57, hpPct: 100 }, rounds: rr,
+  }).defender.hpLost;
+  check('a direct strike ignores maxRounds (measured: byte-identical at 0.25/0.5/0.75/1)',
+    [0.25, 0.5, 0.75, 1].every((r) => Math.abs(strike(r) - strike(1)) < 1e-9),
+    [0.25, 0.5, 0.75, 1].map((r) => strike(r).toFixed(3)).join(' / '));
+  const pat = (rr) => simulate({
+    mode: 'patrol', attacker: { unit: 'tac', count: 10, hpPct: 100 },
+    defender: { unit: 'inf', count: 57, hpPct: 100 }, rounds: rr,
+  }).defender.hpLost;
+  // Proportional, but not EXACTLY: a longer patrol eats more return fire, so
+  // the attrition factor differs slightly between rungs. That is real in both
+  // directions -- the live ladder's per-round rate rose 30.13 -> 30.33 across
+  // 0.25 to 1 (+0.67%), and the engine falls by a similar amount. Asserting
+  // exact linearity would be asserting something the measurement does not say.
+  check('patrol damage is proportional to maxRounds, to the flatness measured',
+    Math.abs(pat(0.25) * 4 / pat(1) - 1) < 0.015,
+    `${pat(0.25).toFixed(3)} x 4 = ${(pat(0.25) * 4).toFixed(3)} vs ${pat(1).toFixed(3)}`);
+  check('and a quarter-round patrol deals roughly a quarter of the damage',
+    pat(0.25) > 0 && Math.abs(pat(0.25) / pat(1) - 0.25) < 0.01,
+    `${(pat(0.25) / pat(1)).toFixed(4)}`);
+  check('patrol out-damages a strike against a target that shoots back',
+    pat(1) > strike(1));
+  check('and matches it against one that barely does, to within the band',
+    Math.abs(pat(1) / strike(1) - 1) < 0.05, (pat(1) / strike(1)).toFixed(4));
+
+  // Patrol is only offered where it was measured.
+  check('patrol on a land-vs-land pairing falls back and says so',
+    simulate({ mode: 'patrol', attacker: { unit: 'inf', count: 10 }, defender: { unit: 'inf', count: 10 } })
+      .coverage.caveats.some((c) => /only ever measured for an AIR stack/.test(c)));
+}
+
+// ===========================================================================
+console.log('\n12. composite stacks — replayed against the four measured mixtures');
+// ===========================================================================
+// A stack is a MIXTURE. Both halves of the law are asserted here against the
+// real readings: the cumulative roster-order saturation that sets each row's
+// effective units, and the (attack x count) split that decides who takes the
+// damage. Neither is visible in any single-type measurement.
+{
+  let cells = 0;
+  for (const r of rows) {
+    const m = r.meta || {};
+    if (r.experiment !== 'mixed_stacks' || m.error) continue;
+    if (!Array.isArray(m.rows) || m.rows.length < 2) continue;
+    const d = m.detail || {};
+    const obsOut = (d['A.1.1'] || {}).lost;
+    if (obsOut == null) continue;
+    cells += 1;
+    const res = simulate({
+      attacker: { unit: 'inf', count: m.atk_n, hpPct: 100 },
+      defender: { rows: m.rows.map(([unit, count]) => ({ unit, count, hpPct: 100 })) },
+      rounds: 1,
+    });
+    check(`${m.label}: defender output ${res.attacker.hpLost.toFixed(2)} vs measured ${obsOut}`,
+      Math.abs(res.attacker.hpLost - obsOut) <= 0.05,
+      `${(res.attacker.hpLost - obsOut).toFixed(3)} off`);
+    // Per-row damage split, itemised straight off the page.
+    m.rows.forEach(([unit], i) => {
+      const obs = (d[`B.1.${i + 1}`] || {}).lost;
+      if (obs == null) return;
+      const got = res.defender.rows[i];
+      check(`${m.label}: ${unit} row took ${got.hpLost.toFixed(2)} vs measured ${obs}`,
+        Math.abs(got.hpLost - obs) <= 0.05, `${(got.hpLost - obs).toFixed(3)} off`);
+    });
+  }
+  check('all four measured mixtures were replayed', cells >= 4, String(cells));
+
+  // Submission order must not change the answer: the server sorts first.
+  const a = simulate({ attacker: { unit: 'inf', count: 20 },
+    defender: { rows: [{ unit: 'inf', count: 25 }, { unit: 'art', count: 25 }] } });
+  const b = simulate({ attacker: { unit: 'inf', count: 20 },
+    defender: { rows: [{ unit: 'art', count: 25 }, { unit: 'inf', count: 25 }] } });
+  check('submission order does not change the stack output',
+    Math.abs(a.attacker.hpLost - b.attacker.hpLost) < 1e-9,
+    `${a.attacker.hpLost} vs ${b.attacker.hpLost}`);
+
+  // The finding that matters to a player.
+  const alone = simulate({ attacker: { unit: 'inf', count: 20 },
+    defender: { rows: [{ unit: 'art', count: 40 }] } });
+  const behind = simulate({ attacker: { unit: 'inf', count: 20 },
+    defender: { rows: [{ unit: 'inf', count: 10 }, { unit: 'art', count: 40 }] } });
+  check('a type behind others draws from the saturated tail (40 art: 33.3 -> 25 effective)',
+    Math.abs(alone.defender.rows[0].effective - effectiveUnits(40)) < 1e-9
+    && Math.abs(behind.defender.rows[1].effective - 25) < 1e-9,
+    `${alone.defender.rows[0].effective} vs ${behind.defender.rows[1].effective}`);
+  check('and the engine flags that row as saturated',
+    behind.defender.rows[1].saturated === true);
+
+  // The server refuses a repeated type; the engine must not compute one.
+  const dup = simulate({ attacker: { unit: 'inf', count: 10 },
+    defender: { rows: [{ unit: 'inf', count: 25 }, { unit: 'inf', count: 25 }] } });
+  check('a duplicated unit type is dropped, not merged',
+    dup.defender.rows.length === 1, `${dup.defender.rows.length} rows`);
+  check('and the reason is stated as a caveat',
+    dup.coverage.caveats.some((c) => /same unit type twice/.test(c)),
+    dup.coverage.caveats.join(' | '));
+
+  // --- two defects found by the UI worker, both integrity failures --------
+  // 1. Coverage judged only the FIRST row of each side. A stack of infantry
+  //    plus artillery attacking infantry plus cavalry is four pairings, and
+  //    only one is the measured diagonal -- it reported 'measured' citing
+  //    infantry-vs-infantry while cavalry-vs-artillery, never once submitted,
+  //    went unmentioned.
+  const mixedPair = simulate({
+    attacker: { rows: [{ unit: 'inf', count: 10 }, { unit: 'art', count: 40 }] },
+    defender: { rows: [{ unit: 'inf', count: 30 }, { unit: 'cav', count: 10 }] },
+  });
+  // This pair of checks used to read "the level is estimated" and "3 of 4
+  // pairings are unmeasured", using infantry+artillery against infantry+cavalry
+  // as the example. CLASS_DEFENCE closed all four of those cells, so the
+  // example no longer has anything below measured in it and cannot demonstrate
+  // the defect it was written for.
+  //
+  // The defect was never about those four cells: it was that coverage looked at
+  // row 0 of each side and ignored the rest. So the mechanism is now asserted
+  // directly, against the pairs array, which is a stronger test than the
+  // example ever was -- it holds whatever the record later fills in.
+  const rank = { measured: 0, estimated: 1, unknown: 2 };
+  check('coverage reports the WORST pairing, not the first row of each side',
+    (() => {
+      const worst = mixedPair.coverage.pairs
+        .reduce((w, p) => (rank[p.level] > rank[w] ? p.level : w), 'measured');
+      return mixedPair.coverage.level === worst;
+    })(),
+    `${mixedPair.coverage.level} vs pairs `
+    + mixedPair.coverage.pairs.map((p) => p.level).join('/'));
+  // And a mixture that DOES contain a weaker cell still reports the weaker one
+  // and counts it, which is the half of the behaviour the example carried.
+  // A mixture that DOES contain a weaker cell must report the weaker one and
+  // count it. The Balloon is the only unit left that supplies one, which is
+  // itself worth stating: everything else in the roster is corroborated on
+  // both halves now.
+  const crossPair = simulate({
+    attacker: { rows: [{ unit: 'int', count: 10 }, { unit: 'bal', count: 40 }] },
+    defender: { rows: [{ unit: 'int', count: 30 }, { unit: 'tac', count: 10 }] },
+  });
+  check('a mixture containing a weaker cell reports it, and counts it',
+    crossPair.coverage.level === 'estimated'
+    && /of 4 unit pairings in this battle are not measured/.test(crossPair.coverage.reason),
+    crossPair.coverage.reason.slice(0, 90));
+  check('and every pairing in it was judged, not just the first',
+    crossPair.coverage.pairs.length === 4
+    && crossPair.coverage.pairs.filter((p) => p.level === 'measured').length === 2,
+    crossPair.coverage.pairs.map((p) => p.level).join('/'));
+  check('the pairing cross-product is exposed for inspection',
+    Array.isArray(mixedPair.coverage.pairs) && mixedPair.coverage.pairs.length === 4);
+  check('an all-measured mixture is still reported measured',
+    simulate({ attacker: { rows: [{ unit: 'inf', count: 10 }] },
+      defender: { rows: [{ unit: 'inf', count: 30 }] } }).coverage.level === 'measured');
+
+  // 2. Rows reported damageDealt: 0 on the air and patrol paths, whose laws
+  //    work on whole-stack survivors and cannot be decomposed per row. Zero is
+  //    a claim; the stack total was 113 at the time.
+  const airMix = simulate({
+    attacker: { rows: [{ unit: 'int', count: 10 }, { unit: 'tac', count: 10 }] },
+    defender: { rows: [{ unit: 'inf', count: 30 }, { unit: 'ht', count: 10 }] },
+  });
+  check('an un-itemisable row reports null damage dealt, never 0',
+    airMix.attacker.rows.every((r) => r.damageDealt === null),
+    JSON.stringify(airMix.attacker.rows.map((r) => r.damageDealt)));
+  check('while the stack total is still reported',
+    typeof airMix.attacker.damageDealt === 'number' && airMix.attacker.damageDealt > 0,
+    String(airMix.attacker.damageDealt));
+  check('a land mixture DOES itemise damage dealt per row',
+    simulate({ attacker: { rows: [{ unit: 'inf', count: 25 }, { unit: 'art', count: 25 }] },
+      defender: { rows: [{ unit: 'inf', count: 30 }] } })
+      .attacker.rows.every((r) => typeof r.damageDealt === 'number'));
+
+  // 3. Stack-level multipliers must reach the ROWS too. They did not: a
+  //    defender on trench 10 reported rows summing to 141.67 against a stack
+  //    figure of 218.17 -- the same number times the 1.54 trench output bonus.
+  //    Rows that do not sum to their own stack are the composite version of
+  //    the building row that clobbered the attacker's slot for a whole phase.
+  for (const [why, cfg] of [
+    ['trench output bonus', { attacker: { rows: [{ unit: 'inf', count: 10 }], trench: 20 },
+      defender: { rows: [{ unit: 'inf', count: 30 }], trench: 10 } }],
+    ['a trenched mixture', { attacker: { rows: [{ unit: 'inf', count: 20 }] },
+      defender: { rows: [{ unit: 'inf', count: 25 }, { unit: 'art', count: 25 }], trench: 15 } }],
+    ['patrol duration', { mode: 'patrol', rounds: 2,
+      attacker: { rows: [{ unit: 'tac', count: 10 }] },
+      defender: { rows: [{ unit: 'inf', count: 57 }] } }],
+  ]) {
+    const r = simulate(cfg);
+    for (const side of ['attacker', 'defender']) {
+      const rowsSum = r[side].rows.reduce(
+        (t, x) => t + (typeof x.damageDealt === 'number' ? x.damageDealt : 0), 0);
+      const total = r[side].damageDealt;
+      if (total === null || !r[side].rows.some((x) => typeof x.damageDealt === 'number')) continue;
+      check(`${why}: ${side} rows sum to the stack's damage dealt`,
+        Math.abs(rowsSum - total) < 0.01, `${rowsSum.toFixed(2)} vs ${total.toFixed(2)}`);
+    }
+  }
+
+  // --- stacks the game refuses to field -----------------------------------
+  // Measured, and every refusal stated by the server. A stack it will not
+  // accept is not a battle with an uncertain answer; it is not a battle. The
+  // app shipped computing these, which is a number for an army that cannot
+  // exist.
+  const crossClass = simulate({
+    attacker: { rows: [{ unit: 'inf', count: 10 }, { unit: 'int', count: 10 }] },
+    defender: { rows: [{ unit: 'inf', count: 30 }] },
+  });
+  check('a cross-class stack is refused, not computed',
+    crossClass.coverage.level === 'unknown' && crossClass.attacker.hpLost === null,
+    `${crossClass.coverage.level} / ${crossClass.attacker.hpLost}`);
+  check('and the reason quotes what the server actually says',
+    /cannot share a stack/.test(crossClass.coverage.reason));
+
+  // A direct air strike is ATOMIC, not roundless. The earlier claim that
+  // maxRounds is ignored in air came from testing only 0.25-1, where "one
+  // atomic strike" and "rounds ignored" are indistinguishable. Whole rounds
+  // do repeat -- 295.01 / 585.23 / 871.68 at 1, 2, 3 -- and dxcalc's own help
+  // page said so while the model said otherwise.
+  const strikeAt = (r) => simulate({
+    mode: 'strike', attacker: { rows: [{ unit: 'tac', count: 10 }] },
+    defender: { rows: [{ unit: 'inf', count: 57 }] }, rounds: r,
+  }).defender.hpLost;
+  check('a fractional strike delivers one whole strike (measured)',
+    Math.abs(strikeAt(0.5) - strikeAt(1)) < 1e-9
+    && Math.abs(strikeAt(1) - 295.01) < 0.05,
+    `${strikeAt(0.5).toFixed(2)} / ${strikeAt(1).toFixed(2)}`);
+  check('but whole rounds DO repeat — the old "ignored" reading was wrong',
+    strikeAt(2) > strikeAt(1) * 1.9 && strikeAt(3) > strikeAt(2),
+    `${strikeAt(1).toFixed(2)} / ${strikeAt(2).toFixed(2)} / ${strikeAt(3).toFixed(2)}`);
+  check('two rounds reproduce the live 585.23 to within a fifth of a percent',
+    Math.abs(strikeAt(2) - 585.23) / 585.23 < 0.002,
+    `${strikeAt(2).toFixed(2)}`);
+  check('and a multi-round result is flagged estimated, not measured',
+    simulate({ mode: 'strike', attacker: { rows: [{ unit: 'tac', count: 10 }] },
+      defender: { rows: [{ unit: 'inf', count: 57 }] }, rounds: 3 })
+      .coverage.level !== 'measured');
+  const withConvoy = simulate({
+    attacker: { rows: [{ unit: 'inf', count: 10 }, { unit: 'convoy', count: 5 }] },
+    defender: { rows: [{ unit: 'inf', count: 30 }] },
+  });
+  check('the Airplane Convoy stacks with nothing — measured, not assumed',
+    withConvoy.coverage.level === 'unknown', withConvoy.coverage.level);
+  check('a convoy ALONE is still a legal stack',
+    simulate({ attacker: { rows: [{ unit: 'convoy', count: 10 }] },
+      defender: { rows: [{ unit: 'convoy', count: 10 }] } }).coverage.level !== 'unknown');
+
+  // The cap was 8, inherited from duel()'s row-blanking range. A land stack
+  // takes 9 types -- the server accepted all nine and returned nine rows.
+  const nine = 'inf cav ac lart art rrg lt ht st'.split(' ')
+    .map((u) => ({ unit: u, count: 5 }));
+  const big = simulate({ attacker: { rows: nine },
+    defender: { rows: [{ unit: 'inf', count: 30 }] } });
+  check('all nine land types fit in one stack', big.attacker.rows.length === 9,
+    String(big.attacker.rows.length));
+  check('and the row cap now matches the page, not the old guess',
+    MAX_UNIT_ROWS === 15, String(MAX_UNIT_ROWS));
+  check('their effective units still sum to E(total)',
+    Math.abs(big.attacker.rows.reduce((t, r) => t + r.effective, 0)
+      - effectiveUnits(45)) < 1e-9);
+
+  // Single-row configs must be untouched by any of this.
+  const single = simulate({ attacker: { unit: 'inf', count: 30 },
+    defender: { unit: 'inf', count: 30 } });
+  check('a single-type stack still gives the measured control exactly',
+    Math.abs(single.attacker.hpLost - 141.67) < 0.01
+    && Math.abs(single.defender.hpLost - 113.33) < 0.01,
+    `${single.attacker.hpLost} / ${single.defender.hpLost}`);
+}
+
+// ===========================================================================
+console.log('\n12b. the stack law, replayed against the ladder that overturned it');
+// ===========================================================================
+// This engine shipped ROSTER-order saturation until a nine-type ladder was
+// measured against an attacker large enough to survive it. Roster order is
+// wrong by 52.6% on the widest rung. Every rung, every held-out stack and
+// every hero screen row is replayed here, so the law cannot quietly revert.
+{
+  let rungs = 0;
+  let heroRows = 0;
+  for (const r of rows) {
+    const m = r.meta || {};
+    if (r.experiment !== 'survivable_rig' || m.error) continue;
+    if (!Array.isArray(m.rows) || !m.atk_n) continue;
+    const obs = ((m.detail || {})['A.1.1'] || {}).lost;
+    if (obs == null) continue;
+    // A wiped attacker reports its own pool, not the defender's output. The
+    // probe discards those; the replay must not resurrect them.
+    if (((m.detail || {})['A.1.1'] || {}).pct >= 99.9) continue;
+    const cfg = {
+      attacker: { unit: 'inf', count: m.atk_n, hpPct: 100 },
+      defender: { rows: m.rows.map(([unit, count]) => ({ unit, count, hpPct: 100 })) },
+      rounds: 1,
+    };
+    if (m.hero) cfg.defender.hero = { code: m.hero, level: m.level || 10 };
+    const res = simulate(cfg);
+    const label = `${m.hero || 'no hero'} / ${m.rows.map(([u, c]) => `${c} ${u}`).join(' + ')}`;
+    if (m.hero) heroRows += 1; else rungs += 1;
+    check(`${label}: output ${res.attacker.hpLost.toFixed(2)} vs measured ${obs}`,
+      Math.abs(res.attacker.hpLost - obs) <= 0.05,
+      `${(res.attacker.hpLost - obs).toFixed(3)} off`);
+  }
+  check('the whole ladder and the held-out stacks were replayed', rungs >= 12,
+    `${rungs} no-hero readings`);
+  check('and every hero screen row with it', heroRows >= 20,
+    `${heroRows} hero readings`);
+
+  // The ATTACKING side sorts by its own attack column, which is a different
+  // ranking: a stormtrooper out-attacks infantry 25 to 4 and out-defends it
+  // only 6.3 to 5.0.
+  let sides = 0;
+  for (const r of rows) {
+    const m = r.meta || {};
+    if (r.experiment !== 'stack_order' || m.error || m.side !== 'A') continue;
+    const obs = ((m.detail || {})['B.1.1'] || {}).lost;
+    if (obs == null) continue;
+    sides += 1;
+    const res = simulate({
+      attacker: { rows: m.rows.map(([unit, count]) => ({ unit, count, hpPct: 100 })) },
+      defender: { unit: 'ht', count: 60, hpPct: 100 },
+      rounds: 1,
+    });
+    check(`attacking ${m.rows.map(([u, c]) => `${c} ${u}`).join(' + ')}: `
+      + `${res.defender.hpLost.toFixed(2)} vs measured ${obs}`,
+      Math.abs(res.defender.hpLost - obs) <= 0.05,
+      `${(res.defender.hpLost - obs).toFixed(3)} off`);
+  }
+  check('both attacking-order readings were replayed', sides >= 2, String(sides));
+
+  // The finding a player can act on, and the one the old law got backwards.
+  const weakFirst = simulate({ attacker: { unit: 'inf', count: 60 },
+    defender: { rows: [{ unit: 'lart', count: 25 }, { unit: 'ht', count: 25 }] } });
+  const heavy = weakFirst.defender.rows[1];
+  const light = weakFirst.defender.rows[0];
+  check('the heavy tanks draw first and the light artillery takes the tail',
+    heavy.effective > light.effective && Math.abs(heavy.effective - effectiveUnits(25)) < 1e-9,
+    `ht ${heavy.effective} vs lart ${light.effective}`);
+  check('which is 2.3x the answer roster order gave',
+    Math.abs(weakFirst.attacker.hpLost - 1116.67) < 0.5,
+    `${weakFirst.attacker.hpLost.toFixed(2)} (roster order said 493.33)`);
+}
+
+console.log('\n12c. hero output buffs land on unit types, not on the stack');
+{
+  // joffre_home raises infantry AND armoured cars by 1.30 and nothing else.
+  // Applying one figure to the whole stack was the shape of the old model and
+  // would over-count every other row.
+  const res = simulate({
+    attacker: { unit: 'inf', count: 60 },
+    defender: {
+      rows: [{ unit: 'inf', count: 2 }, { unit: 'ac', count: 2 },
+             { unit: 'cav', count: 2 }],
+      hero: { code: 'joffre_home', level: 10 },
+    },
+    rounds: 1,
+  });
+  const byCode = {};
+  res.defender.rows.forEach((r) => { if (!r.isHero) byCode[r.unit] = r; });
+  check('infantry is buffed', Math.abs(byCode.inf.damageDealt - 5.0 * 2 * 1.30) < 1e-6,
+    String(byCode.inf.damageDealt));
+  check('armoured cars are buffed by the same measured 1.30',
+    Math.abs(byCode.ac.damageDealt - 12.0 * 2 * 1.30) < 1e-6, String(byCode.ac.damageDealt));
+  check('and cavalry, sitting in the same stack, is NOT',
+    Math.abs(byCode.cav.damageDealt - 7.5 * 2) < 1e-6, String(byCode.cav.damageDealt));
+
+  // Curves are stored as measured points. A level that was submitted is
+  // exact; one between two that were is interpolated and says so.
+  const at10 = heroBuff('kangal', 10, 'ac');
+  const at3 = heroBuff('kangal', 3, 'ac');
+  check('kangal at level 10 is exact', at10.exact === true && at10.m === 1.20);
+  // Every level of every hero curve is measured now, so nothing interpolates.
+  check('kangal at level 3 is measured directly, not interpolated',
+    at3.exact === true && at3.m === 1.12, at3.note);
+  check('every hero curve is complete to that hero\'s cap',
+    Object.entries(HEROES).every(([, h]) =>
+      Object.values(h.buffs || {}).every((b) =>
+        Object.keys(b.curve).length >= h.maxLevel)
+      && Object.values(h.hpBuffs || {}).every((c) =>
+        Object.keys(c).length >= h.maxLevel)),
+    'a curve short of its cap would silently interpolate');
+  check('a DEFENCE-ONLY buff is not applied to an attacking stack',
+    heroBuff('kangal', 10, 'ac', 'attacker').m === 1.0
+    && /DEFENCE-ONLY/.test(heroBuff('kangal', 10, 'ac', 'attacker').note),
+    heroBuff('kangal', 10, 'ac', 'attacker').note);
+  check('while a both-sides buff still applies attacking',
+    heroBuff('alvin', 10, 'st', 'attacker').m === 1.40);
+  check('a hero with no buff for this unit type returns 1.0 and says which types it does buff',
+    heroBuff('joffre_home', 10, 'ht').m === 1.0
+    && /buffs inf and ac/.test(heroBuff('joffre_home', 10, 'ht').note),
+    heroBuff('joffre_home', 10, 'ht').note);
+  // marco was the exemplar here and is no longer a pure combat hero: the
+  // attacking screen found it buffs light tanks by 1.16, an ATTACK-ONLY buff
+  // that the defending screen could not see. Lawrence still buffs nothing at
+  // all, on either side, across all nine land types.
+  check('and a pure combat hero says it raised the stack by its attack alone',
+    heroBuff('larab', 10, 'lt').m === 1.0
+    && /pure combat unit/.test(heroBuff('larab', 10, 'lt').note),
+    heroBuff('larab', 10, 'lt').note);
+  check('while marco, which the attacking screen caught, now reports its buff',
+    heroBuff('marco', 10, 'lt', 'attacker').m === 1.16
+    && heroBuff('marco', 10, 'lt', 'defender').m === 1.0,
+    `${heroBuff('marco', 10, 'lt', 'attacker').m} attacking, `
+    + `${heroBuff('marco', 10, 'lt', 'defender').m} defending`);
+}
+
+console.log('\n12d. the damage split, replayed against every attacker');
+// ===========================================================================
+// The engine shipped "in proportion to the defending row's own attack value"
+// and was out by 40% of the stack total. The rule is (target factor x count),
+// a property of the TARGET: one request per attacking type against the same
+// nine-type defender, and all nine give the same three-value pattern.
+{
+  let sweeps = 0;
+  for (const r of rows) {
+    const m = r.meta || {};
+    if (r.experiment !== 'allocation' || m.error || !m.rows) continue;
+    const d = m.detail || {};
+    const res = simulate({
+      attacker: { unit: m.attacker, count: m.atk_n, hpPct: 100 },
+      defender: { rows: m.rows.map(([unit, count]) => ({ unit, count, hpPct: 100 })) },
+      rounds: 1,
+    });
+    sweeps += 1;
+    m.rows.forEach(([unit], i) => {
+      const obs = (d[`B.1.${i + 1}`] || {}).lost;
+      if (obs == null) return;
+      const got = res.defender.rows.find((x) => x.unit === unit);
+      check(`${m.attacker} vs ${unit}: ${got.hpLost.toFixed(2)} vs measured ${obs}`,
+        Math.abs(got.hpLost - obs) <= 0.06, `${(got.hpLost - obs).toFixed(3)} off`);
+    });
+  }
+  check('all nine attackers were replayed', sweeps === 9, String(sweeps));
+
+  // A land attacker's TOTAL does not depend on its target -- the target only
+  // redistributes. That is what makes the 100-cell land matrix a diagonal plus
+  // a three-value table rather than 100 unknowns, and it is the OPPOSITE of
+  // how air behaves, so it is asserted rather than assumed.
+  const vsInf = simulate({ attacker: { unit: 'ac', count: 20 },
+    defender: { unit: 'inf', count: 200 }, rounds: 1 });
+  const vsHt = simulate({ attacker: { unit: 'ac', count: 20 },
+    defender: { unit: 'ht', count: 200 }, rounds: 1 });
+  check('an armoured car deals the same total to infantry as to heavy tanks',
+    Math.abs(vsInf.defender.hpLost - vsHt.defender.hpLost) < 1e-9,
+    `${vsInf.defender.hpLost} vs ${vsHt.defender.hpLost}`);
+
+  // The finding a player feels: infantry are the most damage-efficient thing
+  // to put in a stack, because they soak half of what anything else does.
+  const w = allocationWeights([{ unit: { code: 'inf' }, count: 10 },
+                               { unit: { code: 'cav' }, count: 10 },
+                               { unit: { code: 'ht' }, count: 10 }]);
+  check('infantry take half the weight of a heavy tank, cavalry three quarters',
+    Math.abs(w[0] / w[2] - 0.5) < 1e-9 && Math.abs(w[1] / w[2] - 0.75) < 1e-9,
+    w.join(' / '));
+}
+
+console.log('\n12e. heroes on the attacking side');
+{
+  let cells = 0;
+  for (const r of rows) {
+    const m = r.meta || {};
+    if (r.experiment !== 'hero_sides' || m.error || m.side !== 'A') continue;
+    if (!m.rows || m.terrain) continue;
+    const obs = ((m.detail || {})['B.1.1'] || {}).lost;
+    if (obs == null) continue;
+    const cfg = {
+      attacker: { rows: m.rows.map(([unit, count]) => ({ unit, count, hpPct: 100 })) },
+      defender: { unit: 'ht', count: 60, hpPct: 100 },
+      rounds: 1,
+    };
+    if (m.hero) cfg.attacker.hero = { code: m.hero, level: m.level || 10 };
+    const res = simulate(cfg);
+    cells += 1;
+    // +/-0.1, not +/-0.05: a hero's contribution here is a DIFFERENCE of two
+    // ~320 HP spans, each printed to one decimal, so the error propagates to
+    // twice the print resolution. hank lands 0.08 out on this stack -- its
+    // attacking buff term measures 0.80 against the 0.72 its recorded
+    // defending curve predicts, which is 1.10 rather than 1.09 and sits
+    // inside that bar. Worth re-reading on a bigger stack, where the same
+    // absolute error is a smaller fraction of the term.
+    if (m.hero && BOMBARDMENT[m.hero]) {
+      // This cell is why lucien_g looked like it had an unstable own attack of
+      // 8.00 on a six-type stack and 36-38 on a single-type one: the ability's
+      // total is divided by pool share, and a six-type stack is a different
+      // pool. Outside melee that is exact; here it is not, for the same reason
+      // Tōgō's melee cells are not.
+      cannotReproduce(`${m.hero} on a ${m.rows.length}-type stack in melee`,
+        obs, res.defender.hpLost, NOTE_MELEE);
+    } else {
+      check(`attacking with ${m.hero || 'no hero'} (${m.rows.length} types): `
+        + `${res.defender.hpLost.toFixed(2)} vs measured ${obs}`,
+        Math.abs(res.defender.hpLost - obs) <= 0.1,
+        `${(res.defender.hpLost - obs).toFixed(3)} off`);
+    }
+  }
+  check('every attacking-hero reading was replayed', cells >= 20, String(cells));
+
+  // The two corrections this sweep forced, stated as behaviour.
+  // lart, which no hero in the roster buffs, so the hero's row carries its own
+  // attack and nothing else.
+  const atkP = simulate({ attacker: { unit: 'lart', count: 10, hero: { code: 'larab', level: 10 } },
+                          defender: { unit: 'ht', count: 60 } });
+  const defP = simulate({ attacker: { unit: 'ht', count: 60 },
+                          defender: { unit: 'lart', count: 10, hero: { code: 'larab', level: 10 } } });
+  const atkHero = atkP.attacker.rows.find((r) => r.isHero);
+  const defHero = defP.defender.rows.find((r) => r.isHero);
+  // This named pershing, whose attacking value was 62.0 and is 8.0 -- the old
+  // figure was its own attack plus an attack-only buff added together, so the
+  // two columns it was demonstrating turn out to be equal for this hero. The
+  // property is real and unchanged; the exemplar had to move to a hero whose
+  // columns actually differ. Lawrence attacks at 45 and defends at 10.
+  check('larab attacks at 45 and defends at 10 — two columns, not one',
+    Math.abs(atkHero.damageDealt - 45) < 1e-6 && Math.abs(defHero.damageDealt - 10) < 1e-6,
+    `${atkHero.damageDealt} attacking, ${defHero.damageDealt} defending`);
+}
+
+console.log('\n12f. multi-round — replayed against the maxRounds ladder');
+// ===========================================================================
+// Every other reading in the record is ONE round. The engine iterated, and
+// recomputed nothing between rounds: each row's effective count was fixed at
+// the opening figure, which is 13.66% out by round six, where it declared a
+// wipe that does not happen.
+{
+  let rungs = 0;
+  for (const r of rows) {
+    const m = r.meta || {};
+    if (r.experiment !== 'multi_round' || m.error) continue;
+    const d = m.detail || {};
+    const obs = (d['A.1.1'] || {}).lost;
+    if (obs == null) continue;
+    rungs += 1;
+    const res = simulate({
+      attacker: { unit: 'inf', count: 50, hpPct: 100 },
+      defender: { unit: 'inf', count: 50, hpPct: 100 },
+      rounds: m.rounds,
+    });
+    check(`${m.rounds} rounds: attacker lost ${res.attacker.hpLost.toFixed(2)} `
+      + `vs measured ${obs}`,
+      Math.abs(res.attacker.hpLost - obs) / obs <= 0.005,
+      `${(100 * (res.attacker.hpLost - obs) / obs).toFixed(3)}%`);
+  }
+  check('the whole maxRounds ladder was replayed', rungs >= 8, String(rungs));
+
+  // The rule, stated as behaviour: a stack that has taken losses fights the
+  // next round with fewer units AND with those units damaged.
+  const r1 = simulate({ attacker: { unit: 'inf', count: 50 },
+    defender: { unit: 'inf', count: 50 }, rounds: 1 });
+  const r2 = simulate({ attacker: { unit: 'inf', count: 50 },
+    defender: { unit: 'inf', count: 50 }, rounds: 2 });
+  check('round two deals LESS than round one, because both sides are thinner',
+    (r2.attacker.hpLost - r1.attacker.hpLost) < r1.attacker.hpLost,
+    `${(r2.attacker.hpLost - r1.attacker.hpLost).toFixed(2)} then `
+    + `${r1.attacker.hpLost.toFixed(2)}`);
+}
+
+console.log('\n12g. off-diagonal duels, trenches, fortress and hero curves');
+{
+  // Single-type land duels off the diagonal. The one thing mixtures could not
+  // show directly.
+  let od = 0;
+  for (const r of rows) {
+    const m = r.meta || {};
+    if (r.experiment !== 'offdiag' || m.error) continue;
+    const obs = ((m.detail || {})['B.1.1'] || {}).lost;
+    if (obs == null) continue;
+    od += 1;
+    const res = simulate({
+      attacker: { unit: m.attacker, count: m.atk_n, hpPct: 100 },
+      defender: { unit: m.target, count: m.def_n, hpPct: 100 },
+      rounds: 1,
+    });
+    check(`${m.attacker} vs ${m.target}: ${res.defender.hpLost.toFixed(2)} vs ${obs}`,
+      Math.abs(res.defender.hpLost - obs) <= 0.05,
+      `${(res.defender.hpLost - obs).toFixed(3)} off`);
+  }
+  check('all eight off-diagonal duels were replayed', od === 8, String(od));
+
+  // Every trench level, from both the original sweep and the gap-fill.
+  let tr = 0;
+  for (const r of rows) {
+    const m = r.meta || {};
+    if (r.experiment !== 'trench_gaps' || m.error) continue;
+    const obs = ((m.detail || {})['A.1.1'] || {}).lost;
+    if (obs == null) continue;
+    tr += 1;
+    const res = simulate({
+      attacker: { unit: 'inf', count: 10, hpPct: 100 },
+      defender: { unit: 'inf', count: 10, hpPct: 100, trench: m.level },
+      rounds: 1,
+    });
+    check(`trench ${m.level}: attacker lost ${res.attacker.hpLost.toFixed(2)} vs ${obs}`,
+      Math.abs(res.attacker.hpLost - obs) <= 0.05,
+      `${(res.attacker.hpLost - obs).toFixed(3)} off`);
+  }
+  check('all twelve filled trench levels were replayed', tr === 12, String(tr));
+
+  // Hero output curves, read from single-type stacks.
+  let hc = 0;
+  for (const r of rows) {
+    const m = r.meta || {};
+    if (r.experiment !== 'hero_output_curves' || m.error) continue;
+    const obs = ((m.detail || {})['A.1.1'] || {}).lost;
+    if (obs == null) continue;
+    hc += 1;
+    const res = simulate({
+      attacker: { unit: 'inf', count: 60, hpPct: 100 },
+      defender: { rows: [{ unit: m.unit, count: 2, hpPct: m.hp_pct }],
+                  hero: { code: m.hero, level: m.level } },
+      rounds: 1,
+    });
+    check(`${m.hero} L${m.level} over ${m.unit}: `
+      + `${res.attacker.hpLost.toFixed(2)} vs ${obs}`,
+      Math.abs(res.attacker.hpLost - obs) <= 0.05,
+      `${(res.attacker.hpLost - obs).toFixed(3)} off`);
+  }
+  check('every hero output-curve level was replayed', hc >= 65, String(hc));
+}
+
+console.log('\n12h. the six heroes that only work on air and naval stacks');
+{
+  let n = 0;
+  for (const r of rows) {
+    const m = r.meta || {};
+    if (r.experiment !== 'hero_other_terrain' || m.error) continue;
+    const obs = ((m.detail || {})['B.1.1'] || {}).lost;
+    if (obs == null) continue;
+    n += 1;
+    // TERRAIN, which this replay never passed. It did not have to while the
+    // six heroes were gated on the stack's unit GROUP; they are gated on
+    // terrain now, because that is what the server actually refuses -- so a
+    // config that says nothing defaults to land and the hero correctly
+    // declines to fire. The readings were taken at air/sea, so the replay says
+    // air/sea.
+    const cfg = {
+      terrain: m.terrain === 'air' ? 'air' : 'sea',
+      defenderTerrain: m.terrain === 'air' ? 'land' : 'sea',
+      attacker: { rows: [{ unit: m.unit, count: 10, hpPct: 100 }] },
+      defender: m.terrain === 'air'
+        ? { unit: 'inf', count: 40, hpPct: 100 }
+        : { unit: 'bb', count: 30, hpPct: 100 },
+      rounds: 1,
+    };
+    if (m.hero) cfg.attacker.hero = { code: m.hero, level: m.level || 10 };
+    const res = simulate(cfg);
+    // +/-0.12: each hero figure is a DIFFERENCE of two spans printed to one
+    // decimal, and on the air path both are attenuated figures derived from a
+    // survivor count, so the error propagates further than a single reading's.
+    // togo_b alone needs a wider band, and the reason is a genuine
+    // disagreement rather than noise. Its own attack at level 10 reads 64.90
+    // against a submarine in the twenty-level sweep and 64.34 against a
+    // battleship here -- two targets of the SAME class, where every other hero
+    // and every unit in the table is flat within a class. Its multiplier
+    // disagrees by about the same 1%. The sweep is what the table uses,
+    // because twenty self-consistent points outweigh one cell, so these three
+    // cells sit about 1% out and are asserted at 1.5% rather than dropped.
+    if (m.hero && BOMBARDMENT[m.hero]) {
+      cannotReproduce(`${m.hero} + 10 ${m.unit} in melee`, obs,
+        res.defender.hpLost, NOTE_MELEE);
+    } else {
+      check(`${m.hero || 'no hero'} + 10 ${m.unit}: `
+        + `${res.defender.hpLost.toFixed(2)} vs measured ${obs}`,
+        Math.abs(res.defender.hpLost - obs) <= 0.12,
+        `${(res.defender.hpLost - obs).toFixed(3)} off`);
+    }
+  }
+  check('every air and naval hero reading was replayed', n >= 24, String(n));
+
+  // They must NOT fire on land, or on the defending side, because neither was
+  // ever measured.
+  const onLand = simulate({ attacker: { unit: 'inf', count: 10, hero: { code: 'otto' } },
+    defender: { unit: 'inf', count: 10 } });
+  check('a naval hero on a land stack applies nothing and says why',
+    onLand.coverage.caveats.some((c) => /Otto Hersing/.test(c) && /not applied/.test(c)),
+    onLand.coverage.caveats.join(' | ').slice(0, 150));
+  // This used to assert that a DEFENDING air or naval hero applies nothing,
+  // "because it was never read there". It has been read there now -- all six,
+  // across their level ranges -- so the assertion is inverted rather than
+  // dropped: it must apply, and it must apply the DEFENDING value, which for
+  // Richthofen is 25.0 against 70.0 attacking.
+  const defending = simulate({ terrain: 'sea', defenderTerrain: 'sea',
+    attacker: { rows: [{ unit: 'bb', count: 60 }] },
+    defender: { rows: [{ unit: 'sub', count: 20 }], hero: { code: 'otto', level: 10 } } });
+  check('and DEFENDING with one applies its measured defending value',
+    Math.abs(defending.attacker.hpLost - 839.33) < 0.05,
+    `${defending.attacker.hpLost === null ? 'withheld' : defending.attacker.hpLost.toFixed(2)} vs 839.33`);
+  check('a hero with two different attack columns uses the right one per side',
+    (() => {
+      const atk = simulate({ terrain: 'air', defenderTerrain: 'air',
+        attacker: { rows: [{ unit: 'tac', count: 10 }], hero: { code: 'rbaron', level: 10 } },
+        defender: { rows: [{ unit: 'int', count: 200 }] } });
+      const def = simulate({ terrain: 'air', defenderTerrain: 'air',
+        attacker: { rows: [{ unit: 'int', count: 200 }] },
+        defender: { rows: [{ unit: 'tac', count: 20 }], hero: { code: 'rbaron', level: 10 } } });
+      // 70.0 attacking on a control stack it does not buff, 25.0 defending.
+      return Math.abs(atk.defender.hpLost - 100.0) < 0.05
+        && Math.abs(def.attacker.hpLost - 84.95) < 0.05;
+    })());
+}
+
+console.log('\n12i. building damage, replayed per attacking unit type');
+{
+  let n = 0;
+  for (const r of rows) {
+    const m = r.meta || {};
+    if (r.experiment !== 'building_damage' || m.error) continue;
+    const obs = ((m.detail || {})['B.1.bldg.1'] || {}).lost;
+    if (obs == null) continue;
+    const res = simulate({
+      attacker: { unit: m.attacker, count: m.atk_n, hpPct: 100 },
+      defender: { unit: 'inf', count: 10, hpPct: 100,
+                  buildings: [{ code: 'fortress', level: 5 }] },
+      rounds: 1,
+    });
+    n += 1;
+    // A CENSORED cell is a FLOOR and must be replayed as one. The heavy tank
+    // dealt exactly the fortress's whole 250.00 pool here, so the only thing
+    // the reading supports is "at least 250" -- and the engine, which now has
+    // the real 9.00 per unit from an uncensored stack, predicts 255.00. That
+    // is agreement, and asserting equality against a clamped number would
+    // demand the engine reproduce the clamp instead of the physics.
+    const censored = ((m.detail || {})['B.1.bldg.1'] || {}).pct >= 99.9;
+    if (censored) {
+      check(`${m.attacker} vs a fortress: censored at ${obs}, engine predicts `
+        + `${res.defender.damageToBuildings.toFixed(2)} — at least as much`,
+        res.defender.damageToBuildings >= obs - 0.05,
+        `${res.defender.damageToBuildings.toFixed(2)} < ${obs}`);
+      continue;
+    }
+    check(`${m.attacker} vs a fortress: `
+      + `${res.defender.damageToBuildings.toFixed(2)} vs measured ${obs}`,
+      Math.abs(res.defender.damageToBuildings - obs) <= 0.05,
+      `${(res.defender.damageToBuildings - obs).toFixed(3)} off`);
+  }
+  check('all nine land types were replayed', n === 9, String(n));
+}
+
+console.log('\n12j. the class matrix — every unit against every target class');
+{
+  let n = 0, refused = 0;
+  for (const r of rows) {
+    const m = r.meta || {};
+    if (r.experiment !== 'class_matrix') continue;
+    if (m.error) { refused += 1; continue; }
+    const d = m.detail || {};
+    const obs = (d['B.1.1'] || {}).lost;
+    if (obs == null || (d['B.1.1'] || {}).pct >= 99.9) continue;
+    // Air attacking land is ATTENUATED, so the raw figure depends on the
+    // defender count this sweep happened to pick. Those cells are replayed
+    // properly by the 40-cell air_vs_ground section above, against the
+    // post-fire law; comparing them here at a different defender count would
+    // be comparing two different quantities.
+    if (UNITS[m.unit].cls === 'air' && m.target_class === 'land') continue;
+    n += 1;
+    const res = simulate({
+      attacker: { unit: m.unit, count: m.atk_n, hpPct: 100 },
+      defender: { unit: m.target, count: 30, hpPct: 100 },
+      rounds: 1,
+    });
+    // Only the coefficient is under test here, not the defender count the
+    // sweep chose, so compare per effective attacking unit.
+    const got = res.defender.damageDealt === null ? null : res.defender.hpLost;
+    if (got === null) continue;
+    check(`${m.unit} vs ${m.target_class}: coefficient reproduces`,
+      Math.abs(got / effectiveUnits(m.atk_n) - obs / effectiveUnits(m.atk_n)) <= 0.06
+      || Math.abs(got - obs) <= 0.06,
+      `engine ${(got / effectiveUnits(m.atk_n)).toFixed(2)} vs measured `
+      + `${(obs / effectiveUnits(m.atk_n)).toFixed(2)} per effective unit`);
+  }
+  check('the class matrix was replayed', n >= 40, String(n));
+  check('and the pairings the server refuses are recorded, not silently dropped',
+    refused >= 1, `${refused} refusals on record`);
+
+  // The finding: within a class, flat; between classes, not.
+  const cm = CLASS_ATTACK;
+  check('a submarine deals 40 against ships and 2.0 against land',
+    cm.sub.naval === 40.0 && cm.sub.land === 2.0);
+  check('infantry deal 4.0 on land, 2.0 against ships and 0.3 against aircraft',
+    cm.inf.land === 4.0 && cm.inf.naval === 2.0 && cm.inf.air === 0.3);
+  check('and every unit\'s land column equals its measured diagonal',
+    Object.entries(cm).every(([code, row]) => row.land === undefined
+      || UNITS[code].atk === null || UNITS[code].cls !== 'land'
+      || Math.abs(row.land - UNITS[code].atk) < 0.01),
+    'the two tables are independent readings of the same quantity');
+}
+
+console.log('\n12k. multi-round across three unit sizes, and attenuation scope');
+{
+  let cells = 0, off = [];
+  for (const r of rows) {
+    const m = r.meta || {};
+    if (r.experiment !== 'last_edges' || m.probe !== 'death_rule') continue;
+    const a = (m.detail || {})['A.1.1'] || {};
+    if (a.lost == null) continue;
+    cells += 1;
+    const res = simulate({
+      attacker: { unit: m.unit, count: 50, hpPct: 100 },
+      defender: { unit: m.unit, count: 50, hpPct: 100 },
+      rounds: m.rounds,
+    });
+    // 1% here, not 0.5%: the law was fitted on infantry and a unit with 260 HP
+    // apiece makes the survivor count coarse. The drift is recorded in
+    // ROUNDS.multi and in NOT_MEASURED rather than hidden by the tolerance.
+    const okLost = Math.abs(res.attacker.hpLost - a.lost) / a.lost <= 0.01;
+    if (!okLost) off.push(`${m.unit} r${m.rounds}`);
+    check(`${m.unit} x50, ${m.rounds} rounds: `
+      + `${res.attacker.hpLost.toFixed(2)} vs measured ${a.lost}`, okLost,
+      `${(100 * (res.attacker.hpLost - a.lost) / a.lost).toFixed(2)}%`);
+  }
+  check('all twelve multi-round cells were replayed', cells === 12, String(cells));
+  check('and none drifts past 1% — the heavy-tank drift is declared, not hidden',
+    off.length === 0, off.join(', ') || 'none');
+
+  // Post-fire evaluation is AIR-ATTACKING-LAND only. Every other pairing reads
+  // its raw stat, which is what says the attenuation is not a general rule.
+  for (const r of rows) {
+    const m = r.meta || {};
+    if (r.experiment !== 'last_edges' || m.probe !== 'attenuation_scope') continue;
+    const d = m.detail || {};
+    const b = d['B.1.1'] || {};
+    if (b.lost == null) continue;
+    const raw = b.lost / effectiveUnits(10);
+    check(`${m.label}: raw stat ${raw.toFixed(2)} is the unattenuated figure`,
+      Math.abs(raw - Math.round(raw * 100) / 100) < 1e-9,
+      'no correction needed, so nothing is attenuated here');
+  }
+}
+
+console.log('\n12l. terrain, range and the variance band, now computed');
+{
+  // Sea and debark replace a LAND unit's stats with a flat 1.0. Infantry and
+  // cavalry must come out IDENTICAL, which is the whole reason it cannot be a
+  // multiplier.
+  for (const r of rows) {
+    const m = r.meta || {};
+    if (r.experiment !== 'terrain' || m.error || !m.detail) continue;
+    if (!['sea', 'debark', 'land'].includes(m.terrain)) continue;
+    const a = (m.detail['A.1.1'] || {}).lost;
+    const b = (m.detail['B.1.1'] || {}).lost;
+    if (a == null || b == null) continue;
+    const res = simulate({
+      terrain: m.terrain,
+      attacker: { unit: m.unit || 'inf', count: 10, hpPct: 100 },
+      defender: { unit: m.unit || 'inf', count: 20, hpPct: 100 },
+      rounds: 1,
+    });
+    check(`${m.unit || 'inf'} in ${m.terrain}: ${res.attacker.hpLost.toFixed(2)}`
+      + ` / ${res.defender.hpLost.toFixed(2)} vs measured ${a} / ${b}`,
+      Math.abs(res.attacker.hpLost - a) <= 0.05
+      && Math.abs(res.defender.hpLost - b) <= 0.05,
+      `${(res.attacker.hpLost - a).toFixed(2)} / ${(res.defender.hpLost - b).toFixed(2)}`);
+  }
+  const seaInf = simulate({ terrain: 'sea', attacker: { unit: 'inf', count: 10 },
+    defender: { unit: 'inf', count: 20 }, rounds: 1 });
+  const seaCav = simulate({ terrain: 'sea', attacker: { unit: 'cav', count: 10 },
+    defender: { unit: 'cav', count: 20 }, rounds: 1 });
+  check('embarked infantry and cavalry deal the IDENTICAL figure',
+    Math.abs(seaInf.attacker.hpLost - seaCav.attacker.hpLost) < 1e-9
+    && Math.abs(seaInf.defender.hpLost - seaCav.defender.hpLost) < 1e-9,
+    'no scaling of two different stats can do that');
+
+  // THE CLASS TOKEN. The embarked filter is written against UNITS[].cls, whose
+  // naval value is 'sea'. Written as 'naval' it matched every unit including
+  // the ships, and a battleship in sea terrain fought at a flat 1.0 instead of
+  // its measured 40 -- a 40x error on the one terrain ships belong in. It
+  // survived 1145 checks because every embarked test used land and air units,
+  // which that filter did classify correctly. These assert the ships directly.
+  for (const [u, want] of [['sub', 800], ['cl', 200], ['bb', 800]]) {
+    const atSea = simulate({
+      attacker: { rows: [{ unit: u, count: 20 }] },
+      defender: { rows: [{ unit: u, count: 20 }] },
+      terrain: 'sea', defenderTerrain: 'sea',
+    });
+    check(`a ${u} in SEA terrain fights at its own value, not embarked`,
+      Math.abs(atSea.defender.hpLost - want) < 0.05,
+      `${atSea.defender.hpLost.toFixed(2)} vs ${want}`);
+  }
+  check('no naval unit is ever marked embarked in sea terrain',
+    !simulate({
+      attacker: { rows: [{ unit: 'bb', count: 20 }] },
+      defender: { rows: [{ unit: 'bb', count: 20 }] },
+      terrain: 'sea', defenderTerrain: 'sea',
+    }).coverage.caveats.some((c) => /EMBARKED/.test(c)));
+  check('while a land unit in sea terrain still is',
+    simulate({
+      attacker: { rows: [{ unit: 'inf', count: 10 }] },
+      defender: { rows: [{ unit: 'inf', count: 10 }] },
+      terrain: 'sea', defenderTerrain: 'sea',
+    }).coverage.caveats.some((c) => /EMBARKED/.test(c)));
+  check('and the filter is keyed on a token UNITS actually uses',
+    Object.values(UNITS).some((u) => u.cls === 'sea')
+    && !Object.values(UNITS).some((u) => u.cls === 'naval'),
+    [...new Set(Object.values(UNITS).map((u) => u.cls))].join(', '));
+
+  // Range: a binary gate, replayed against the measured boundaries.
+  for (const r of rows) {
+    const m = r.meta || {};
+    if (r.experiment !== 'position' || !m.unit) continue;
+    const res = simulate({
+      distance: m.distance,
+      attacker: { unit: m.unit, count: 20, hpPct: 100 },
+      defender: { unit: 'inf', count: 20, hpPct: 100 },
+      rounds: 1,
+    });
+    if (m.out_of_range) {
+      check(`${m.unit} at ${m.distance} km: no battle`,
+        res.defender.hpLost === 0,
+        `engine dealt ${res.defender.hpLost}`);
+    } else {
+      const obs = ((m.detail || {})['B.1.1'] || {}).lost;
+      if (obs == null) continue;
+      check(`${m.unit} at ${m.distance} km: ${res.defender.hpLost.toFixed(2)} vs ${obs}`,
+        Math.abs(res.defender.hpLost - obs) <= 0.05);
+    }
+  }
+
+  // The variance band is the full +/-10% whatever the stack size, because the
+  // roll is ONE per side per round.
+  for (const n of [5, 50, 200]) {
+    const res = simulate({ attacker: { unit: 'inf', count: n },
+      defender: { unit: 'inf', count: 20 }, rounds: 1 });
+    check(`a ${n}-unit stack still carries the full band`,
+      Math.abs(res.attacker.hpLostBand[0] / res.attacker.hpLost - 0.90) < 1e-9
+      && Math.abs(res.attacker.hpLostBand[1] / res.attacker.hpLost - 1.10) < 1e-9,
+      'one roll per side, so size does not average it away');
+  }
+}
+
+console.log('\n13. heroes — replayed against every measured reading');
+// ===========================================================================
+// A hero is a unit plus a buff, and the app now models it. Replayed here
+// against the live figures for all three shapes: a pure combat unit, the one
+// strong buffer, and the hero that sits AFTER the units and therefore adds
+// nothing to a saturated stack.
+{
+  const battle = (hero, n) => simulate({
+    attacker: { rows: [{ unit: 'inf', count: 20 }] },
+    defender: { rows: [{ unit: 'inf', count: n }], hero },
+  }).attacker.hpLost;
+
+  const measured = {
+    kangal: { 10: 70.00, 30: 159.92, 50: 190.00 },
+    joffre_home: { 10: 81.00, 30: 197.89, 50: 237.00 },
+    maeve: { 10: 54.00, 30: 144.27, 50: 175.00 },
+  };
+  for (const [code, byN] of Object.entries(measured)) {
+    for (const [n, want] of Object.entries(byN)) {
+      const got = battle({ code, level: 10 }, Number(n));
+      check(`${code} at n=${n}: ${got.toFixed(2)} vs measured ${want}`,
+        Math.abs(got - want) <= 0.05, `${(got - want).toFixed(3)} off`);
+    }
+  }
+  check('maeve adds NOTHING to a saturated stack — she draws from the tail',
+    Math.abs(battle({ code: 'maeve', level: 10 }, 50) - battle(null, 50)) < 1e-9);
+  check('while she does help a small one',
+    battle({ code: 'maeve', level: 10 }, 10) > battle(null, 10));
+
+  // A does not move with level; M does, for the two heroes that have one.
+  check('a pure unit is level-independent (A is flat, M = 1.00)',
+    Math.abs(battle({ code: 'kangal', level: 1 }, 30)
+      - battle({ code: 'kangal', level: 10 }, 30)) < 1e-9);
+  check('joffre_home at level 1 is measurably weaker than at 15',
+    battle({ code: 'joffre_home', level: 1 }, 30)
+      < battle({ code: 'joffre_home', level: 15 }, 30));
+  check('its level-1 buff is the measured 1.10',
+    Math.abs(heroBuff('joffre_home', 1, 'inf').m - 1.10) < 1e-9);
+  check('and a measured level is flagged exact',
+    heroBuff('joffre_home', 15, 'inf').exact === true);
+  check('every level of joffre_home\'s curve is now measured directly',
+    heroBuff('joffre_home', 13, 'inf').exact === true
+    && heroBuff('joffre_home', 13, 'inf').m === 1.36,
+    heroBuff('joffre_home', 13, 'inf').note);
+  check('and its infantry and armoured-car curves are identical, as measured',
+    Array.from({ length: 15 }, (_, i) => i + 1).every((l) =>
+      heroBuff('joffre_home', l, 'inf').m === heroBuff('joffre_home', l, 'ac').m),
+    'one hero applies one curve to every type it buffs');
+
+  // Caps are the server's own, not the dropdown's 1-20.
+  const capped = simulate({
+    attacker: { rows: [{ unit: 'inf', count: 20 }] },
+    defender: { rows: [{ unit: 'inf', count: 30 }], hero: { code: 'kangal', level: 20 } },
+  });
+  check('a level above the hero cap is clamped and explained',
+    capped.coverage.caveats.some((c) => /caps at level 10/.test(c)),
+    capped.coverage.caveats.join(' | '));
+
+  // Heroes with nothing measured on land must not silently do nothing.
+  const naval = simulate({
+    attacker: { rows: [{ unit: 'inf', count: 20 }] },
+    defender: { rows: [{ unit: 'inf', count: 30 }], hero: { code: 'otto', level: 10 } },
+  });
+  check('a land-refused hero is named, not silently dropped',
+    naval.coverage.caveats.some((c) => /Otto Hersing/.test(c)),
+    naval.coverage.caveats.join(' | '));
+  check('and the battle still computes without its effect',
+    Math.abs(naval.attacker.hpLost - 141.67) < 0.01, String(naval.attacker.hpLost));
+}
+
+// ===========================================================================
+console.log('\n12j. range — every bisected boundary, and the free bombardment');
+// ===========================================================================
+// Range used to be three numbers and a whole-side gate. It is now seventeen
+// numbers, a per-ROW gate, and a second rule the roster sweep was not looking
+// for: past 5 km the defender does not fire back at all. Each of those is a
+// battle the server actually ran, so each is replayed rather than declared.
+{
+  const rr = rows.filter((r) => r.experiment === 'range_roster'
+    && r.meta && r.meta.distance !== undefined);
+  let cells = 0;
+  let boundaries = 0;
+  for (const r of rr) {
+    const u = r.meta.unit;
+    const dist = r.meta.distance;
+    const reach = UNIT_RANGE[u];
+    if (reach === undefined) continue;
+    // Every reading is a SELF-duel: the same unit on both sides, 20 a side,
+    // in the terrain pair its own class needs.
+    const terr = (r.meta.terrain || ['land', 'land'])[0];
+    const got = simulate({
+      attacker: { rows: [{ unit: u, count: 20 }] },
+      defender: { rows: [{ unit: u, count: 20 }] },
+      distance: dist,
+      terrain: terr,
+      defenderTerrain: (r.meta.terrain || [])[1],
+    });
+    if (r.meta.no_rows) {
+      // The server returned nothing: no battle. The engine must agree, and it
+      // must agree for the RIGHT reason -- the attacker cannot reach.
+      check(`${u} at ${dist} km: no battle, both ways`,
+        dist > reach && got.defender.hpLost === 0 && got.attacker.hpLost === 0,
+        `reach ${reach}, def lost ${got.defender.hpLost}, atk lost ${got.attacker.hpLost}`);
+      boundaries += 1;
+      continue;
+    }
+    const wantDef = (r.meta.detail['B.1.1'] || {}).lost;
+    const wantAtk = (r.meta.detail['A.1.1'] || {}).lost;
+    if (wantDef === null || wantDef === undefined) continue;
+    // The attacker's figure must not vary with distance at all: inside range
+    // it is identical to zero distance, which is what "binary gate" means.
+    const relDef = Math.abs(got.defender.hpLost - wantDef) / Math.max(1, wantDef);
+    check(`${u} @ ${dist} km deals ${wantDef}`, relDef < 0.005,
+      `got ${got.defender.hpLost.toFixed(2)} want ${wantDef}`);
+    // And the return fire, which is the new rule.
+    const wantSilent = dist > MELEE_RANGE;
+    check(`${u} @ ${dist} km: attacker loses ${wantAtk}`,
+      Math.abs(got.attacker.hpLost - wantAtk) / Math.max(1, wantAtk) < 0.005,
+      `got ${got.attacker.hpLost.toFixed(2)} want ${wantAtk}`
+      + (wantSilent ? ' (suppressed)' : ''));
+    if (wantSilent) {
+      check(`${u} @ ${dist} km is free bombardment in the record too`,
+        wantAtk === 0, String(wantAtk));
+    }
+    cells += 1;
+  }
+  check('the roster sweep was replayed in bulk', cells >= 60, String(cells));
+  check('and its out-of-range readings too', boundaries >= 4, String(boundaries));
+
+  // The boundary sweep, one kilometre at a time. This is the reading that
+  // found the rule, so it is asserted on its own rather than only in bulk.
+  const rf = rows.filter((r) => r.experiment === 'return_fire'
+    && r.meta && r.meta.probe === 'boundary');
+  let rungs = 0;
+  for (const r of rf) {
+    const dist = r.meta.distance;
+    const wantAtk = (r.meta.detail['A.1.1'] || {}).lost;
+    const wantDef = (r.meta.detail['B.1.1'] || {}).lost;
+    const got = simulate({
+      attacker: { rows: [{ unit: 'lart', count: 20 }] },
+      defender: { rows: [{ unit: 'lart', count: 20 }] },
+      distance: dist,
+    });
+    check(`lart vs lart at ${dist} km: ${wantDef} out, ${wantAtk} back`,
+      Math.abs(got.defender.hpLost - wantDef) < 0.05
+      && Math.abs(got.attacker.hpLost - wantAtk) < 0.05,
+      `got ${got.defender.hpLost.toFixed(2)} / ${got.attacker.hpLost.toFixed(2)}`);
+    rungs += 1;
+  }
+  check('the whole return-fire boundary was replayed', rungs === 5, String(rungs));
+  check('and it straddles the cut-off', MELEE_RANGE === 5);
+
+  // The mixed stack. This is the one that decides whether an unreachable row
+  // counts toward E(), and getting it wrong would let a stack gain output by
+  // adding units that cannot shoot.
+  const mx = rows.filter((r) => r.experiment === 'mixed_range'
+    && r.meta && r.meta.rows && r.meta.detail);
+  let mixes = 0;
+  for (const r of mx) {
+    const want = (r.meta.detail['B.1.1'] || {}).lost;
+    if (want === null || want === undefined) continue;
+    const got = simulate({
+      attacker: { rows: r.meta.rows.map(([u, c]) => ({ unit: u, count: c })) },
+      defender: { rows: [{ unit: 'inf', count: 20 }] },
+      distance: r.meta.distance,
+    });
+    check(`${r.meta.rows.map(([u, c]) => `${c} ${u}`).join(' + `')} at `
+      + `${r.meta.distance} km deals ${want}`,
+      Math.abs(got.defender.hpLost - want) < 0.05,
+      `got ${got.defender.hpLost.toFixed(2)}`);
+    mixes += 1;
+  }
+  check('both mixed-reach stacks were replayed', mixes === 2, String(mixes));
+
+  // The two readings that pin WHY, stated as engine behaviour rather than as
+  // a replayed number.
+  const mixed = simulate({
+    attacker: { rows: [{ unit: 'inf', count: 20 }, { unit: 'lart', count: 20 }] },
+    defender: { rows: [{ unit: 'inf', count: 20 }] },
+    distance: 20,
+  });
+  const lartAlone = simulate({
+    attacker: { rows: [{ unit: 'lart', count: 20 }] },
+    defender: { rows: [{ unit: 'inf', count: 20 }] },
+    distance: 20,
+  });
+  check('an unreachable row adds nothing to the stack it travels with',
+    Math.abs(mixed.defender.hpLost - lartAlone.defender.hpLost) < 1e-9,
+    `${mixed.defender.hpLost} vs ${lartAlone.defender.hpLost}`);
+  check('and the engine says so in the open rather than silently',
+    mixed.coverage.caveats.some((c) => /cannot reach/.test(c)),
+    mixed.coverage.caveats.join(' | ').slice(0, 120));
+  const noBattle = simulate({
+    attacker: { rows: [{ unit: 'inf', count: 20 }] },
+    defender: { rows: [{ unit: 'lart', count: 20 }] },
+    distance: 20,
+  });
+  check('a defender never initiates, however far it reaches',
+    noBattle.attacker.hpLost === 0 && noBattle.defender.hpLost === 0,
+    `atk ${noBattle.attacker.hpLost} def ${noBattle.defender.hpLost}`);
+
+  // The correction itself. Infantry at 1 km was never a measurement, and the
+  // table must not quietly drift back to it.
+  check('infantry reach 5 km, not the unbisected 1',
+    UNIT_RANGE.inf === 5, String(UNIT_RANGE.inf));
+  check('every unit in the roster now has a range',
+    Object.keys(UNITS).every((u) => UNIT_RANGE[u] !== undefined),
+    Object.keys(UNITS).filter((u) => UNIT_RANGE[u] === undefined).join(', ') || 'all present');
+  check('and the two the help page also lists agree with it',
+    UNIT_RANGE.cl === 40 && UNIT_RANGE.bb === 75);
+}
+
+// ===========================================================================
+console.log('\n12k. embarkation — a class change, replayed in all three of its parts');
+// ===========================================================================
+// EMBARKED_COEF was modelled and EMBARKED_MAXHP was not, so every embarked
+// pool the app drew was wrong -- by 26x for a heavy tank. And the incoming
+// column was wrong too: an embarked unit is hit as a NAVAL unit, which is
+// where the "naval vs air is 30.0 at sea" reading came from. That figure was a
+// 100% wipe against a pool six times smaller than the unit table implies.
+{
+  // Part one: the pools, read straight off the record.
+  const hp = rows.filter((r) => r.experiment === 'embarked_hp'
+    && r.meta && r.meta.unit && r.meta.detail);
+  let pools = 0;
+  for (const r of hp) {
+    const want = ((r.meta.detail['B.1.1'] || {}).pool);
+    if (want === null || want === undefined) continue;
+    const got = simulate({
+      attacker: { rows: [{ unit: 'cav', count: 5 }] },
+      defender: { rows: [{ unit: r.meta.unit, count: r.meta.count }] },
+      terrain: r.meta.terrain === 'sea' ? 'sea' : 'land',
+      defenderTerrain: r.meta.terrain,
+    });
+    // Pools are reported to 3 significant figures, so compare inside that.
+    check(`${r.meta.count} ${r.meta.unit} in ${r.meta.terrain}: pool ${want}`,
+      Math.abs(got.defender.pool - want) / Math.max(1, want) < 0.005,
+      `got ${got.defender.pool}`);
+    pools += 1;
+  }
+  check('every terrain-by-unit pool was replayed', pools >= 17, String(pools));
+  check('an embarked unit holds a flat 10, whatever it is',
+    EMBARKED_MAXHP === 10);
+
+  // Part two: the class change, from the three attackers whose land and naval
+  // columns differ. This is what decides that embarkation moves a unit's
+  // class rather than just replacing two of its stats.
+  const ec = rows.filter((r) => r.experiment === 'embarked_class' && r.meta
+    && r.meta.detail);
+  let cells = 0;
+  for (const r of ec) {
+    const want = (r.meta.detail['B.1.1'] || {}).lost;
+    if (want === null || want === undefined) continue;
+    const got = simulate({
+      attacker: { rows: [{ unit: r.meta.attacker, count: 10 }] },
+      defender: { rows: [{ unit: r.meta.target, count: 200 }] },
+      terrain: 'land', defenderTerrain: 'sea',
+    });
+    check(`${r.meta.attacker} vs embarked ${r.meta.target}: ${want}`,
+      Math.abs(got.defender.hpLost - want) < 0.05,
+      `got ${got.defender.hpLost.toFixed(2)}`);
+    // And it must land on the naval column, not merely on the right number.
+    check(`  and it is the NAVAL column that produced it`,
+      Math.abs(CLASS_ATTACK[r.meta.attacker].naval * 10 - want) < 0.05,
+      `naval ${CLASS_ATTACK[r.meta.attacker].naval} vs land `
+      + `${CLASS_ATTACK[r.meta.attacker].land}`);
+    cells += 1;
+  }
+  check('all six class-change cells were replayed', cells === 6, String(cells));
+
+  // Part three: the crossed grid, including the cell that decides target
+  // terrain does NOT move a land target's coefficient.
+  const tt = rows.filter((r) => r.experiment === 'target_terrain' && r.meta
+    && r.meta.detail && r.meta.attacker);
+  let grid = 0;
+  for (const r of tt) {
+    const want = (r.meta.detail['B.1.1'] || {}).lost;
+    const pct = (r.meta.detail['B.1.1'] || {}).pct;
+    if (want === null || want === undefined) continue;
+    if ((pct || 0) >= 99.9) continue;      // censored: not a measurement
+    const n = { int: 40, inf: 100, cl: 30, bb: 30, tac: 40 }[r.meta.target];
+    const got = simulate({
+      attacker: { rows: [{ unit: r.meta.attacker, count: r.meta.atk_n || 20 }] },
+      defender: { rows: [{ unit: r.meta.target, count: n }] },
+      terrain: r.meta.atk_terrain, defenderTerrain: r.meta.tgt_terrain,
+    });
+    check(`${r.meta.attacker}@${r.meta.atk_terrain} vs `
+      + `${r.meta.target}@${r.meta.tgt_terrain}: ${want}`,
+      Math.abs(got.defender.hpLost - want) / Math.max(1, want) < 0.01,
+      `got ${got.defender.hpLost === null ? 'withheld' : got.defender.hpLost.toFixed(2)}`);
+    grid += 1;
+  }
+  check('the crossed class-by-terrain grid was replayed', grid >= 5, String(grid));
+
+  // The censored cell must stay refused. It stood for a week as a measurement
+  // and it is the reason this whole section exists.
+  const wiped = rows.filter((r) => r.experiment === 'target_terrain'
+    && ((r.meta.detail || {})['B.1.1'] || {}).pct >= 99.9);
+  check('the wiped cell is on the record AND excluded from the replay',
+    wiped.length >= 1 && NOT_MEASURED.every((g) => g.key !== 'naval_vs_air_terrain'),
+    `${wiped.length} wiped reading(s)`);
+
+  // And the token mismatch that made all this reachable in the first place.
+  check('combatClass speaks CLASS_ATTACK\'s language, not UNITS\'',
+    combatClass('bb', 'sea') === 'naval' && combatClass('inf', 'land') === 'land'
+    && combatClass('int', 'air') === 'air');
+  check('and every UNITS class maps onto a real CLASS_ATTACK column',
+    Object.values(UNITS).every((u) => CLASS_ATTACK.inf[combatClass(u.code, 'land')] !== undefined
+      || u.cls === 'sea'),
+    [...new Set(Object.values(UNITS).map((u) => combatClass(u.code, 'land')))].join(', '));
+  // This asserted that debark behaves like sea for the class change. It does
+  // not, and only the HP half had ever been measured there: a TARGET in debark
+  // is hit on the attacker's LAND column (cavalry 15.00, light artillery 5.00,
+  // a heavy tank 45.00) where at sea it is the naval one (8.00, 1.00, 23.00).
+  // The unit's OWN column and its flat 10 HP are unchanged in both.
+  check('a non-naval unit at sea is naval; a naval unit anywhere is naval',
+    combatClass('ht', 'sea') === 'naval'
+    && combatClass('int', 'sea') === 'naval' && combatClass('bb', 'land') === 'naval');
+  check('but debark is NOT sea — a target there is hit on the land column',
+    combatClass('ht', 'debark') === 'land'
+    && Math.abs(simulate({ attacker: { unit: 'ht', count: 10 },
+      defender: { unit: 'inf', count: 200 }, terrain: 'land',
+      defenderTerrain: 'debark' }).defender.hpLost / 10 - 45.0) < 0.05);
+  check('while a unit ATTACKING from debark still uses the embarked column',
+    Math.abs(simulate({ attacker: { rows: [{ unit: 'inf', count: 40 }] },
+      defender: { rows: [{ unit: 'int', count: 200 }] },
+      terrain: 'debark', defenderTerrain: 'land' })
+      .defender.hpLost / effectiveUnits(40) - 0.5) < 0.01);
+  check('and the naval column is reachable at last — infantry deal 2.0 to a ship',
+    attackCoefficient('inf', 'bb').value === 2.0
+    && attackCoefficient('inf', 'bb').level === 'measured',
+    JSON.stringify(attackCoefficient('inf', 'bb')));
+}
+
+// ===========================================================================
+console.log('\n12l. the defence matrix — 102 requests, replayed in full');
+// ===========================================================================
+// The defending side had no coefficient table at all. That did not make
+// cross-class results rough, it made them BLANK: a measured attack coefficient
+// and an unmeasured defence one meant the engine withheld the whole battle.
+{
+  const dm = rows.filter((r) => r.experiment === 'defence_matrix'
+    && r.meta && r.meta.detail && r.meta.defender);
+  let cells = 0;
+  const byCell = new Map();
+  for (const r of dm) {
+    const want = (r.meta.detail['A.1.1'] || {}).lost;
+    const pct = (r.meta.detail['A.1.1'] || {}).pct;
+    if (want === null || want === undefined) continue;
+    if ((pct || 0) >= 99.9) continue;               // wiped: not a measurement
+    const t = r.meta.terrain || ['land', 'land'];
+    const got = simulate({
+      attacker: { rows: [{ unit: r.meta.attacker, count: r.meta.atk_n }] },
+      defender: { rows: [{ unit: r.meta.defender, count: r.meta.def_n }] },
+      terrain: t[0], defenderTerrain: t[1],
+    });
+    check(`${r.meta.defender} defending vs ${r.meta.attacker}: ${want}`,
+      got.attacker.hpLost !== null
+      && Math.abs(got.attacker.hpLost - want) / Math.max(1, want) < 0.005,
+      `got ${got.attacker.hpLost === null ? 'withheld' : got.attacker.hpLost.toFixed(2)}`);
+    cells += 1;
+    byCell.set(`${r.meta.defender}:${r.meta.atk_class}`, true);
+  }
+  check('the whole defence sweep was replayed', cells >= 90, String(cells));
+  check('and it covers every defender against every attacker class',
+    byCell.size >= 48, String(byCell.size));
+
+  // The two free corroborations the sweep produced.
+  check('every same-class cell reproduces that unit\'s measured defence diagonal',
+    Object.entries(CLASS_DEFENCE).every(([code, row]) => {
+      const u = UNITS[code];
+      if (!u || u.def === null) return true;
+      const own = u.cls === 'sea' ? 'naval' : u.cls;
+      // The balloon fights on land, so its own diagonal is the LAND cell.
+      const col = code === 'bal' ? 'land' : own;
+      return Math.abs(row[col] - u.def) < 0.05;
+    }),
+    Object.entries(CLASS_DEFENCE)
+      .filter(([c, r]) => UNITS[c] && UNITS[c].def !== null
+        && Math.abs(r[c === 'bal' ? 'land' : (UNITS[c].cls === 'sea' ? 'naval' : UNITS[c].cls)] - UNITS[c].def) >= 0.05)
+      .map(([c]) => c).join(', ') || 'all seventeen agree');
+  check('and the air column reproduces all ten of GROUND_DEFENCE_VS_AIR',
+    Object.entries(GROUND_DEFENCE_VS_AIR)
+      .every(([code, v]) => Math.abs(CLASS_DEFENCE[code].air - v) < 1e-9),
+    Object.entries(GROUND_DEFENCE_VS_AIR)
+      .filter(([c, v]) => Math.abs(CLASS_DEFENCE[c].air - v) >= 1e-9).join(', ') || 'all ten agree');
+  check('every unit has all three defence columns',
+    Object.keys(UNITS).every((c) => CLASS_DEFENCE[c]
+      && ['land', 'air', 'naval'].every((k) => typeof CLASS_DEFENCE[c][k] === 'number')),
+    Object.keys(UNITS).filter((c) => !CLASS_DEFENCE[c]
+      || ['land', 'air', 'naval'].some((k) => typeof CLASS_DEFENCE[c][k] !== 'number')).join(', ') || 'complete');
+
+  // The balloon, which looked like a contradiction in that table and was not.
+  const bc = rows.filter((r) => r.experiment === 'balloon_class' && r.meta.detail);
+  let bal = 0;
+  for (const r of bc) {
+    const want = (r.meta.detail['A.1.1'] || {}).lost;
+    const pct = (r.meta.detail['A.1.1'] || {}).pct;
+    if (want === null || want === undefined || (pct || 0) >= 99.9) continue;
+    const got = simulate({
+      attacker: { rows: [{ unit: 'bal', count: 40 }] },
+      defender: { rows: [{ unit: r.meta.target, count: 40 }] },
+    });
+    check(`a balloon attacking ${r.meta.target} loses ${want}`,
+      Math.abs(got.attacker.hpLost - want) < 0.05,
+      `got ${got.attacker.hpLost === null ? 'withheld' : got.attacker.hpLost.toFixed(2)}`);
+    bal += 1;
+  }
+  check('the balloon attacking-class readings were replayed', bal >= 2, String(bal));
+  check('a balloon on land attacks as a LAND unit',
+    combatClass('bal', 'land') === 'land');
+
+  // The naval air column, which was recorded as unmeasurable and was not.
+  const nac = rows.filter((r) => r.experiment === 'naval_air_column' && r.meta.detail);
+  let ships = 0;
+  for (const r of nac) {
+    const want = (r.meta.detail['B.1.1'] || {}).lost;
+    const pct = (r.meta.detail['B.1.1'] || {}).pct;
+    if (want === null || want === undefined || (pct || 0) >= 99.9) continue;
+    const got = simulate({
+      attacker: { rows: [{ unit: r.meta.attacker, count: 20 }] },
+      defender: { rows: [{ unit: 'int', count: 200 }] },
+      terrain: 'sea', defenderTerrain: 'land',
+    });
+    check(`${r.meta.attacker} vs fighters on land: ${want}`,
+      Math.abs(got.defender.hpLost - want) < 0.05,
+      `got ${got.defender.hpLost === null ? 'withheld' : got.defender.hpLost.toFixed(2)}`);
+    ships += 1;
+  }
+  check('all three ships have an air column now', ships === 3, String(ships));
+  check('and CLASS_ATTACK carries it', ['sub', 'cl', 'bb']
+    .every((c) => typeof CLASS_ATTACK[c].air === 'number'));
+
+  // Embarked coefficients: a flat 1.0 everywhere EXCEPT air.
+  const ec2 = rows.filter((r) => r.experiment === 'embarked_convoy' && r.meta.detail);
+  let emb = 0;
+  for (const r of ec2) {
+    const want = (r.meta.detail['B.1.1'] || {}).lost;
+    const pct = (r.meta.detail['B.1.1'] || {}).pct;
+    if (want === null || want === undefined || (pct || 0) >= 99.9) continue;
+    const got = simulate({
+      attacker: { rows: [{ unit: 'inf', count: 40 }] },
+      defender: { rows: [{ unit: r.meta.target, count: r.meta.target === 'bb' ? 60 : 200 }] },
+      terrain: 'sea', defenderTerrain: r.meta.tgt_terrain,
+    });
+    check(`embarked infantry vs ${r.meta.target}: ${want}`,
+      Math.abs(got.defender.hpLost - want) < 0.05,
+      `got ${got.defender.hpLost === null ? 'withheld' : got.defender.hpLost.toFixed(2)}`);
+    emb += 1;
+  }
+  check('all three embarked-attack cells were replayed', emb === 3, String(emb));
+  check('an embarked unit is NOT simply a convoy — the naval cell differs',
+    EMBARKED_ATTACK.naval === 1.0 && CLASS_ATTACK.convoy.naval === 0.5,
+    `embarked ${EMBARKED_ATTACK.naval} vs convoy ${CLASS_ATTACK.convoy.naval}`);
+  check('and it reads the same in both directions',
+    ['land', 'air', 'naval'].every((k) => EMBARKED_ATTACK[k] === EMBARKED_DEFENCE[k]));
+}
+
+// ===========================================================================
+console.log('\n12m. the second target for every column');
+// ===========================================================================
+// Every air and naval cell of CLASS_ATTACK rested on a single reading, and the
+// shape that justified quoting them -- flat across targets within a class --
+// was measured on the LAND column and inherited by the other two. A second
+// target was sent for each: a bomber where the first sweep used a fighter, a
+// cruiser where it used a battleship.
+{
+  const cm = rows.filter((r) => r.experiment === 'class_matrix_2'
+    && r.meta && r.meta.detail);
+  let cells = 0;
+  let corroborated = 0;
+  for (const r of cm) {
+    const want = (r.meta.detail['B.1.1'] || {}).lost;
+    const pct = (r.meta.detail['B.1.1'] || {}).pct;
+    if (want === null || want === undefined || (pct || 0) >= 99.9) continue;
+    const t = r.meta.terrain || ['land', 'land'];
+    const got = simulate({
+      attacker: { rows: [{ unit: r.meta.unit, count: r.meta.atk_n }] },
+      defender: { rows: [{ unit: r.meta.target, count: r.meta.def_n }] },
+      terrain: t[0], defenderTerrain: t[1],
+    });
+    // The engine has to reproduce the SECOND target from the SAME coefficient
+    // it uses for the first. For the fliers that means reproducing an
+    // attenuated figure, which no arithmetic done in the probe could check --
+    // the correction depends on the defender's own return fire and differs
+    // between the two targets.
+    check(`${r.meta.unit} vs ${r.meta.target} (2nd ${r.meta.target_class} target): ${want}`,
+      got.defender.hpLost !== null
+      && Math.abs(got.defender.hpLost - want) / Math.max(1, want) < 0.01,
+      `got ${got.defender.hpLost === null ? 'withheld' : got.defender.hpLost.toFixed(2)}`);
+    cells += 1;
+    if (Math.abs(got.defender.hpLost - want) / Math.max(1, want) < 0.01) corroborated += 1;
+  }
+  check('a second target was replayed for every readable column', cells >= 25, String(cells));
+  check('and the engine reproduces all of them from one coefficient each',
+    corroborated === cells, `${corroborated}/${cells}`);
+
+  // The balloon's own row, which was one land reading copied across three
+  // columns. Against air it is 10.0, not the 3.0 that was sitting there.
+  const bc = rows.filter((r) => r.experiment === 'balloon_columns' && r.meta.detail);
+  let bal = 0;
+  for (const r of bc) {
+    const want = (r.meta.detail['B.1.1'] || {}).lost;
+    const pct = (r.meta.detail['B.1.1'] || {}).pct;
+    if (want === null || want === undefined || (pct || 0) >= 99.9) continue;
+    const t = r.meta.terrain;
+    const got = simulate({
+      attacker: { rows: [{ unit: 'bal', count: r.meta.atk_n }] },
+      defender: { rows: [{ unit: r.meta.target, count: r.meta.def_n }] },
+      terrain: t[0], defenderTerrain: t[1],
+    });
+    check(`a balloon vs ${r.meta.target}: ${want}`,
+      Math.abs(got.defender.hpLost - want) < 0.05,
+      `got ${got.defender.hpLost === null ? 'withheld' : got.defender.hpLost.toFixed(2)}`);
+    bal += 1;
+  }
+  check('all five balloon column readings were replayed', bal === 5, String(bal));
+  check('the balloon air column is 10.0, not the 3.0 that was assumed',
+    CLASS_ATTACK.bal.air === 10.0, String(CLASS_ATTACK.bal.air));
+  check('and its land and naval columns are each confirmed by two targets',
+    CLASS_ATTACK.bal.land === 3.0 && CLASS_ATTACK.bal.naval === 3.0);
+
+  // A balloon on land is a land unit in EVERY role, which is one rule and was
+  // very nearly written as two.
+  check('a balloon is a land unit attacking, as a target, and against itself',
+    combatClass('bal', 'land') === 'land'
+    && targetClassFor('inf', 'bal', 'land') === 'land'
+    && targetClassFor('bal', 'bal', 'land') === 'land');
+  check('twenty infantry deal their LAND column to ten balloons',
+    (() => {
+      const r = simulate({ attacker: { rows: [{ unit: 'inf', count: 20 }] },
+        defender: { rows: [{ unit: 'bal', count: 10 }] } });
+      return Math.abs(r.defender.hpLost - 80.0) < 0.05;   // 4.0 x E(20)
+    })());
+}
+
+// ===========================================================================
+console.log('\n12n. attenuation scope, and a test that had no power');
+// ===========================================================================
+{
+  const as = rows.filter((r) => r.experiment === 'attenuation_scope' && r.meta.detail);
+  let cells = 0;
+  for (const r of as) {
+    const want = (r.meta.detail['B.1.1'] || {}).lost;
+    const wantAtk = (r.meta.detail['A.1.1'] || {}).lost;
+    if (want === null || want === undefined) continue;
+    const got = simulate({
+      attacker: { rows: [{ unit: 'int', count: 20 }] },
+      defender: { rows: [{ unit: 'int', count: r.meta.def_n }] },
+      terrain: 'air', defenderTerrain: r.meta.target_terrain,
+    });
+    check(`20 fighters vs 200 fighters in ${r.meta.target_terrain}: ${want}`,
+      Math.abs(got.defender.hpLost - want) < 0.05,
+      `got ${got.defender.hpLost === null ? 'withheld' : got.defender.hpLost.toFixed(2)}`);
+    check(`  and the attacker loses ${wantAtk}`,
+      Math.abs(got.attacker.hpLost - wantAtk) < 0.05,
+      `got ${got.attacker.hpLost.toFixed(2)}`);
+    cells += 1;
+  }
+  check('both attenuation-scope cells were replayed', cells === 2, String(cells));
+
+  // Air against air is NOT attenuated, and the reading is emphatic: the
+  // attacking stack loses 58% of its pool and still deals its full figure.
+  const airAir = simulate({
+    attacker: { rows: [{ unit: 'int', count: 20 }] },
+    defender: { rows: [{ unit: 'int', count: 200 }] },
+    terrain: 'air', defenderTerrain: 'air',
+  });
+  check('an air stack losing 58% of its pool still deals full damage to aircraft',
+    Math.abs(airAir.defender.hpLost - 400.0) < 0.05
+    && airAir.attacker.hpLost > 0.5 * airAir.attacker.pool,
+    `${airAir.defender.hpLost} dealt, ${airAir.attacker.hpLost} lost of ${airAir.attacker.pool}`);
+
+  // The exemption that was nearly written into the model. It was proposed on
+  // a pair of readings whose two candidate columns hold the same number, so it
+  // could not have distinguished anything.
+  check('the readings that suggested an air exemption had no power to show one',
+    CLASS_ATTACK.int.land === CLASS_ATTACK.int.naval,
+    `int.land ${CLASS_ATTACK.int.land} vs int.naval ${CLASS_ATTACK.int.naval}`);
+  check('the cell that DOES discriminate has columns four times apart',
+    CLASS_ATTACK.int.air === 20.0 && CLASS_ATTACK.int.naval === 5.0);
+  check('and embarkation is seen by every attacker, air included',
+    targetClassFor('int', 'int', 'sea') === 'naval'
+    && targetClassFor('inf', 'int', 'sea') === 'naval'
+    && targetClassFor('int', 'int', 'air') === 'air');
+}
+
+// ===========================================================================
+console.log('\n12o. the round law across five unit types, and the death rule');
+// ===========================================================================
+// The law was fitted on 50-a-side INFANTRY and the drift on other types was
+// explained by high per-unit HP making the whole-unit survivor count coarse.
+// A ladder on five types spanning 10 to 260 HP disproves that outright: the
+// stormtrooper at 40 is exact through eight rounds while the armoured car at
+// 60 is the worst in the roster. The error tracked how long both sides
+// survived, not what they were made of.
+{
+  const mr = rows.filter((r) => r.experiment === 'multi_round_types' && r.meta.detail);
+  let cells = 0;
+  let worst = 0;
+  const types = new Set();
+  for (const r of mr) {
+    const d = r.meta.detail;
+    const got = simulate({
+      attacker: { rows: [{ unit: r.meta.unit, count: r.meta.n }] },
+      defender: { rows: [{ unit: r.meta.unit, count: r.meta.n }] },
+      rounds: r.meta.rounds,
+    });
+    const wa = d['A.1.1'].lost;
+    const wb = d['B.1.1'].lost;
+    const ea = Math.abs(got.attacker.hpLost - wa) / Math.max(1, wa);
+    const eb = Math.abs(got.defender.hpLost - wb) / Math.max(1, wb);
+    worst = Math.max(worst, ea, eb);
+    check(`${r.meta.unit} 50v50 x${r.meta.rounds}: ${wa} / ${wb}`,
+      ea < 0.001 && eb < 0.001,
+      `got ${got.attacker.hpLost.toFixed(2)} / ${got.defender.hpLost.toFixed(2)}`);
+    // Deaths are EXACT, not bracketed. They are integers the server prints.
+    check(`  and the death counts ${d['A.1.1'].died} / ${d['B.1.1'].died}`,
+      got.attacker.deaths === d['A.1.1'].died && got.defender.deaths === d['B.1.1'].died,
+      `got ${got.attacker.deaths} / ${got.defender.deaths}`);
+    cells += 1;
+    types.add(r.meta.unit);
+  }
+  check('the whole five-type ladder was replayed', cells === 40, String(cells));
+  check('spanning per-unit HP from 10 to 260', types.size === 5,
+    [...types].join(', '));
+  check('worst HP error across all forty cells is under 0.01%',
+    worst < 0.0001, `${(worst * 100).toFixed(4)}%`);
+
+  // The specific claim that was wrong, kept as an assertion so it cannot come
+  // back: the error does not track per-unit HP.
+  const errByHP = [];
+  for (const unit of ['lart', 'inf', 'st', 'ac', 'ht']) {
+    let w = 0;
+    for (const r of mr.filter((x) => x.meta.unit === unit)) {
+      const got = simulate({
+        attacker: { rows: [{ unit, count: 50 }] },
+        defender: { rows: [{ unit, count: 50 }] },
+        rounds: r.meta.rounds,
+      });
+      w = Math.max(w, Math.abs(got.attacker.hpLost - r.meta.detail['A.1.1'].lost)
+        / Math.max(1, r.meta.detail['A.1.1'].lost));
+    }
+    errByHP.push([UNITS[unit].maxHP, w]);
+  }
+  check('every type is now exact regardless of per-unit HP',
+    errByHP.every(([, w]) => w < 0.0001),
+    errByHP.map(([hp, w]) => `${hp}:${(w * 100).toFixed(4)}%`).join(' '));
+}
+
+// ===========================================================================
+console.log('\n12p. E(s) x m(f) above the knee, against rivals that differ');
+// ===========================================================================
+// This was recorded as a confirmation dressed up as a discrimination: the
+// "rival" formulation was a per-unit sum of m(f) instead of one stack-level
+// term, and the two were said to reduce to the same expression at these sizes.
+// They do not merely reduce at these sizes -- they are the same expression
+// EVERYWHERE, and the reason is worth writing down rather than measuring:
+//
+//     sum_i m(f_i) = sum_i (0.05 + 0.95 f_i) = 0.05 s + 0.95 sum_i f_i
+//     sum_i f_i    = remaining pool / per-unit HP = s x f
+//     => sum_i m(f_i) = s x m(f), exactly, for any stack and any split
+//
+// m is AFFINE. No measurement can separate a per-unit sum from a stack-level
+// term, at any size, however the damage is distributed. That was never a rival
+// hypothesis; it was the same one written twice.
+{
+  check('m is affine, so a per-unit sum equals the stack-level term exactly',
+    (() => {
+      // Three units at wildly different fractions, summed, against one m of
+      // their mean. If these ever diverge, m has stopped being affine.
+      const fs = [1.0, 0.42, 0.07];
+      const sum = fs.reduce((t, f) => t + hpMultiplier(f), 0);
+      const mean = fs.reduce((t, f) => t + f, 0) / fs.length;
+      return Math.abs(sum - fs.length * hpMultiplier(mean)) < 1e-12;
+    })());
+
+  // The rivals that DO differ put m somewhere else: inside E, or against the
+  // raw count instead of the saturated one. Both are rejected outright.
+  const cells = [[10, 800.0, 14.0, 295.01], [25, 2000.0, 14.0, 732.60],
+    [40, 3196.3, 14.0, 995.84], [50, 4000.0, 14.0, 1046.51]];
+  let bestErr = 0;
+  let insideErr = 0;
+  let rawErr = 0;
+  for (const [n, pool, lost, want] of cells) {
+    const f = (pool - lost) / pool;
+    const law = 30 * effectiveUnits(n) * hpMultiplier(f);
+    const inside = 30 * effectiveUnits(n * hpMultiplier(f));
+    const raw = 30 * n * hpMultiplier(f);
+    bestErr = Math.max(bestErr, Math.abs(law - want) / want);
+    insideErr = Math.max(insideErr, Math.abs(inside - want) / want);
+    rawErr = Math.max(rawErr, Math.abs(raw - want) / want);
+    check(`air stack of ${n}: E(s) x m(f) gives ${want}`,
+      Math.abs(law - want) / want < 0.0001, `${law.toFixed(2)}`);
+  }
+  check('E(s) x m(f) is exact to 0.001% at every size',
+    bestErr < 0.00002, `${(bestErr * 100).toFixed(4)}%`);
+  check('m INSIDE E is rejected — 0.33% at fifty units',
+    insideErr > 0.002 && insideErr < 0.01, `${(insideErr * 100).toFixed(3)}%`);
+  check('m against the RAW count is rejected outright — 42.9%',
+    rawErr > 0.4, `${(rawErr * 100).toFixed(1)}%`);
+  check('and the three are far enough apart that these four cells decide it',
+    insideErr / Math.max(bestErr, 1e-9) > 10);
+}
+
+// ===========================================================================
+console.log('\n12q. the six air/naval heroes, decomposed on both sides');
+// ===========================================================================
+// These were applied at their ATTACKING value, at level 10, and nowhere else --
+// so a defending air or naval stack got no hero effect at all. 314 requests
+// later they are as fully modelled as the sixteen land heroes.
+{
+  // DEFENDING, level by level. Read off the attacker's losses, which needs no
+  // unpicking because a defending stack is not attenuated.
+  const hd = rows.filter((r) => r.experiment === 'hero_other_defending'
+    && r.meta.detail && r.meta.hero);
+  let cells = 0;
+  for (const r of hd) {
+    const want = (r.meta.detail['A.1.1'] || {}).lost;
+    const pct = (r.meta.detail['A.1.1'] || {}).pct;
+    if (want == null || (pct || 0) >= 99.9) continue;
+    const terr = r.meta.terrain === 'air' ? 'air' : 'sea';
+    const got = simulate({
+      terrain: terr, defenderTerrain: r.meta.terrain === 'air' ? 'land' : 'sea',
+      attacker: { rows: [{ unit: r.meta.atk_unit, count: r.meta.atk_n }] },
+      defender: { rows: [{ unit: r.meta.unit, count: r.meta.def_n }],
+        hero: { code: r.meta.hero, level: r.meta.level } },
+    });
+    check(`${r.meta.hero} lvl${r.meta.level} defending ${r.meta.unit}: ${want}`,
+      got.attacker.hpLost !== null && Math.abs(got.attacker.hpLost - want) < 0.12,
+      `got ${got.attacker.hpLost === null ? 'withheld' : got.attacker.hpLost.toFixed(2)}`);
+    cells += 1;
+  }
+  check('every defending hero cell was replayed', cells >= 100, String(cells));
+
+  // ATTACKING level curves, read on a single-type stack of the buffed type.
+  const hc = rows.filter((r) => r.experiment === 'hero_other_curves' && r.meta.detail);
+  let curveCells = 0;
+  for (const r of hc) {
+    const want = (r.meta.detail['B.1.1'] || {}).lost;
+    const pct = (r.meta.detail['B.1.1'] || {}).pct;
+    if (want == null || (pct || 0) >= 99.9) continue;
+    const terr = r.meta.terrain;
+    const target = terr === 'air'
+      ? (r.meta.unit === 'tac' ? 'int' : 'tac')
+      : (r.meta.unit === 'cl' ? 'sub' : 'cl');
+    const got = simulate({
+      terrain: terr, defenderTerrain: terr,
+      attacker: { rows: [{ unit: r.meta.unit, count: 10 }],
+        hero: { code: r.meta.hero, level: r.meta.level } },
+      defender: { rows: [{ unit: target, count: 200 }] },
+    });
+    // A MELEE CELL CARRYING A BOMBARDMENT ABILITY IS NOT REPRODUCIBLE YET, and
+    // it is reported rather than asserted loosely. Outside melee the ability
+    // is exact — the engine reproduces the 10-50 km sweep to 0.01 and the
+    // level ladder to the printed decimal — but at 0 km the split between the
+    // target and the attacker's own stack is measurably NOT pool share, and
+    // nothing yet explains it. Widening the tolerance here would hide a real
+    // disagreement behind a number chosen to pass.
+    if (BOMBARDMENT[r.meta.hero]) {
+      cannotReproduce(`${r.meta.hero} lvl${r.meta.level} attacking `
+        + `${r.meta.unit} in melee`, want, got.defender.hpLost, NOTE_MELEE);
+    } else {
+      check(`${r.meta.hero} lvl${r.meta.level} attacking ${r.meta.unit}: ${want}`,
+        got.defender.hpLost !== null && Math.abs(got.defender.hpLost - want) < 0.6,
+        `got ${got.defender.hpLost === null ? 'withheld' : got.defender.hpLost.toFixed(2)}`);
+    }
+    curveCells += 1;
+  }
+  check('every attacking curve level was replayed', curveCells >= 85, String(curveCells));
+
+  // The two things no LAND hero does, asserted directly so they cannot be
+  // flattened back into scalars.
+  check('Richthofen\'s own attack moves with level, 25 at 1 and 125 at 20',
+    HEROES_OTHER_TERRAIN.rbaron.atkAttackingCurve[1] === 25.0
+    && HEROES_OTHER_TERRAIN.rbaron.atkAttackingCurve[20] === 125.0);
+  check('and Hersing\'s own POOL moves with level, 100 to 200.7',
+    HEROES_OTHER_TERRAIN.otto.poolCurve[1] === 100.0
+    && HEROES_OTHER_TERRAIN.otto.poolCurve[15] === 200.7);
+  check('while every land hero is flat in both',
+    Object.values(HEROES).every((h) => !h.atkAttackingCurve && !h.poolCurve));
+  check('the engine actually applies the pool curve, not the scalar',
+    (() => {
+      const lo = simulate({ terrain: 'sea', defenderTerrain: 'sea',
+        attacker: { rows: [{ unit: 'bb', count: 60 }] },
+        defender: { rows: [{ unit: 'sub', count: 20 }], hero: { code: 'otto', level: 1 } } });
+      const hi = simulate({ terrain: 'sea', defenderTerrain: 'sea',
+        attacker: { rows: [{ unit: 'bb', count: 60 }] },
+        defender: { rows: [{ unit: 'sub', count: 20 }], hero: { code: 'otto', level: 15 } } });
+      const p1 = lo.defender.rows.find((x) => x.isHero);
+      const p15 = hi.defender.rows.find((x) => x.isHero);
+      return p1 && p15 && Math.abs(p1.pool - 100) < 0.05 && Math.abs(p15.pool - 200.7) < 0.05;
+    })());
+
+  // A buff channel has BOTH signs. Three of the six are attack-only, which is
+  // the mirror of joffre_home and kangal being defence-only.
+  check('an attack-only buff measures exactly 1.0000 on a defending stack',
+    ['rbaron', 'thaden', 'otto'].every((h) => {
+      const b = Object.values(HEROES_OTHER_TERRAIN[h].buffs)[0];
+      return b.channel === 'attack';
+    }));
+  check('and the engine declines to apply it there, saying so',
+    simulate({ terrain: 'air', defenderTerrain: 'air',
+      attacker: { rows: [{ unit: 'tac', count: 200 }] },
+      defender: { rows: [{ unit: 'int', count: 20 }], hero: { code: 'rbaron', level: 10 } } })
+      .coverage.caveats.concat(
+        simulate({ terrain: 'air', defenderTerrain: 'air',
+          attacker: { rows: [{ unit: 'tac', count: 200 }] },
+          defender: { rows: [{ unit: 'int', count: 20 }], hero: { code: 'rbaron', level: 10 } } })
+          .derivation.map((d) => d.formula || '')).join(' ').length > 0);
+
+  // Target-class columns on a HERO, which nothing before this suggested.
+  check('Richthofen adds 70.00 against aircraft and 16.66 against infantry',
+    HEROES_OTHER_TERRAIN.rbaron.atkByTargetClass.air === 70.0
+    && HEROES_OTHER_TERRAIN.rbaron.atkByTargetClass.land === 16.66);
+  check('while von Thaden has no column — 10.00 against all three',
+    ['air', 'land', 'naval'].every((c) =>
+      HEROES_OTHER_TERRAIN.thaden.atkByTargetClass[c] === 10.0));
+
+  // A hero's own output is NOT attenuated: von Thaden adds exactly 10.00 to a
+  // stack that lost 13.50 HP, one that lost 168.30 and one that lost 201.90.
+  const cs = rows.filter((r) => r.experiment === 'hero_columns_small'
+    && r.meta.detail && r.meta.hero === 'thaden');
+  const excesses = [];
+  for (const r of cs) {
+    const base = rows.find((x) => x.experiment === 'hero_columns_small'
+      && x.meta.hero === null && x.meta.target === r.meta.target
+      && x.meta.control === r.meta.control);
+    if (!base) continue;
+    const w = (r.meta.detail['B.1.1'] || {}).lost;
+    const b = (base.meta.detail['B.1.1'] || {}).lost;
+    if (w == null || b == null) continue;
+    excesses.push(w - b);
+  }
+  check('a hero fires at full strength however battered its stack is',
+    excesses.length === 3 && excesses.every((e) => Math.abs(e - 10.0) < 0.01),
+    excesses.map((e) => e.toFixed(2)).join(', '));
+}
+
+// ===========================================================================
+console.log('\n12r. the one hero whose own contribution is not a constant');
+// ===========================================================================
+// Every other hero in both tables adds the same figure whatever the stacks
+// look like. Tōgō-with-bombardment does not, and 34 requests across two
+// crossed sweeps did not find the rule. What IS established is the shape, the
+// bound, and that the effect belongs to this hero rather than to any
+// configuration — so the engine reports a band and names it.
+{
+  const cells = rows.filter((r) => (r.experiment === 'togo_b_disagreement'
+    || r.experiment === 'togo_b_shape') && r.meta.detail);
+  let togoFlat = 0;
+  let tbSeen = 0;
+  let tbLo = Infinity;
+  let tbHi = -Infinity;
+  for (const r of cells) {
+    const b = r.meta.detail['B.1.1'] || {};
+    if (b.lost == null || (b.pct || 0) >= 99.9) continue;
+    const an = r.meta.atk_n;
+    // The hero outranks a cruiser's 10.0, so it saturates FIRST: the units
+    // take E(n+1) - E(1) and the hero takes E(1) = 1.
+    const units = 10.0 * (effectiveUnits(an + 1) - 1);
+    const contribution = b.lost - units;
+    if (r.meta.hero === 'togo') {
+      check(`plain Tōgō contributes 15.00 with ${an} v ${r.meta.def_n}`,
+        Math.abs(contribution - 15.0) < 0.05, contribution.toFixed(2));
+      togoFlat += 1;
+    } else {
+      tbSeen += 1;
+      tbLo = Math.min(tbLo, contribution);
+      tbHi = Math.max(tbHi, contribution);
+    }
+  }
+  check('plain Tōgō is flat across every one of those cells', togoFlat >= 6,
+    String(togoFlat));
+  check('while the bombardment variant spans a wide band', tbSeen >= 14
+    && tbHi - tbLo > 20, `${tbSeen} cells, ${tbLo.toFixed(2)}-${tbHi.toFixed(2)}`);
+  // THE BAND IS GONE, because the thing it described is now measured. Both
+  // endpoints fall out of the pool-share law: the ability's total at level 10
+  // is 50.00, the hero's own attack is 15.00 flat, and the share of the blast
+  // the target absorbs runs from about 0.46 up to 1.00 as the stacks change
+  // size. 15 + 50 x 0.4598 = 37.99 and 15 + 50 x 1.00 = 65.00 — the two ends
+  // of the band that used to be declared as unexplained.
+  const total10 = BOMBARDMENT.togo_b.totalByLevel[10];
+  const own = BOMBARDMENT.togo_b.ownAttack;
+  check('the old band\'s endpoints are what the pool-share law predicts',
+    Math.abs((own + total10 * 0.4598) - 37.99) < 0.05
+    && Math.abs((own + total10 * 1.0) - 65.0) < 0.05,
+    `${(own + total10 * 0.4598).toFixed(2)} and ${(own + total10).toFixed(2)}`);
+  check('no hero declares an unexplained attack band any more',
+    Object.values({ ...HEROES, ...HEROES_OTHER_TERRAIN })
+      .every((h) => !h.atkAttackingBand),
+    Object.entries({ ...HEROES, ...HEROES_OTHER_TERRAIN })
+      .filter(([, h]) => h.atkAttackingBand).map(([c]) => c).join(','));
+  check('the two that did are exactly the two with a measured ability',
+    Object.keys(BOMBARDMENT).sort().join(',') === 'lucien_g,togo_b');
+  check('and its own attack is now the flat 15.00 that plain Tōgō reads',
+    HEROES_OTHER_TERRAIN.togo_b.atkAttacking === 15.0
+    && HEROES_OTHER_TERRAIN.togo.atkAttacking === 15.0,
+    `${HEROES_OTHER_TERRAIN.togo_b.atkAttacking} vs `
+      + `${HEROES_OTHER_TERRAIN.togo.atkAttacking}`);
+  check('the superseded curve is kept as data under a name that says so',
+    !HEROES_OTHER_TERRAIN.togo_b.atkAttackingCurve
+    && HEROES_OTHER_TERRAIN.togo_b.supersededSumCurve[10] === 64.90,
+    'it was real readings, mislabelled — 64.90 = 15.00 own + 50.00 ability');
+  check('its DEFENDING side is clean and stays a single number',
+    HEROES_OTHER_TERRAIN.togo_b.atkDefending === 15.0);
+
+  // The three things the sweeps ruled out, asserted from the record so the
+  // explanation cannot quietly come back.
+  const byKey = new Map();
+  for (const r of cells) {
+    if (r.meta.hero !== 'togo_b') continue;
+    const b = r.meta.detail['B.1.1'] || {};
+    if (b.lost == null || (b.pct || 0) >= 99.9) continue;
+    byKey.set(`${r.meta.target || 'cl'}/${r.meta.atk_n}/${r.meta.def_n}`,
+      b.lost - 10.0 * (effectiveUnits(r.meta.atk_n + 1) - 1));
+  }
+  const bb30 = byKey.get('bb/10/30');
+  const sub30 = byKey.get('sub/10/30');
+  check('target TYPE is ruled out — a battleship and a submarine agree',
+    bb30 != null && sub30 != null && Math.abs(bb30 - sub30) < 0.05,
+    `${bb30} vs ${sub30}`);
+  const d50 = byKey.get('cl/10/50');
+  const d200 = byKey.get('cl/10/200');
+  check('incoming damage is ruled out — identical at 50 and 200, E(n) caps at 35',
+    d50 != null && d200 != null && Math.abs(d50 - d200) > 1.0
+    && effectiveUnits(50) === effectiveUnits(200),
+    `${d50} vs ${d200} on the same 350.00 incoming`);
+}
+
+// ===========================================================================
+console.log('\n12s. the land heroes ATTACKING, re-decomposed');
+// ===========================================================================
+// HERO_BUFF_CHANNEL records which SIDE a known buff acts on, and every buff it
+// knew about was found by a screen run on DEFENDING stacks. A buff that acts
+// only when attacking measures zero there and is recorded as absent. The air
+// heroes proved the channel has both signs; this is the mirror on land, and it
+// was hiding four wrong own-attack values as well, because an own attack read
+// off a stack the hero buffs is an own attack plus a buff added together.
+{
+  // A HERO'S OWN OUTPUT SCALES WITH ITS OWN HP, by the same m(f) units obey.
+  // Nothing had ever varied a hero's HP.
+  const hs = rows.filter((r) => r.experiment === 'hero_hp_scaling' && r.meta.detail);
+  let hpCells = 0;
+  for (const r of hs) {
+    const want = (r.meta.detail['B.1.1'] || {}).lost;
+    if (want == null) continue;
+    const pct = Number(String(r.meta.hero_hp).replace('%', ''));
+    const got = simulate({
+      attacker: { rows: [{ unit: r.meta.unit, count: 10 }],
+        hero: { code: r.meta.hero, level: 10, hpPct: pct } },
+      defender: { rows: [{ unit: 'inf', count: 400 }] },
+    });
+    check(`${r.meta.hero} at ${r.meta.hero_hp} HP: ${want}`,
+      Math.abs(got.defender.hpLost - want) < 0.05,
+      `got ${got.defender.hpLost.toFixed(2)}`);
+    hpCells += 1;
+  }
+  check('every hero-HP rung was replayed', hpCells === 16, String(hpCells));
+  check('and a hero at 50% contributes m(0.5) of its output, not all of it',
+    (() => {
+      const full = simulate({ attacker: { rows: [{ unit: 'lart', count: 10 }],
+        hero: { code: 'larab', level: 10 } },
+        defender: { rows: [{ unit: 'inf', count: 400 }] } });
+      const half = simulate({ attacker: { rows: [{ unit: 'lart', count: 10 }],
+        hero: { code: 'larab', level: 10, hpPct: 50 } },
+        defender: { rows: [{ unit: 'inf', count: 400 }] } });
+      const fh = full.attacker.rows.find((x) => x.isHero);
+      const hh = half.attacker.rows.find((x) => x.isHero);
+      return Math.abs(hh.damageDealt - fh.damageDealt * hpMultiplier(0.5)) < 1e-9;
+    })());
+
+  // The three-type probe and the six-type screen, replayed together. lucien_g
+  // is excluded BY NAME and for a stated reason: on a six-type stack it
+  // contributes 8.00, the same as plain Lucien, and on a single-type stack
+  // 36.44 to 37.94, and nothing explains the difference. Its band records both.
+  const la = rows.filter((r) => (r.experiment === 'land_hero_attacking'
+    || r.experiment === 'land_hero_screen') && r.meta.detail);
+  let cells = 0;
+  let skipped = 0;
+  for (const r of la) {
+    const want = (r.meta.detail['B.1.1'] || {}).lost;
+    const pct = (r.meta.detail['B.1.1'] || {}).pct;
+    if (want == null || (pct || 0) >= 99.9) continue;
+    if (r.meta.hero === 'lucien_g') { skipped += 1; continue; }
+    const got = simulate({
+      attacker: { rows: [{ unit: r.meta.unit, count: 10 }],
+        hero: { code: r.meta.hero, level: 10 } },
+      defender: { rows: [{ unit: 'inf', count: 400 }] },
+    });
+    check(`${r.meta.hero} attacking 10 ${r.meta.unit}: ${want}`,
+      Math.abs(got.defender.hpLost - want) < 0.05,
+      `got ${got.defender.hpLost.toFixed(2)}`);
+    cells += 1;
+  }
+  check('the whole attacking screen was replayed', cells >= 130, String(cells));
+  check('and lucien_g was skipped by name, not by silence', skipped >= 9,
+    String(skipped));
+
+  // The four own-attack corrections, stated so they cannot drift back.
+  check('pershing attacks at 8.0, not the 62.0 that was its attack plus a buff',
+    HEROES.pershing.atkAttacking === 8.0);
+  check('and it buffs five types attacking and none defending',
+    Object.keys(HEROES.pershing.buffs).sort().join(',') === 'ac,cav,ht,inf,lt'
+    && Object.values(HEROES.pershing.buffs).every((b) => b.channel === 'attack'));
+  check('allen 29.6 -> 20.0 with a cavalry buff', HEROES.allen.atkAttacking === 20.0
+    && HEROES.allen.buffs.cav.channel === 'attack');
+  check('georg 16.8 -> 12.0 with an artillery buff', HEROES.georg.atkAttacking === 12.0
+    && HEROES.georg.buffs.art.channel === 'attack');
+  check('marco 24.6 -> 15.0 with a light-tank buff', HEROES.marco.atkAttacking === 15.0
+    && HEROES.marco.buffs.lt.channel === 'attack');
+
+  // The reading that pinned all four: a six-type stack that contains three of
+  // pershing's five buffed types.
+  check('the six-type stack that produced 62.0 now reproduces exactly',
+    (() => {
+      const r = simulate({
+        attacker: { rows: [['cav', 2], ['lart', 2], ['art', 2], ['rrg', 2],
+          ['lt', 2], ['ht', 2]].map(([unit, count]) => ({ unit, count })),
+          hero: { code: 'pershing', level: 10 } },
+        defender: { rows: [{ unit: 'inf', count: 400 }] },
+      });
+      return Math.abs(r.defender.hpLost - 308.0) < 0.05;
+    })());
+  // hank, read on BOTH sides at every level. The two agree exactly through
+  // level 9 and part at the cap, which is a per-side curve rather than a bad
+  // cell -- and only a full ladder on both sides could tell those apart.
+  const hk = rows.filter((r) => r.experiment === 'hank_sides' && r.meta.detail);
+  let hkCells = 0;
+  for (const r of hk) {
+    const atk = r.meta.side === 'attack';
+    const want = ((r.meta.detail[atk ? 'B.1.1' : 'A.1.1']) || {}).lost;
+    if (want == null) continue;
+    const got = atk
+      ? simulate({ attacker: { rows: [{ unit: 'inf', count: 10 }],
+          hero: { code: 'hank', level: r.meta.level } },
+          defender: { rows: [{ unit: 'inf', count: 400 }] } })
+      : simulate({ attacker: { rows: [{ unit: 'inf', count: 400 }] },
+          defender: { rows: [{ unit: 'inf', count: 10 }],
+            hero: { code: 'hank', level: r.meta.level } } });
+    const seen = atk ? got.defender.hpLost : got.attacker.hpLost;
+    check(`hank level ${r.meta.level} ${r.meta.side}ing: ${want}`,
+      Math.abs(seen - want) < 0.05, `got ${seen.toFixed(2)}`);
+    hkCells += 1;
+  }
+  check('both hank ladders were replayed', hkCells === 20, String(hkCells));
+  check('and the two sides differ only at the cap',
+    HEROES.hank.buffs.inf.curve[10] === 1.10
+    && HEROES.hank.buffs.inf.curveDefending[10] === 1.09
+    && [1, 2, 3, 4, 5, 6, 7, 8, 9].every((l) =>
+      HEROES.hank.buffs.inf.curve[l] === HEROES.hank.buffs.inf.curveDefending[l]));
+
+  check('the new curves and channels came from measured cells, not from level 10 alone',
+    ['pershing', 'allen', 'georg', 'marco'].every((h) => {
+      const b = Object.values(HEROES[h].buffs)[0];
+      return b.curve && Object.keys(b.curve).length === HEROES[h].maxLevel;
+    }));
+}
+
+// ===========================================================================
+console.log('\n12t. every hero has a column per class, on both sides');
+// ===========================================================================
+// Every land-hero reading in this project fired at INFANTRY, so one number per
+// side looked like the whole story. It is the LAND column and nothing else.
+// Richthofen was the first case found — 70.00 against aircraft, 16.66 against
+// infantry — and it looked like a quirk of one air hero. All sixteen land
+// heroes do it too: Lawrence reads 45.0 / 4.5 / 11.25 across the three classes
+// attacking, a factor of ten.
+{
+  let atkCells = 0;
+  let defCells = 0;
+  for (const r of rows) {
+    const m = r.meta || {};
+    if (!m.detail) continue;
+    if (r.experiment === 'land_hero_target_class') {
+      const want = (m.detail['B.1.1'] || {}).lost;
+      const pct = (m.detail['B.1.1'] || {}).pct;
+      if (want == null || (pct || 0) >= 99.9) continue;
+      if (m.hero === 'lucien_g') continue;      // banded, see 12s
+      const got = simulate({
+        terrain: 'land',
+        defenderTerrain: m.target_class === 'air' ? 'land'
+          : (m.target_class === 'naval' ? 'sea' : 'land'),
+        attacker: { rows: [{ unit: 'lart', count: 10 }],
+          hero: { code: m.hero, level: 10 } },
+        defender: { rows: [{ unit: m.target, count: m.def_n || 400 }] },
+      });
+      check(`${m.hero} attacking ${m.target_class}: ${want}`,
+        Math.abs(got.defender.hpLost - want) < 0.05,
+        `got ${got.defender.hpLost === null ? 'withheld' : got.defender.hpLost.toFixed(2)}`);
+      atkCells += 1;
+    }
+    if (r.experiment === 'land_hero_def_class') {
+      const want = (m.detail['A.1.1'] || {}).lost;
+      const pct = (m.detail['A.1.1'] || {}).pct;
+      if (want == null || (pct || 0) >= 99.9) continue;
+      const an = { inf: 400, int: 200, bb: 100 }[m.attacker];
+      const got = simulate({
+        terrain: m.atk_class === 'air' ? 'air' : (m.atk_class === 'naval' ? 'sea' : 'land'),
+        defenderTerrain: 'land',
+        attacker: { rows: [{ unit: m.attacker, count: an }] },
+        defender: { rows: [{ unit: 'lart', count: 10 }],
+          hero: { code: m.hero, level: 10 } },
+      });
+      check(`${m.hero} defending against ${m.atk_class}: ${want}`,
+        got.attacker.hpLost !== null && Math.abs(got.attacker.hpLost - want) < 0.05,
+        `got ${got.attacker.hpLost === null ? 'withheld' : got.attacker.hpLost.toFixed(2)}`);
+      defCells += 1;
+    }
+  }
+  check('every attacking class cell was replayed', atkCells >= 40, String(atkCells));
+  check('and every defending class cell was replayed too', defCells >= 45, String(defCells));
+
+  // The columns themselves, and the property that made the old single number
+  // look right: for every hero measured, the land column IS the old scalar.
+  check('all sixteen land heroes carry both column sets',
+    Object.values(HEROES).every((h) => h.atkByTargetClass && h.defByAttackerClass));
+  check('and every land column equals the scalar it replaced, so land battles are unchanged',
+    Object.entries(HEROES).every(([c, h]) =>
+      (c === 'lucien_g' || Math.abs(h.atkByTargetClass.land - h.atkAttacking) < 0.01)
+      && Math.abs(h.defByAttackerClass.land - h.atkDefending) < 0.01),
+    Object.entries(HEROES).filter(([c, h]) => c !== 'lucien_g'
+      && Math.abs(h.atkByTargetClass.land - h.atkAttacking) >= 0.01).map(([c]) => c).join(',') || 'all match');
+  check('the columns genuinely differ — larab is ten times bigger on land than air',
+    HEROES.larab.atkByTargetClass.land === 45 && HEROES.larab.atkByTargetClass.air === 4.5);
+  check('and a level curve is SCALED by the column, not replaced by it',
+    (() => {
+      // Richthofen's own attack runs 25 to 125 with level. Against a land
+      // target the whole curve scales by 16.66/70.
+      const l1 = simulate({ terrain: 'air', defenderTerrain: 'air',
+        attacker: { rows: [{ unit: 'tac', count: 10 }], hero: { code: 'rbaron', level: 1 } },
+        defender: { rows: [{ unit: 'int', count: 400 }] } });
+      const l20 = simulate({ terrain: 'air', defenderTerrain: 'air',
+        attacker: { rows: [{ unit: 'tac', count: 10 }], hero: { code: 'rbaron', level: 20 } },
+        defender: { rows: [{ unit: 'int', count: 400 }] } });
+      const h1 = l1.attacker.rows.find((x) => x.isHero);
+      const h20 = l20.attacker.rows.find((x) => x.isHero);
+      return Math.abs(h1.damageDealt - 25) < 0.05 && Math.abs(h20.damageDealt - 125) < 0.05;
+    })());
+}
+
+// ===========================================================================
+console.log('\n12u. m(f) on both axes, and every building level');
+// ===========================================================================
+// m(f) is in every output term the engine computes and it had been swept on
+// ONE unit type, on ONE side. That is the shape of every defect this project
+// found in the hero model, applied to the most load-bearing law in it.
+{
+  const mf = rows.filter((r) => r.experiment === 'm_f_generality' && r.meta.detail);
+  let cells = 0;
+  const units = new Set();
+  const sides = new Set();
+  for (const r of mf) {
+    const atk = r.meta.side === 'attack';
+    const want = ((r.meta.detail[atk ? 'B.1.1' : 'A.1.1']) || {}).lost;
+    if (want == null) continue;
+    const got = atk
+      ? simulate({ attacker: { rows: [{ unit: r.meta.unit, count: 10, hpPct: r.meta.hp_pct }] },
+          defender: { rows: [{ unit: 'inf', count: 400 }] } })
+      : simulate({ attacker: { rows: [{ unit: 'inf', count: 400 }] },
+          defender: { rows: [{ unit: r.meta.unit, count: 10, hpPct: r.meta.hp_pct }] } });
+    const seen = atk ? got.defender.hpLost : got.attacker.hpLost;
+    // Absolute, not relative: at 10% HP a light artillery row deals 1.45 and
+    // the server prints two decimals, so a relative band is meaningless there.
+    check(`m(f) ${r.meta.unit} ${r.meta.side}ing at ${r.meta.hp_pct}%: ${want}`,
+      Math.abs(seen - want) < 0.006, `got ${seen.toFixed(3)}`);
+    cells += 1;
+    units.add(r.meta.unit);
+    sides.add(r.meta.side);
+  }
+  check('the whole m(f) grid was replayed', cells === 50, String(cells));
+  check('across five unit types and both sides',
+    units.size === 5 && sides.size === 2,
+    `${[...units].join(',')} / ${[...sides].join(',')}`);
+  check('and the 0.05 floor is what makes it falsifiable — 10% HP gives 14.5%',
+    Math.abs(hpMultiplier(0.10) - 0.145) < 1e-12);
+
+  // Buildings: every level of every building, and every cap in the server's
+  // own words.
+  const bl = rows.filter((r) => r.experiment === 'building_levels');
+  let pools = 0;
+  let refusals = 0;
+  for (const r of bl) {
+    const m = r.meta || {};
+    if (m.refused) {
+      const b = BUILDINGS[m.building];
+      check(`the server caps ${m.building} below level ${m.level}`,
+        b && b.maxLevel === m.level - 1,
+        `table says ${b ? b.maxLevel : 'absent'}, server refused ${m.level}`);
+      refusals += 1;
+      continue;
+    }
+    const pool = ((m.detail || {})['B.1.bldg.1'] || {}).pool;
+    if (pool == null) continue;
+    const b = BUILDINGS[m.building];
+    // A building's pool is never printed. It is lost/pct, and pct carries
+    // three significant figures, so every reading is an interval about 0.25%
+    // wide -- 80.2 for a building the table records as 80. Asserting to a
+    // fixed 0.15 was demanding more precision than the page can express.
+    check(`${m.building} level ${m.level} holds ${pool}`,
+      b && Math.abs(b.poolAtLevel[m.level] - pool) / pool < 0.005,
+      `table says ${b ? b.poolAtLevel[m.level] : 'absent'}`);
+    pools += 1;
+  }
+  check('every building level was replayed', pools >= 13, String(pools));
+  check('and every cap came from a refusal, not from silence', refusals >= 7,
+    String(refusals));
+  check('no building is left with an unknown cap',
+    Object.values(BUILDINGS).every((b) => typeof b.maxLevel === 'number'),
+    Object.entries(BUILDINGS).filter(([, b]) => typeof b.maxLevel !== 'number')
+      .map(([c]) => c).join(',') || 'all known');
+  check('the workshop is not linear, so it carries no per-level figure',
+    BUILDINGS.workshop.hpPerLevel === null
+    && BUILDINGS.workshop.poolAtLevel[1] === 5
+    && BUILDINGS.workshop.poolAtLevel[2] === 15
+    && BUILDINGS.workshop.poolAtLevel[3] === 35);
+  check('and the assumed doubling series turned out to be right',
+    BUILDINGS.workshop.poolAtLevel[3] === 35);
+
+  // The three notes that had gone stale, now asserted as closed.
+  check('the trench-gaps note no longer claims 12 levels are missing',
+    !/12 of 21 levels/.test(PROVENANCE['TRENCH.gaps'].note)
+    && PROVENANCE['TRENCH.gaps'].confidence === 'measured');
+  check('the hero-levels note no longer says only the buff varies',
+    /NO LONGER ONLY THE BUFF/.test(PROVENANCE['HEROES.levels'].note));
+  check('and m(f) no longer says the other axes are assumed',
+    !/is assumed\.$/.test(PROVENANCE.m_f.note)
+    && /BOTH AXES ARE MEASURED/.test(PROVENANCE.m_f.note));
+}
+
+// ===========================================================================
+console.log('\n12v. E(n) at every rung that was interpolated');
+// ===========================================================================
+// E(n) is the other law in every output term, and its note listed n in 21-28,
+// 31-44, 46-49 and above 113 as untested — interpolated because the curve is
+// smooth and every gap is bracketed. That is a fair reason to interpolate and
+// not a reason to call it measured, and the knee at 20 and the cap at 50 both
+// sit inside those ranges.
+{
+  const en = rows.filter((r) => r.experiment === 'e_n_gaps' && r.meta.detail);
+  let rungs = 0;
+  let worst = 0;
+  for (const r of en) {
+    const want = (r.meta.detail['B.1.1'] || {}).lost;
+    const pct = (r.meta.detail['B.1.1'] || {}).pct;
+    if (want == null || (pct || 0) >= 99.9) continue;
+    const got = simulate({
+      attacker: { rows: [{ unit: 'lart', count: r.meta.n }] },
+      defender: { rows: [{ unit: 'inf', count: 800 }] },
+    });
+    const err = Math.abs(got.defender.hpLost - want) / Math.max(want, 1);
+    worst = Math.max(worst, err);
+    check(`E(${r.meta.n}): ${want}`, err < 0.001,
+      `got ${got.defender.hpLost.toFixed(2)}`);
+    rungs += 1;
+  }
+  check('every previously untested rung was replayed', rungs === 22, String(rungs));
+  check('worst error across them is rounding, not misfit', worst < 0.0001,
+    `${(worst * 100).toFixed(4)}%`);
+  check('the knee at 20 and the cap at 50 are both inside what was measured',
+    en.some((r) => r.meta.n === 21) && en.some((r) => r.meta.n === 49));
+  check('and the cap still holds four hundred units out',
+    Math.abs(effectiveUnits(400) - 35) < 1e-9);
+  check('the note no longer lists untested ranges',
+    /EVERY RUNG IS MEASURED NOW/.test(PROVENANCE.E_n.note)
+    && !/interpolation there is derived/.test(PROVENANCE.E_n.note));
+  check('and the death-clamp note says it was read',
+    /READ NOW, and it does clamp/.test(PROVENANCE.deaths.note));
+  check('the three superseded building notes are labelled, not deleted',
+    ['BUILDINGS.hp.oneLevel', 'BUILDINGS.hp.workshop', 'BUILDINGS.maxLevel.unknown']
+      .every((k) => PROVENANCE[k].confidence === 'superseded'
+        && /SUPERSEDED by BUILDINGS\.levels/.test(PROVENANCE[k].note)));
+}
+
+// ===========================================================================
+console.log('\n12w. patrol — both sides, solved as a fixed point');
+// ===========================================================================
+// The last estimated number in the model, and the app modelled half the law.
+// Patrol attenuated the ATTACKER with a multiplicative (1 - c x lossFraction)
+// and left the DEFENDER untouched, so a patrolling stack was told it would
+// lose 160.00 where the server prints 110.46 — 45% out, in the direction that
+// makes patrol look worse than it is.
+{
+  const pp = rows.filter((r) => r.experiment === 'patrol_pin' && r.meta.detail);
+  let patrolCells = 0;
+  let strikeCells = 0;
+  let worstA = 0;
+  let worstB = 0;
+  for (const r of pp) {
+    const m = r.meta;
+    const a = m.detail['A.1.1'] || {};
+    const b = m.detail['B.1.1'] || {};
+    if (a.lost == null || b.lost == null) continue;
+    if ((a.pct || 0) >= 99.9 || (b.pct || 0) >= 99.9) continue;
+    const got = simulate({
+      mode: m.mode === 'patrol' ? 'patrol' : 'strike',
+      attacker: { unit: m.unit, count: m.atk_n },
+      defender: { unit: m.target, count: m.def_n },
+      rounds: 1,
+    });
+    const eA = Math.abs(got.attacker.hpLost - a.lost) / Math.max(a.lost, 1);
+    const eB = Math.abs(got.defender.hpLost - b.lost) / b.lost;
+    check(`${m.mode} ${m.unit} x${m.atk_n} vs ${m.target}: ${b.lost} out, ${a.lost} back`,
+      eA < 0.006 && eB < 0.006,
+      `got ${got.defender.hpLost.toFixed(2)} / ${got.attacker.hpLost.toFixed(2)}`);
+    if (m.mode === 'patrol') {
+      patrolCells += 1;
+      worstA = Math.max(worstA, eA);
+      worstB = Math.max(worstB, eB);
+    } else {
+      strikeCells += 1;
+    }
+  }
+  check('every patrol cell was replayed', patrolCells === 24, String(patrolCells));
+  check('and every strike cell alongside it, as its own reference',
+    strikeCells === 24, String(strikeCells));
+  check('both channels now fit under half a per cent',
+    worstA < 0.005 && worstB < 0.005,
+    `attacker ${(worstA * 100).toFixed(3)}%, defender ${(worstB * 100).toFixed(3)}%`);
+
+  // The defect this closed, stated as the number it produced.
+  check('the worst cell was 45% out on the attacker before the defender was attenuated',
+    (() => {
+      const got = simulate({ mode: 'patrol', attacker: { unit: 'tac', count: 40 },
+        defender: { unit: 'ac', count: 20 }, rounds: 1 });
+      // 110.46 measured; the old model reported the unattenuated 160.00.
+      return Math.abs(got.attacker.hpLost - 110.46) < 0.6
+        && Math.abs(got.attacker.hpLost - 160.0) > 40;
+    })());
+  check('the band is a tenth of what shipped, and no longer blamed on discreteness',
+    PATROL.attritionRange[1] - PATROL.attritionRange[0] < 0.01
+    && PATROL.cellsMeasured === 33
+    && !/probably discrete/.test(PROVENANCE['PATROL.attrition'].note));
+  check('patrol stays estimated, because c is not pinned to the printed decimal',
+    PROVENANCE['PATROL.attrition'].confidence === 'estimated'
+    && simulate({ mode: 'patrol', attacker: { unit: 'int', count: 10 },
+      defender: { unit: 'ac', count: 20 } }).coverage.level === 'estimated');
+  // A fixed point has to actually converge, and the rows have to sum to it.
+  check('the defender rows still sum to the solved stack total',
+    (() => {
+      const got = simulate({ mode: 'patrol',
+        attacker: { rows: [{ unit: 'tac', count: 20 }] },
+        defender: { rows: [{ unit: 'ac', count: 10 }, { unit: 'ht', count: 10 }] },
+        rounds: 1 });
+      const sum = got.defender.rows.reduce((t, r) => t + (r.damageDealt || 0), 0);
+      return Math.abs(sum - got.defender.damageDealt) < 0.01;
+    })());
+}
+
+// ===========================================================================
+console.log('\n12x. building damage for the nine units that had no figure');
+// ===========================================================================
+// The original sweep only ever flew LAND attackers, so convoys, the Balloon
+// and every air and naval unit had no entry at all — not a bracket, not a
+// floor, nothing. The heavy tank had a FLOOR, because its one reading was
+// censored against a fortress it destroyed outright.
+{
+  const bd = rows.filter((r) => r.experiment === 'building_damage_rest'
+    && r.meta.detail);
+  let cells = 0;
+  for (const r of bd) {
+    const m = r.meta;
+    const b = m.detail['B.1.bldg.1'] || {};
+    if (b.lost == null) continue;
+    if ((b.pct || 0) >= 99.9) continue;
+    const terr = { land: 'land', air: 'air', naval: 'sea' }[m.atk_class];
+    const got = simulate({
+      terrain: m.unit === 'bal' ? 'land' : terr,
+      defenderTerrain: 'land',
+      attacker: { unit: m.unit, count: m.atk_n },
+      defender: { unit: 'inf', count: 60,
+        buildings: [{ code: 'fortress', level: 5, hpPct: 100 }] },
+    });
+    check(`${m.unit} vs a level-5 fortress: ${b.lost}`,
+      got.defender.damageToBuildings !== null
+      && Math.abs(got.defender.damageToBuildings - b.lost) < 0.06,
+      `got ${got.defender.damageToBuildings === null ? 'withheld'
+        : got.defender.damageToBuildings.toFixed(2)}`);
+    cells += 1;
+  }
+  check('every one of the nine was replayed', cells === 9, String(cells));
+  check('and no unit in the roster is left without a figure',
+    Object.keys(UNITS).every((u) => BUILDING_DAMAGE_PER_EFFECTIVE_UNIT[u] !== undefined),
+    Object.keys(UNITS).filter((u) => BUILDING_DAMAGE_PER_EFFECTIVE_UNIT[u] === undefined)
+      .join(', ') || 'all present');
+  check('nothing is censored any more', Object.keys(BUILDING_DAMAGE_FLOOR).length === 0);
+
+  // Two units deal EXACTLY zero, which is a reading and not an absence.
+  check('convoys and submarines cannot hurt a building at all',
+    BUILDING_DAMAGE_PER_EFFECTIVE_UNIT.convoy === 0
+    && BUILDING_DAMAGE_PER_EFFECTIVE_UNIT.sub === 0);
+  check('and the engine reports 0.00 for them rather than withholding',
+    simulate({ attacker: { unit: 'convoy', count: 5 },
+      defender: { unit: 'inf', count: 60,
+        buildings: [{ code: 'fortress', level: 5 }] } })
+      .defender.damageToBuildings === 0);
+
+  // The fliers' figures are round only once the post-fire law is applied to
+  // building damage as well, which the engine did not do.
+  check('building damage is attenuated on the same paths the unit damage is',
+    (() => {
+      const z = simulate({ terrain: 'air', defenderTerrain: 'land',
+        attacker: { unit: 'zep', count: 5 },
+        defender: { unit: 'inf', count: 60,
+          buildings: [{ code: 'fortress', level: 5 }] } });
+      // 30.00 x E(5) = 150.00 unattenuated; the server prints 147.20.
+      return Math.abs(z.defender.damageToBuildings - 147.20) < 0.1
+        && Math.abs(z.defender.damageToBuildings - 150.0) > 2;
+    })());
+  check('and the corrected flier figures are round',
+    BUILDING_DAMAGE_PER_EFFECTIVE_UNIT.int === 1.0
+    && BUILDING_DAMAGE_PER_EFFECTIVE_UNIT.tac === 6.0
+    && BUILDING_DAMAGE_PER_EFFECTIVE_UNIT.zep === 30.0);
+}
+
+// ===========================================================================
+console.log('\n14. coverage of the record itself');
+// ===========================================================================
+{
+  const counts = {};
+  for (const r of rows) counts[r.experiment] = (counts[r.experiment] || 0) + 1;
+  const replayed = ['semantics', 'unit_stats', 'hp_scaling', 'air_vs_ground', 'trenches',
+    'fortress', 'buildings', 'patrol', 'mixed_stacks', 'survivable_rig',
+    'stack_order', 'allocation', 'hero_sides', 'multi_round',
+    'offdiag', 'trench_gaps', 'hero_output_curves', 'hero_other_terrain',
+    'building_damage', 'class_matrix', 'balloon', 'trench_generality',
+    'edges', 'bldg_caps', 'last_edges', 'terrain', 'position', 'close_out', 'naval_matrix', 'air_matrix',
+    'land_attacks_air', 'air_defends_land', 'sea_vs_land', 'land_vs_sea',
+    'range_roster', 'return_fire', 'mixed_range',
+    'target_terrain', 'embarked_hp', 'embarked_class',
+    'defence_matrix', 'balloon_class', 'naval_air_column', 'embarked_convoy',
+    'class_matrix_2', 'balloon_columns', 'attenuation_scope', 'multi_round_types',
+    'hero_other_defending', 'hero_other_curves', 'hero_own_curves',
+    'hero_air_attacking', 'hero_class_columns', 'hero_columns_small',
+    'togo_b_disagreement', 'togo_b_shape', 'togo_b_kind', 'hero_hp_scaling',
+    'land_hero_attacking', 'land_hero_screen', 'hero_new_buffs', 'hank_sides',
+    'land_hero_target_class', 'land_hero_def_class',
+    'm_f_generality', 'building_levels', 'e_n_gaps', 'patrol_pin', 'building_damage_rest',
+    'field_coverage', 'debark_class', 'long_rounds',
+    // Heroes are now modelled and replayed above: the sweeps that measured
+    // them are physics the engine reproduces, not declared omissions.
+    'heroes', 'hero_scaling', 'hero_table', 'hero_levels', 'air_rounds'];
+  // hero_targets is a DISCLOSURE sweep: it found HP-channel buffs the engine
+  // has no term for, so they are declared and escalate the banner rather than
+  // being replayed.
+  // Section 20 replays these; it runs after this guard, so they are named here
+  // rather than left to look unreplayed.
+  const replayedLater = ['repair_cost', 'repair_damaged', 'bombardment',
+    'bombardment_law', 'bombardment_own', 'bombardment_finish',
+    'bombardment_lucien2', 'togo_buff_clean',
+    'mutual', 'mutual_law', 'mutual_order', 'mutual_control', 'mutual_rounds',
+    'real_army', 'fortress_hp_scale', 'update_counts', 'update_counts_army',
+    'bughunt', 'fort_drift', 'late_drift', 'fortress_dr_low'];
+  const notReplayed = Object.keys(counts).filter(
+    (e) => !replayed.includes(e) && !replayedLater.includes(e));
+  console.log(`  note  replayed: ${replayed.map((e) => `${e} ${counts[e] || 0}`).join(', ')}`);
+  console.log(`  note  NOT replayed: ${notReplayed.map((e) => `${e} ${counts[e]}`).join(', ') || 'none'}`);
+  // 'heroes' is measured but deliberately unmodelled: every reading is level
+  // 10 and the 1-20 curve is untouched, so shipping one level as the mechanic
+  // would put a confident number on 19 unmeasured ones. Declared, not dropped.
+  // stack_limits is a constraints probe, not a physics sweep: its readings are
+  // server refusals, and they are encoded in STACK_GROUP rather than replayed.
+  // What remains are the two CONSTRAINT probes, whose readings are server
+  // refusals encoded in STACK_GROUP and HEROES.maxLevel rather than physics to
+  // replay: which types may share a stack, and each hero's real level cap.
+  // Constraint probes (server refusals, encoded rather than replayed) plus
+  // hero_targets -- which is NOT replayed for a specific reason worth keeping
+  // written down. Its attacker was wiped in all sixteen hero runs (400.0 of a
+  // 400.0 pool), so its output column is the attacker's own pool repeated,
+  // not a measurement of anything. What it did establish is the HP-POOL
+  // channel, read off the defender's row pools, and this engine has no term
+  // for that. Replaying it would mean asserting the engine reproduces numbers
+  // that carry no information. survivable_rig is the same sweep rerun with an
+  // attacker that lives, and that one IS replayed, in full.
+  // hero_hp_cap joins them: every one of its readings is a server REFUSAL
+  // ("Max hp for 2 Infantry is 47.200000") rather than a battle. The numbers
+  // it yields are in HEROES[].hpBuffs and are asserted through the pools that
+  // use them, which is a stronger check than replaying a refusal.
+  // Declared, with the reason each is not a battle to replay:
+  //   stack_limits / hero_caps / hero_hp_cap  server REFUSALS, not battles.
+  //     Their numbers live in STACK_GROUP, HEROES.maxLevel and HEROES.hpBuffs,
+  //     and are asserted through the pools and levels that use them.
+  //   hero_targets  the wiped-attacker screen; its output column is the
+  //     attacker's own pool repeated and carries no information.
+  //   hero_curves  superseded by hero_output_curves, which re-read the same
+  //     curves from single-type stacks with no baseline subtraction.
+  //   variance  stochastic by construction. A deterministic engine cannot
+  //     replay a roll; VARIANCE_BAND records what the 60 samples showed.
+  //   terrain / position / building_damage / fortress_edges  measured and
+  //     recorded as constants (EMBARKED_COEF, UNIT_RANGE, BUILDING_DAMAGE,
+  //     FORTRESS_MAX_LEVEL) but not yet computed by simulate(), so there is
+  //     nothing to replay them against. Each is named in NOT_MEASURED.
+  //   repair_building / repair_hero / hero_repair  SCOPE and SHAPE probes for
+  //     the recovery bill, not bills to reproduce. repair_building establishes
+  //     that a damaged building contributes nothing and repair_hero/hero_repair
+  //     that a hero contributes time but no resources; all three are asserted
+  //     as invariants in section 20, against configurations built there, which
+  //     is a stronger check than replaying one stack's printed total.
+  const declaredNonReplay = ['stack_limits', 'hero_caps', 'hero_targets',
+    'hero_hp_cap', 'hero_curves', 'variance', 'fortress_edges',
+  //   bombardment_friendly / bombardment_melee  a THREE-stack blast and a
+  //     melee split. This engine models two sides, so the friendly-fire cell
+  //     has no representation in it at all, and the melee split is a declared
+  //     gap. Both are asserted as facts about the record in section 21 instead.
+  //   bombardment_lucien  superseded by bombardment_lucien2, which re-read the
+  //     same levels outside every measured radius.
+    'repair_building', 'repair_hero', 'hero_repair', 'hero_repair_all',
+  //   multi_stack / multi_stack_idle / multi_stack_focus  MORE THAN ONE STACK
+  //     A SIDE, which this engine does not model and says so. Not a gap in the
+  //     record -- the three laws are measured to the printed decimal and are
+  //     in MULTI_STACK -- but a gap in the FORM: computing them needs a
+  //     position in kilometres and a target per stack, and this page asks for
+  //     neither. It is declared in SCOPE_LIMITS rather than NOT_MEASURED
+  //     precisely so it cannot hide here as an open question. Section 24
+  //     asserts the arithmetic against the readings directly instead.
+    'multi_stack', 'multi_stack_idle', 'multi_stack_focus',
+    'bombardment_friendly', 'bombardment_melee', 'bombardment_lucien'];
+  void declaredNonReplay;
+  check('every unreplayed experiment is one the engine declares and explains',
+    notReplayed.every((e) => declaredNonReplay.includes(e)),
+    notReplayed.join(', ') || 'none');
+  check('heroes are recorded as measured but not modelled',
+    PROVENANCE['HEROES.measured'].confidence === 'measured'
+    && /DELIBERATELY NOT MODELLED/.test(PROVENANCE['HEROES.measured'].note));
+  // This used to assert simply that SOME hero gap was still on display,
+  // because for most of this project's life the hero model had a hole in it
+  // and the page had to say so. The last hero-shaped hole — an "unstable" own
+  // attack — is closed. What is still declared is much narrower and the
+  // assertion now says which: one ability, one geometry, at one distance.
+  const heroGaps = NOT_MEASURED.filter(
+    (g) => /hero/i.test(g.key) || /hero/i.test(g.what));
+  check('the one hero gap still on display is the melee split, and nothing wider',
+    heroGaps.length === 1 && heroGaps[0].key === 'bombardment_melee_split',
+    heroGaps.map((g) => g.key).join(', ') || 'none');
+  // The HP channel is MODELLED now, not disclosed: the pool must actually
+  // carry the buff. marco raises a Tank's max HP by 1.12 at level 10.
+  const marcoTanks = simulate({
+    attacker: { rows: [{ unit: 'inf', count: 20 }] },
+    defender: { rows: [{ unit: 'lt', count: 10 }], hero: { code: 'marco', level: 10 } },
+  });
+  const plainTanks = simulate({
+    attacker: { rows: [{ unit: 'inf', count: 20 }] },
+    defender: { rows: [{ unit: 'lt', count: 10 }] },
+  });
+  const lt = marcoTanks.defender.rows.find((r) => r.unit === 'lt');
+  const ltPlain = plainTanks.defender.rows.find((r) => r.unit === 'lt');
+  check('an HP buff is applied to the pool, not merely announced',
+    Math.abs(lt.pool - ltPlain.pool * 1.12) < 1e-6,
+    `${lt.pool} vs ${ltPlain.pool} x 1.12`);
+  check('and the hero itself now carries a pool and takes damage',
+    marcoTanks.defender.rows.some((r) => r.isHero && r.pool === 60
+      && r.hpLost > 0),
+    JSON.stringify(marcoTanks.defender.rows.find((r) => r.isHero)));
+  check('while the same hero over infantry does not raise that caveat',
+    !simulate({ attacker: { rows: [{ unit: 'inf', count: 20 }] },
+      defender: { rows: [{ unit: 'inf', count: 30 }], hero: { code: 'marco', level: 10 } } })
+      .coverage.caveats.some((c) => /max HP of/.test(c)));
+  check('the HP channel is recorded as measured AND modelled',
+    /^MODELLED\./.test(PROVENANCE['HEROES.hpChannel'].note),
+    PROVENANCE['HEROES.hpChannel'].note.slice(0, 80));
+  check('and the level-6 discontinuity that forbids fitting it is on the record',
+    /DISCONTINUITY at level 6/.test(PROVENANCE['HEROES.hpChannel'].note));
+
+  // This assertion used to demand the note say "measured against INFANTRY
+  // only". That limitation is gone -- all nine land types have been screened --
+  // so the test now demands the two things that are still true and still
+  // constrain a reader: the buff is per unit type, and the non-infantry
+  // figures come from one level.
+  check('the hero model states the buff is per unit type, not per stack',
+    /M IS PER UNIT TYPE/.test(PROVENANCE['HEROES.law'].note),
+    PROVENANCE['HEROES.law'].note.slice(0, 120));
+  check('and discloses that a hero has two attack columns',
+    /TWO ATTACK COLUMNS/.test(PROVENANCE['HEROES.law'].note));
+  check('and that a buff has a side',
+    /DEFENCE-ONLY/.test(PROVENANCE['HEROES.law'].note));
+  check('and that curves are points rather than formulas',
+    /CURVES ARE MEASURED POINTS/.test(PROVENANCE['HEROES.law'].note));
+  check('and states the floor beneath which a buff would still be hiding',
+    /DETECTION FLOOR/.test(PROVENANCE['HEROES.law'].note));
+  check('composite saturation and allocation are both recorded as measured',
+    PROVENANCE['STACK.saturation'].confidence === 'measured'
+    && PROVENANCE['STACK.allocation'].confidence === 'measured');
+  check('and the patrol attrition band is recorded as estimated, not measured',
+    PROVENANCE['PATROL.attrition'].confidence === 'estimated');
+  check('while the patrol maxRounds behaviour is recorded as measured',
+    PROVENANCE['PATROL.rounds'].confidence === 'measured');
+}
+
+// ===========================================================================
+console.log('\n15. the page cannot contradict the model');
+// ===========================================================================
+// The standing-limits list was prose in index.html, and prose does not get
+// re-derived when a measurement overturns something. It ended up telling the
+// reader that a stack saturates in ROSTER order and that damage splits by
+// attack x count -- both measured, both found wrong, both replaced in the
+// engine -- and that multi-round battles and range had never been exercised,
+// long after both were measured and modelled. A limitations list that
+// contradicts the model is aimed squarely at the reader who came to check.
+{
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  check('the standing-limits list is a rendered container, not prose',
+    /<ul class="limits-list" id="limits-list"><\/ul>/.test(html),
+    (html.match(/<ul class="limits-list"[^>]*>/) || ['absent'])[0]);
+  check('and app.js fills it from NOT_MEASURED',
+    /DATA\.NOT_MEASURED/.test(readFileSync(new URL('../app.js', import.meta.url), 'utf8')));
+  // The second list, added when multi-stack was measured and NOT modelled.
+  // Same discipline, opposite meaning: this one is rendered from SCOPE_LIMITS,
+  // and if it ever collapses back into the gap list the reader stops being
+  // told that the answer exists and is theirs to apply.
+  check('the scope-limits list is its own rendered container',
+    /<ul class="limits-list" id="scope-list"><\/ul>/.test(html),
+    (html.match(/id="scope-list"[^>]*>/) || ['absent'])[0]);
+  check('with a heading that does not read as a measurement gap',
+    /What it does not do, though the answer is known/.test(html));
+  // The lede used to say flatly "These are gaps in the measurement record",
+  // which became false the moment a measured-but-unmodelled list sat under it.
+  // A panel whose introduction contradicts its first entry is the same defect
+  // this section exists to catch, one paragraph higher.
+  check('and a lede that does not call the scope list a measurement gap',
+    !/These are gaps in\s+the measurement record/.test(html)
+    && /apply it yourself/.test(html));
+  check('no rendered sentence doubles its full stop',
+    /function endStop/.test(readFileSync(new URL('../app.js', import.meta.url), 'utf8')));
+  check('and app.js fills it from SCOPE_LIMITS, not from NOT_MEASURED',
+    /DATA\.SCOPE_LIMITS/.test(readFileSync(new URL('../app.js', import.meta.url), 'utf8')));
+  check('the page never claims to compute more than one stack a side',
+    !/\b(multi-stack|multiple stacks) (support|modelled|supported)\b/i.test(html));
+
+  // The specific claims that went stale. Each of these is a law the engine
+  // computes the OPPOSITE of, so finding one in the page is a live defect.
+  const contradictions = [
+    [/saturates as a whole in roster\s+order/i, 'roster-order saturation (overturned: strongest-first)'],
+    [/splits by attack&nbsp;&times;&nbsp;count/i, 'attack x count allocation (overturned: target factor x count)'],
+    [/Multi-round battles\.<\/strong> Every measurement used exactly one round/i,
+      'multi-round never measured (it is measured and modelled)'],
+    [/Positioning and range\.<\/strong> Never exercised/i,
+      'range never exercised (all seventeen units are bisected)'],
+    [/refuses to accept it in the air[^<]*<\/li>\s*<\/ul>/i,
+      'the Balloon as wholly unmeasured (it is measured in land terrain)'],
+  ];
+  for (const [re, what] of contradictions) {
+    check(`the page no longer asserts ${what}`, !re.test(html));
+  }
+
+  // And the positive statement: whatever the page says about range has to
+  // match the table the engine uses.
+  check('the distance note quotes the measured melee reach',
+    new RegExp(`melee ${MELEE_RANGE}&nbsp;km`).test(html),
+    (html.match(/id="distance-note"[^>]*>([^<]{0,80})/) || [])[1] || 'absent');
+  check('and does not still quote the unbisected infantry figure',
+    !/artillery 50, railgun 150, infantry 1/.test(html));
+}
+
+// ===========================================================================
+console.log('\n16. the page can express what the engine models');
+// ===========================================================================
+// A control the engine reads but the page cannot set is a modelled law the
+// user cannot reach, and it fails silently — the number on screen is simply
+// always the default. Two of these existed at once: terrain became per-side
+// and the page had one control, and a hero's HP started mattering with no box
+// to type it in. A third was subtler: the defender-terrain control was added,
+// rendered, read into state, and never given a listener, so it sat there
+// looking functional and changed nothing.
+{
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const app = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+
+  check('the page has a defender-terrain control',
+    /id="def-terrain"/.test(html));
+  check('and it offers air, which the attacker control does not need',
+    /id="def-terrain"[\s\S]{0,400}value="air"/.test(html));
+  check('the page has a hero HP control',
+    /id="\{s\}-hero-hp"/.test(html));
+
+  // The listener. This is the one that failed: present in the markup, read in
+  // readGlobals, and absent from the list of ids that get wired.
+  // DERIVED, not hard-coded. This used to assert the literal list
+  // ['terrain', 'def-terrain', 'distance'], which meant the guard broke the
+  // moment a fourth control was added — and a guard that fails on every
+  // addition teaches people to edit the guard rather than read it. It now
+  // reads the ids the app actually pulls out of the DOM in readDomToState()
+  // and requires each one to be wired, which is the property that matters and
+  // is the same fix coverageOf() got: derive the claim, do not restate it.
+  const readsBlock = (app.match(/function readDomToState\(\)[\s\S]*?\n\}/)
+    || [''])[0];
+  const readIds = [...new Set(
+    [...readsBlock.matchAll(/\$\('([a-z-]+)'\)/g)].map((mm) => mm[1]))];
+  const listenList = (app.match(/for \(const id of \[([^\]]*)\]\)/) || [
+    '', ''])[1];
+  const listened = [...listenList.matchAll(/'([a-z-]+)'/g)].map((mm) => mm[1]);
+  const wiredElsewhere = ['rounds', 'mode', 'builders'];
+  const unwired = readIds.filter(
+    (id) => !listened.includes(id) && !wiredElsewhere.includes(id));
+  check('every global control the engine reads is also LISTENED to',
+    readIds.length >= 4 && unwired.length === 0,
+    unwired.length ? `read but never wired: ${unwired.join(', ')}`
+      : `${readIds.length} read, all wired`);
+  check('the mutual-attack control exists, is read, and is wired',
+    /id="mutual"/.test(html) && readIds.includes('mutual')
+      && listened.includes('mutual'),
+    `markup ${/id="mutual"/.test(html)}, read ${readIds.includes('mutual')}, `
+      + `wired ${listened.includes('mutual')}`);
+  check('and the hero HP box has its own listener',
+    /hpBox\.addEventListener/.test(app));
+
+  // ---- THE BATTLE IS FOUGHT ON DEMAND, NOT ON EVERY KEYSTROKE ------------
+  // The page recomputed live. That reads well in a demo and badly in use: you
+  // are half way through typing "120" and the outcome has already been fought
+  // at 1 and at 12, and the figure on screen belongs to a stack nobody meant.
+  check('there is a Start battle button',
+    /id="run"[^>]*class="btn btn-go"/.test(html) && />Start battle</.test(html));
+  check('and it is the primary control, not Copy link',
+    !/id="share"[^>]*btn-primary/.test(html),
+    'Copy link copies a URL, which is not what anyone came here to do');
+  check('the outcome says so when it is out of date',
+    /id="stale-note"/.test(html) && /aria-live="polite"/.test(html));
+  check('and it is polite, not assertive — it fires on every keystroke',
+    !/id="stale-note"[^>]*aria-live="assertive"/.test(html));
+  check('input takes the light path; only runBattle() simulates',
+    /function runBattle\(\)/.test(app)
+    && /ENGINE\.simulate/.test((app.match(/function runBattle\(\)[\s\S]*?\n\}/) || [''])[0])
+    && !/ENGINE\.simulate/.test((app.match(/\nfunction recompute\(\)[\s\S]*?\n\}/) || [''])[0]),
+    'recompute() must not simulate; that is what made every keystroke a battle');
+  // ENTER. A form with several inputs and no submit button does not fire
+  // `submit` on Enter in Chrome at all, so a submit listener looks right,
+  // reads right, and never runs. Both are wired; the keydown one is the one
+  // that works, and it was found by driving a real browser.
+  check('Enter fights the battle, by keydown and not only by submit',
+    /\$\('builders'\)\.addEventListener\('keydown', onEnter\)/.test(app)
+    && /\$\('global-row'\)\.addEventListener\('keydown', onEnter\)/.test(app));
+  check('and a stray form submit cannot reload the page',
+    /\$\('builders'\)\.addEventListener\('submit'[^;]*preventDefault/.test(app));
+  // The four callers that mean "fight it" rather than "the inputs moved".
+  for (const [what, near] of [['first paint', 'First paint'],
+    ['a shared link', 'A shared link must show its battle'],
+    ['Reset', 'Reset: a complete new state'],
+    ['Swap sides', 'Swap sides: an explicit command']]) {
+    check(`${what} fights the battle rather than leaving a stale panel`,
+      new RegExp(`runBattle\\(\\);[^\n]*\n?[^\n]*${near.slice(0, 20)}`).test(app)
+      || app.includes(near),
+      near);
+  }
+  // A CONTROL'S OWN STATE IS NOT A RESULT. updateRoundsNote() decides whether
+  // the rounds box is visible at all, so leaving it on the fought path meant
+  // unticking "fight to the finish" did nothing until Start battle was
+  // pressed. Fourth silent dead control in this project, and it arrived within
+  // minutes of adding the button that was meant to make the page calmer.
+  check('the rounds control is refreshed on the path an EDIT takes',
+    /updateRoundsNote\(null\)/.test(
+      (app.match(/\nfunction recompute\(\)[\s\S]*?\n\}/) || [''])[0]),
+    'otherwise the rounds box stays hidden until the battle is fought');
+  // And a hidden element must actually be hidden. The UA sheet gives
+  // [hidden] `display: none` at the lowest specificity, so any rule of ours
+  // setting `display` beats it: #rounds-label had .hidden === true and
+  // display: block, leaving "Stop after (rounds)" over a note saying it would
+  // not stop.
+  check('the hidden attribute beats our own display rules',
+    /\[hidden\] \{ display: none !important; \}/.test(
+      readFileSync(new URL('../styles.css', import.meta.url), 'utf8')));
+
+
+  // ---- HP INPUT: decimals, and absolute hit points -----------------------
+  // The boxes were type="number" step="1", so 87.5 was rejected and 17.3 --
+  // the figure the game's own Army Details tab shows -- could not be entered
+  // at all. The source form's field is pattern="[\d.]+%?" and takes either
+  // form; this one does now, for unit rows AND for the hero, which has hit
+  // points like anything else.
+  check('no HP box is still integer-only',
+    !/hp\.min = '1'; hp\.max = '100'; hp\.step = '1';/.test(app)
+    && !/id="\{s\}-hero-hp"[^>]*step="1"/.test(html),
+    'a step of 1 rejects both the decimal and the absolute figure');
+  check('the unit HP box accepts the source form\'s own pattern',
+    /hp\.setAttribute\('pattern', '\[\\\\d\.\]\+%\?'\)/.test(app));
+  check('and so does the hero HP box',
+    /id="\{s\}-hero-hp"[\s\S]{0,200}pattern="\[\\d\.\]\+%\?"/.test(html));
+  check('clampHp keeps decimals rather than rounding them away',
+    /function clampHp[\s\S]{0,220}Math\.round\(n \* 1e4\) \/ 1e4/.test(app)
+    && !/function clampHp[\s\S]{0,160}Math\.max\(1, Math\.round\(n\)\)/.test(app));
+  check('absolute HP is divided by the HERO-BUFFED max, not the base max',
+    /function rowMaxHP[\s\S]{0,400}heroHpBuff/.test(app),
+    'with Marco in the stack a tank\'s shown HP is out of the buffed maximum');
+  check('an unparseable HP keeps the last good value instead of becoming 100%',
+    /r\.hpBad = !parsed;/.test(app) && /last value kept/.test(app));
+
+  // The share link uses '.' between fields AND a decimal HP contains one.
+  check('every share-link decode rejoins the HP tail instead of truncating it',
+    (app.match(/hpRest|hpRest2|legacy\.slice\(2/g) || []).length >= 4,
+    'inf.30.86.35 must decode as 86.35, not 86');
+  check('and the encoder emits the decimal',
+    /fmtHpPct\(r\.hpPct\)\]\.join\('\.'\)/.test(app));
+
+  // A COSMETIC HELPER MUST NOT BE ABLE TO STOP THE CALCULATION. The HP caption
+  // threw on a scope slip and took recompute() with it: every figure on the
+  // page froze at its last value while the inputs went on accepting edits. The
+  // caption now lives in the row's stats line, so it is updateStackNotes()
+  // that must be guarded -- the property is the same one either way.
+  check('the caption writer cannot break recompute()',
+    /try \{ updateStackNotes\(\); \} catch/.test(app),
+    'it only writes captions; it must never be load-bearing');
+  // And it must not sit inside the input grid. .urow-grid is align-items:end
+  // over a 5.4em column, so anything added inside .field-hp made that cell
+  // taller and lifted the input off the baseline its neighbours sit on.
+  check('the HP readout is not inside the input grid',
+    !/hpField\.append\(hpLabel, hp, /.test(app)
+    && /hpField\.append\(hpLabel, hp\);/.test(app),
+    'it belongs in the stats line below, which has the width for it');
+  check('and the HP box points at the stats line for screen readers',
+    /hp\.setAttribute\('aria-describedby', uid \+ '-stats'\)/.test(app));
+
+
+  // ---- ROUNDS ARE AN OUTPUT, NOT AN INPUT --------------------------------
+  // The page used to require a round count, defaulting to 1, because every
+  // MEASUREMENT behind this model used exactly one round. That is the research
+  // rig leaking into the product: nobody knows in advance how long a battle
+  // lasts, and the source calculator ships with maxRounds at 100 and a help
+  // page saying a battle runs "until one side dies" unless told otherwise.
+  check('the page has a fight-to-the-finish control, on by default',
+    /id="fight-out"[^>]*checked/.test(html));
+  check('and it is read and wired like every other global control',
+    /state\.fightToEnd = !!\$\('fight-out'\)\.checked/.test(app)
+    && /'fight-out'/.test((app.match(/for \(const id of \[[^\]]*\]\)/) || [''])[0]));
+  check('the share link carries it',
+    /&fo=1/.test(app) && /fightToEnd: parts\.fo === '1'/.test(app));
+  check('the rounds box is enabled from the RENDER path, not just at start-up',
+    /function updateRoundsNote[\s\S]{0,700}box\.disabled = !!state\.fightToEnd/.test(app),
+    'set only in writeStateToDom it stayed greyed out after unticking — the '
+      + 'same dead-control failure as the defender-terrain select');
+
+  // The share link. It carried the stacks and dropped terrain, distance and
+  // the hero, so "Copy link" handed out a link to a DIFFERENT battle.
+  for (const [re, what] of [
+    [/&t=\$\{cfg\.terrain\}/, 'attacker terrain'],
+    [/&dt=\$\{cfg\.defenderTerrain\}/, 'defender terrain'],
+    [/&km=\$\{cfg\.distance\}/, 'distance'],
+    [/s\.hero \? \[s\.hero\.code, s\.hero\.level,/, 'the hero, its level and its HP'],
+    [/&mu=1/, 'the mutual-attack flag'],
+  ]) {
+    check(`the share link carries ${what}`, re.test(app));
+  }
+  check('and decoding tolerates links written before those fields existed',
+    /chunks\.length < 3/.test(app) && /chunks\[3\]/.test(app));
+
+  // Both hero tables reach the level box. The six air/naval heroes were fully
+  // modelled while the box stayed disabled for them, stuck at level 10 —
+  // exactly the state the record was in before they were measured.
+  check('the hero level box looks in BOTH tables',
+    /const defOf = \(code\) => HEROES\[code\] \|\| HEROES_REFUSED\[code\]/.test(app));
+  check('and the hero option group no longer says nothing is measured',
+    !/Nothing measured on land/.test(app)
+    && /Air and naval stacks only/.test(app));
+}
+
+// ===========================================================================
+console.log('\n17. provenance notes cannot contradict the data beside them');
+// ===========================================================================
+// This project has now found the same defect six times: a hand-written claim
+// about what is known, sitting next to the data that disproves it. The
+// standing-limits list said stacks saturate in roster order. coverageOf() said
+// ground-attacking-air had never been measured. TRENCH.gaps said 12 of 21
+// levels were missing. HEROES.levels said only buffs vary with level.
+// TRENCH_POOL said level 10 was not pinned to two decimals — with the bracket
+// that pins it exported three lines away. resolution_order described a death
+// rule the rounds ladder had already overturned.
+//
+// Each was fixed by hand. This checks the class rather than the instances.
+{
+  // 1. A note that claims something is unpinned must not sit beside a bracket
+  //    that pins it.
+  for (const [lvl, br] of Object.entries(TRENCH_POOL_BRACKET || {})) {
+    const twoDp = [];
+    for (let v = Math.floor(br[0] * 100); v <= Math.ceil(br[1] * 100); v += 1) {
+      if (v / 100 >= br[0] && v / 100 <= br[1]) twoDp.push(v / 100);
+    }
+    if (twoDp.length === 1) {
+      check(`trench ${lvl}: bracket pins one 2-dp value, so the note must not deny it`,
+        !new RegExp(`Level ${lvl} does not`).test(PROVENANCE.TRENCH_POOL.note),
+        `bracket ${JSON.stringify(br)} -> ${twoDp[0]}`);
+    }
+  }
+
+  // 2. No note may call a building cap unknown while the table holds a number.
+  const capsKnown = Object.values(BUILDINGS).every((b) => typeof b.maxLevel === 'number');
+  check('no live note calls a building cap unknown while every cap is a number',
+    !capsKnown || Object.entries(PROVENANCE)
+      .filter(([, v]) => v.confidence !== 'superseded')
+      .every(([, v]) => !/never probed higher|max level.*unknown/i.test(v.note || '')),
+    'caps: ' + Object.entries(BUILDINGS).map(([c, b]) => `${c}=${b.maxLevel}`).join(' '));
+
+  // 3. A 'measured' note may not describe its own subject as assumed. The
+  //    escape hatch is deliberate: a note that says what USED to be assumed,
+  //    and marks it closed, is exactly what this project wants to keep.
+  const closing = /SUPERSEDED|CLOSED|no longer|used to|MEASURED NOW|READ NOW|was an artifact|turned out|is a measurement now|does clamp|is pinned too/i;
+  for (const [k, v] of Object.entries(PROVENANCE)) {
+    if (v.confidence !== 'measured') continue;
+    const n = v.note || '';
+    const claim = n.match(/[^.]*\b(is assumed|not measured|never submitted|not pinned)\b[^.]*\./i);
+    if (!claim) continue;
+    check(`${k}: a measured note admitting an assumption must mark it closed`,
+      closing.test(n), claim[0].trim().replace(/\s+/g, ' ').slice(0, 100));
+  }
+
+  // 4. Every gap the app declares must still be absent from the measured data,
+  //    which is the same drift in the other direction.
+  check('no declared gap names a constant the table now holds',
+    NOT_MEASURED.every((g) => !/^class_matrix_precision$|^range_roster$|^defence_matrix$|^multi_round_heavy_units$|^hero_other_terrain_levels$/.test(g.key)),
+    NOT_MEASURED.map((g) => g.key).join(', '));
+
+  // 5. And the count of open gaps is pinned, so closing one silently — or
+  //    letting one reappear — shows up here rather than in a reader's face.
+  // This used to read "three gaps remain, and all three say why more requests
+  // will not help", and both halves were true when written. Neither is now.
+  // togo_b_unstable — the one that said it needed "a mechanism nobody has
+  // proposed yet" — is closed: the mechanism was in the author's own help
+  // page, and measuring it took 100 requests. What replaced it is a genuinely
+  // different KIND of gap, one with a route, so the suite pins the count and
+  // then asserts each gap against what it actually claims rather than against
+  // a blanket "unclosable".
+  // Three again. It went to four when exp_fort_drift separated a second thing
+  // out of the fortress residual — the attacker's output running low from
+  // round seven — and back to three when exp_late_drift found that the
+  // attacker's output had been right all along and the DEFENDER's mitigation
+  // was wrong. The count is pinned in both directions on purpose: a gap
+  // appearing without anyone noticing is as bad as one closing silently.
+  check('three gaps remain', NOT_MEASURED.length === 3,
+    NOT_MEASURED.map((g) => g.key).join(', '));
+  check('and the late-round output residual is NOT among them — it was closed, '
+    + 'not forgotten',
+    !NOT_MEASURED.some((g) => g.key === 'late_round_output')
+    && /superseded/i.test(PROVENANCE['FORTRESS.residual.remaining'].confidence),
+    NOT_MEASURED.map((g) => g.key).join(', '));
+  const unclosable = NOT_MEASURED.filter(
+    (g) => /nothing available|no black-box|not known|nobody has proposed/i
+      .test(`${g.closedBy} ${g.why}`));
+  check('the two that cannot be closed still say exactly why',
+    unclosable.length === 2
+    && unclosable.map((g) => g.key).sort().join(',')
+      === 'air_to_air_mechanism,return_fire_generality',
+    unclosable.map((g) => g.key).join(', '));
+  check('and the one that CAN be closed names the configuration that would',
+    NOT_MEASURED.filter((g) => !unclosable.includes(g))
+      .every((g) => g.closedBy && g.closedBy.length > 60),
+    NOT_MEASURED.filter((g) => !unclosable.includes(g))
+      .map((g) => `${g.key}: ${g.closedBy}`).join(' | ').slice(0, 160));
+  check('the closed gap is gone and its hero is now a computed quantity',
+    !NOT_MEASURED.some((g) => g.key === 'togo_b_unstable')
+    && !!BOMBARDMENT.togo_b && BOMBARDMENT.togo_b.rounds === 6);
+}
+
+// ===========================================================================
+console.log('\n18. the variance band, which the page never showed');
+// ===========================================================================
+// The engine has always computed it and app.js never rendered it, so every
+// figure on screen was the variance-off value presented alone. The game rolls
+// one uniform ±10% per side per round — ONE roll for the whole stack — and a
+// ±10% swing is the difference between an attack working and not.
+{
+  const r = simulate({
+    attacker: { rows: [{ unit: 'inf', count: 30 }] },
+    defender: { rows: [{ unit: 'cav', count: 20 }] },
+  });
+  for (const [who, side] of [['attacker', r.attacker], ['defender', r.defender]]) {
+    check(`${who} carries a variance band`,
+      Array.isArray(side.hpLostBand) && side.hpLostBand.length === 2,
+      JSON.stringify(side.hpLostBand));
+    check(`  and it straddles the figure at exactly ±10%`,
+      Math.abs(side.hpLostBand[0] - side.hpLost * 0.9) < 1e-9
+      && Math.abs(side.hpLostBand[1] - side.hpLost * 1.1) < 1e-9);
+  }
+  // ONE roll per side, so the band does NOT narrow as the stack grows. A
+  // per-unit roll would; that is the hypothesis the 60 samples ruled out.
+  const wide = simulate({
+    attacker: { rows: [{ unit: 'inf', count: 200 }] },
+    defender: { rows: [{ unit: 'cav', count: 200 }] },
+  });
+  check('the band is the full ±10% however big the stack is',
+    Math.abs(wide.attacker.hpLostBand[1] / wide.attacker.hpLost - 1.1) < 1e-9,
+    'a per-unit roll would narrow it — 60 samples say it does not');
+  check('and a withheld figure carries no band rather than a band around null',
+    simulate({ attacker: { unit: 'bal', count: 10 }, defender: { unit: 'sub', count: 10 } })
+      .defender.hpLostBand === null
+    || simulate({ attacker: { unit: 'bal', count: 10 }, defender: { unit: 'sub', count: 10 } })
+      .defender.hpLost !== null);
+
+  // And the page renders it, which is the half that was missing.
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const app = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  check('both score panels have a slot for the band',
+    /id="sb-a-band"/.test(html) && /id="sb-d-band"/.test(html));
+  check('and app.js fills it from hpLostBand',
+    /s\.hpLostBand/.test(app) && /with variance on/.test(app));
+  check('the band is styled to sit under the figure, not compete with it',
+    /\.figure-band/.test(readFileSync(new URL('../styles.css', import.meta.url), 'utf8')));
+}
+
+// ===========================================================================
+console.log('\n19. what the form offers, versus what was ever sent');
+// ===========================================================================
+// Every audit before this one worked from something this project WROTE DOWN:
+// the gap list, the provenance table, the engine's own outputs. Each found real
+// holes and each could only find holes someone had thought to describe. The
+// form is the one inventory nobody authored — the complete surface the server
+// offers, discovered rather than declared — so comparing it against everything
+// ever sent is the one check that does not beg its own question.
+//
+// It found two live defects that no note mentioned.
+{
+  const fc = rows.filter((r) => r.experiment === 'field_coverage').pop();
+  check('every field the form offers has been exercised at least once',
+    fc && fc.meta.untouched.length === 0,
+    fc ? `${fc.meta.sent}/${fc.meta.total}, untouched: ${fc.meta.untouched.join(', ') || 'none'}`
+      : 'no coverage row recorded');
+
+  // DEBARK IS NOT SEA. Only the HP half had ever been measured there.
+  const dk = rows.filter((r) => r.experiment === 'debark_class' && r.meta.detail);
+  let cells = 0;
+  for (const r of dk) {
+    const m = r.meta;
+    const b = m.detail['B.1.1'] || {};
+    if (b.lost == null || (b.pct || 0) >= 99.9) continue;
+    const got = m.probe === 'attacker'
+      ? simulate({ terrain: 'debark', defenderTerrain: m.tgt_terrain,
+          attacker: { rows: [{ unit: 'inf', count: 40 }] },
+          defender: { rows: [{ unit: m.target, count: m.target === 'bb' ? 60 : 200 }] } })
+      : simulate({ terrain: 'land', defenderTerrain: m.tgt_terrain,
+          attacker: { rows: [{ unit: m.attacker, count: 10 }] },
+          defender: { rows: [{ unit: 'inf', count: 200 }] } });
+    check(`${m.probe === 'attacker' ? 'embarked in debark vs ' + m.target
+      : m.attacker + ' vs a target in ' + m.tgt_terrain}: ${b.lost}`,
+      Math.abs(got.defender.hpLost - b.lost) < 0.05,
+      `got ${got.defender.hpLost.toFixed(2)}`);
+    cells += 1;
+  }
+  check('both halves of the debark question were replayed', cells >= 8, String(cells));
+  check('debark and sea are separate lists now, and only one changes the class',
+    EMBARKED_TERRAIN.includes('debark') && EMBARKED_TERRAIN.includes('sea')
+    && EMBARKED_CLASS_CHANGE_TERRAIN.includes('sea')
+    && !EMBARKED_CLASS_CHANGE_TERRAIN.includes('debark'));
+
+  // PATROL ITERATES ROUNDS. It multiplied one round by the duration, which is
+  // right below one round and 3.3x wrong at a hundred.
+  const lr = rows.filter((r) => r.experiment === 'long_rounds' && r.meta.detail);
+  let rungs = 0;
+  let worst = 0;
+  for (const r of lr) {
+    const m = r.meta;
+    const b = m.detail['B.1.1'] || {};
+    if (b.lost == null) continue;
+    const got = simulate({
+      mode: m.mode === 'patrol' ? 'patrol' : 'strike',
+      attacker: { unit: 'tac', count: 10 },
+      defender: { unit: 'inf', count: 4000 },
+      rounds: m.rounds,
+    });
+    const err = Math.abs(got.defender.hpLost - b.lost) / b.lost;
+    worst = Math.max(worst, err);
+    check(`${m.mode} x${m.rounds} rounds: ${b.lost}`, err < 0.015,
+      `got ${got.defender.hpLost.toFixed(2)} (${(err * 100).toFixed(2)}%)`);
+    rungs += 1;
+  }
+  check('the long-round ladder was replayed on both modes', rungs === 8, String(rungs));
+  check('and patrol is no longer 3.3x out at a hundred rounds', worst < 0.015,
+    `${(worst * 100).toFixed(2)}%`);
+  check('while fractional patrol rounds stay proportional, which IS measured',
+    (() => {
+      const one = simulate({ mode: 'patrol', attacker: { unit: 'tac', count: 10 },
+        defender: { unit: 'inf', count: 4000 }, rounds: 1 }).defender.hpLost;
+      return [0.25, 0.5, 0.75].every((f) => {
+        const got = simulate({ mode: 'patrol', attacker: { unit: 'tac', count: 10 },
+          defender: { unit: 'inf', count: 4000 }, rounds: f }).defender.hpLost;
+        return Math.abs(got - one * f) < 0.01;
+      });
+    })());
+
+  // The invariant that caught the accumulation bug, now run across durations.
+  for (const n of [1, 2, 3, 5, 8]) {
+    const r = simulate({
+      attacker: { rows: [{ unit: 'inf', count: 20 }, { unit: 'art', count: 20 }] },
+      defender: { rows: [{ unit: 'inf', count: 60 }] }, rounds: n });
+    for (const side of ['attacker', 'defender']) {
+      if (r[side].damageDealt === null) continue;
+      if (!r[side].rows.some((x) => typeof x.damageDealt === 'number')) continue;
+      const sum = r[side].rows.reduce(
+        (t, x) => t + (typeof x.damageDealt === 'number' ? x.damageDealt : 0), 0);
+      check(`${n} rounds: ${side} rows still sum to the stack`,
+        Math.abs(sum - r[side].damageDealt) < 0.01,
+        `${sum.toFixed(2)} vs ${r[side].damageDealt.toFixed(2)}`);
+    }
+  }
+}
+
+
+// ===========================================================================
+// 20. THE RECOVERY BILL — the nine summary columns nobody had read back
+// ===========================================================================
+// The four earlier audits each worked from an inventory this project wrote.
+// The form audit was the first one the SERVER authored, and its mirror image
+// — the columns the server PRINTS — had never been looked at. Nine of the
+// eleven were being parsed and stored and never read: 2,719 hours readings
+// sitting in results.jsonl, paid for by sweeps aimed at something else.
+//
+// These checks exist so the law cannot rot back into "proportional to HP
+// lost", which is what it looks like on every full-HP reading and is wrong.
+console.log('\n20. the recovery bill');
+{
+  const ROSTER = Object.keys(UNITS);
+  check('every unit in the roster has a replacement cost',
+    ROSTER.every((u) => REPAIR_COST[u]),
+    ROSTER.filter((u) => !REPAIR_COST[u]).join(', '));
+  check('every unit in the roster has a repair time',
+    ROSTER.every((u) => REPAIR_HOURS[u] && typeof REPAIR_HOURS[u].hours === 'number'),
+    ROSTER.filter((u) => !REPAIR_HOURS[u]).join(', '));
+  check('every repair time is quoted inside its own measured bracket',
+    ROSTER.every((u) => {
+      const t = REPAIR_HOURS[u];
+      return t.hours >= t.bracket[0] && t.hours < t.bracket[1];
+    }), 'a midpoint outside its bracket is a transcription error');
+  check('infantry are free to replace and everything else is not',
+    Object.keys(REPAIR_COST.inf).length === 0
+      && ROSTER.filter((u) => u !== 'inf').every((u) => Object.keys(REPAIR_COST[u]).length > 0),
+    'inf was the one unit with an empty cost vector in every reading');
+
+  // --- replay every live repair reading -----------------------------------
+  const TERR = { land: 'land', air: 'air', sea: 'sea' };
+  let replayed = 0;
+  for (const rec of rows) {
+    if (rec.experiment !== 'repair_cost' && rec.experiment !== 'repair_damaged') continue;
+    const m = rec.meta;
+    const s = (m.summary || {})['B.1'];
+    if (!s) continue;
+    const terrain = m.terrain || 'land';
+    const hpPct = m.def_hp ? parseFloat(m.def_hp) : 100;
+    const r = simulate({
+      attacker: { rows: [{ unit: m.attacker || 'ht', count: 300 }],
+                  terrain: TERR[terrain] || 'land' },
+      defender: { rows: [{ unit: m.unit, count: m.n, hpPct }], terrain },
+      rounds: 100,
+    });
+    const bill = r.defender.repair;
+    if (!bill) { cannotReproduce(`repair bill for ${m.unit}`, 'a bill', null); continue; }
+    replayed += 1;
+    for (const k of ['food', 'fish', 'iron', 'wood', 'coal', 'oil', 'gas', 'cash']) {
+      const want = s[k] || 0;
+      check(`${m.unit}${m.def_hp ? ` @${m.def_hp}` : ''}: ${k} bill matches the server`,
+        Math.abs((bill[k] || 0) - want) <= Math.max(1, want * 0.001),
+        `engine ${bill[k]}, server ${want}`);
+    }
+    check(`${m.unit}${m.def_hp ? ` @${m.def_hp}` : ''}: repair hours match the server`,
+      bill.hours === s.hours, `engine ${bill.hours}, server ${s.hours}`);
+  }
+  check('the repair replay actually ran', replayed >= 17, `${replayed} readings replayed`);
+
+  // --- the reading that separates the law from "proportional to HP lost" ---
+  // Twenty artillery at 10% HP lose a tenth of the HP and cost the same to
+  // replace. This is the whole reason ue is defined against CURRENT per-unit
+  // HP; if someone rewrites it as lost/maxHP, every full-HP test still passes
+  // and only this one fails.
+  const full = simulate({
+    attacker: { rows: [{ unit: 'ht', count: 300 }] },
+    defender: { rows: [{ unit: 'art', count: 20 }] }, rounds: 100 });
+  const hurt = simulate({
+    attacker: { rows: [{ unit: 'ht', count: 300 }] },
+    defender: { rows: [{ unit: 'art', count: 20, hpPct: 10 }] }, rounds: 100 });
+  check('a wiped 10%-HP stack loses a tenth of the HP',
+    Math.abs(hurt.defender.hpLost * 10 - full.defender.hpLost) < 0.5,
+    `${hurt.defender.hpLost} vs ${full.defender.hpLost}`);
+  check('...and is billed exactly the same — the bill is per WHOLE UNIT',
+    hurt.defender.repair.cash === full.defender.repair.cash
+      && hurt.defender.repair.hours === full.defender.repair.hours,
+    `${JSON.stringify(hurt.defender.repair)} vs ${JSON.stringify(full.defender.repair)}`);
+
+  // --- scope: heroes in, buildings out ------------------------------------
+  const noBldg = simulate({
+    attacker: { rows: [{ unit: 'ht', count: 20 }] },
+    defender: { rows: [{ unit: 'inf', count: 10 }] }, rounds: 1 });
+  const withHero = simulate({
+    attacker: { rows: [{ unit: 'ht', count: 20 }] },
+    defender: { rows: [{ unit: 'inf', count: 10 }], hero: { code: 'alvin', level: 10 } },
+    rounds: 1 });
+  check('a hero adds to the repair time (measured: 33 h -> 81 h)',
+    withHero.defender.repair && noBldg.defender.repair
+      && withHero.defender.repair.hours > noBldg.defender.repair.hours,
+    `${withHero.defender.repair && withHero.defender.repair.hours} vs `
+      + `${noBldg.defender.repair && noBldg.defender.repair.hours}`);
+  check('a hero adds NO resources (measured: every cell stayed at zero)',
+    withHero.defender.repair && withHero.defender.repair.cash === 0,
+    `cash ${withHero.defender.repair && withHero.defender.repair.cash}`);
+
+  // A building that takes damage must not move the bill. The fortress in the
+  // measured run lost 180 HP and changed neither a resource cell nor the hours.
+  const bldg = simulate({
+    attacker: { rows: [{ unit: 'ht', count: 20 }] },
+    defender: { rows: [{ unit: 'inf', count: 10 }],
+                buildings: [{ code: 'fortress', level: 5 }] },
+    rounds: 1 });
+  if (bldg.defender.repair && bldg.defender.rows) {
+    const unitUe = bldg.defender.rows.reduce((t, r) => (
+      (typeof r.hpLost === 'number' && r.pool > 0)
+        ? t + r.hpLost / (r.pool / (r.count || 1)) : t), 0);
+    check('a damaged building contributes nothing to the bill',
+      Math.abs(bldg.defender.repair.unitEquivalents - unitUe) < 1e-6
+        && bldg.defender.repair.cash === 0,
+      `ue ${bldg.defender.repair.unitEquivalents} vs unit-only ${unitUe}`);
+  }
+
+  // --- the flooring rule --------------------------------------------------
+  // Floored once over the stack total, not per row. Two rows whose fractions
+  // sum past 1 are the only configuration that can tell the difference.
+  const twoRow = simulate({
+    attacker: { rows: [{ unit: 'ht', count: 40 }] },
+    defender: { rows: [{ unit: 'inf', count: 25 }, { unit: 'art', count: 25 }] },
+    rounds: 1 });
+  if (twoRow.defender.repair) {
+    const perRow = twoRow.defender.rows.reduce((t, r) => {
+      if (!(r.pool > 0) || typeof r.hpLost !== 'number') return t;
+      const ue = r.hpLost / (r.pool / (r.count || 1));
+      const rate = REPAIR_HOURS[r.unit];
+      return t + (rate ? Math.floor(rate.hours * ue) : 0);
+    }, 0);
+    const once = twoRow.defender.repair.hours;
+    check('hours floor once over the stack, never per row',
+      once >= perRow,
+      `stack-floored ${once}, row-floored ${perRow} — the corpus pins 62, not 61`);
+  }
+
+  check('the hero rate is quoted inside the bracket all 22 heroes agreed on',
+    HERO_REPAIR.hours >= HERO_REPAIR.bracket[0] && HERO_REPAIR.hours < HERO_REPAIR.bracket[1],
+    JSON.stringify(HERO_REPAIR));
+  // The shared rate was measured across the WHOLE table rather than
+  // generalised from the two heroes that first agreed. If a later session ever
+  // narrows this back to a sample, that is a claim about 22 heroes resting on
+  // two, and this assertion is where it should stop.
+  check('...and that bracket rests on the whole hero table, not a sample of it',
+    HERO_REPAIR.heroesMeasured === 'all 22',
+    `heroesMeasured = ${JSON.stringify(HERO_REPAIR.heroesMeasured)}`);
+  {
+    // Every hero must actually bill at the shared rate — a hero table that
+    // grew a per-hero override would otherwise pass silently.
+    const heroCodes = Object.keys(HEROES).slice(0, 4);
+    const bills = heroCodes.map((code) => {
+      const r = simulate({
+        attacker: { rows: [{ unit: 'ht', count: 20 }] },
+        defender: { rows: [{ unit: 'inf', count: 10 }], hero: { code, level: 10 } },
+        rounds: 1 });
+      return r.defender.repair && r.defender.repair.hours;
+    });
+    check('a hero always bills time and never resources, whichever hero it is',
+      bills.every((h) => typeof h === 'number' && h > 33),
+      `${heroCodes.join(', ')} -> ${bills.join(', ')}`);
+  }
+}
+
+
+// ===========================================================================
+// 21. THE BOMBARDMENT ABILITY — the gap that was closed by reading the manual
+// ===========================================================================
+// Two heroes were recorded as having an own attack that would not settle, and
+// the entry said it needed "a mechanism nobody has proposed yet". The
+// mechanism was on the site's own help page the whole time, under an anchor
+// the form links to from every control. These checks replay what measuring it
+// produced, and they are deliberately built on the ISOLATED cells — target
+// beyond the stack's reach, so the only two terms are the hero's flat own
+// attack and the ability itself.
+console.log('\n21. the bombardment ability');
+{
+  const isolated = (hero, dist, level = 10, atk = 10, def = 50) => simulate({
+    terrain: 'sea', defenderTerrain: 'sea', distance: dist,
+    attacker: { rows: [{ unit: 'sub', count: atk }], hero: { code: hero, level } },
+    defender: { rows: [{ unit: 'sub', count: def }] },
+    rounds: 1,
+  });
+
+  // A stack that cannot reach still fights, if it carries a hero that can.
+  // Without one the server returns no result rows at all — which is what this
+  // engine used to say happened in every case.
+  const noHero = simulate({
+    terrain: 'sea', defenderTerrain: 'sea', distance: 10,
+    attacker: { rows: [{ unit: 'sub', count: 10 }] },
+    defender: { rows: [{ unit: 'sub', count: 50 }] } });
+  check('submarines at 10 km with no hero: no battle, as before',
+    noHero.defender.hpLost === null || noHero.defender.hpLost === 0,
+    String(noHero.defender.hpLost));
+  check('the same stack with a hero aboard DOES fire (measured: 15.00 a round)',
+    Math.abs(isolated('togo', 10).defender.hpLost - 15.0) < 0.05,
+    String(isolated('togo', 10).defender.hpLost));
+  check('every hero with a measured reach is one this engine knows about',
+    Object.keys(HERO_REACH).every((c) => HEROES[c] || HEROES_OTHER_TERRAIN[c]),
+    Object.keys(HERO_REACH).join(', '));
+
+  // THE RADIUS SWEEP. 56.39 from 10 through 40 km, then 65.00 at 50 — the
+  // defender's losses go UP as it moves further away, because past the radius
+  // the attacker steps out of its own blast and stops absorbing part of it.
+  // Any model that treats the ability as a plain attack gets this backwards.
+  for (const [dist, want, atkWant] of [[10, 56.39, 8.6], [20, 56.39, 8.6],
+    [30, 56.39, 8.6], [40, 56.39, 8.6], [50, 65.00, 0.0]]) {
+    const r = isolated('togo_b', dist);
+    check(`togo_b at ${dist} km: defender loses ${want}`,
+      Math.abs(r.defender.hpLost - want) < 0.05,
+      `got ${r.defender.hpLost.toFixed(2)}`);
+    check(`togo_b at ${dist} km: its OWN stack loses ${atkWant}`,
+      Math.abs(r.attacker.hpLost - atkWant) < 0.06,
+      `got ${r.attacker.hpLost.toFixed(2)}`);
+  }
+  check('losses RISE past the radius — the attacker leaves its own blast',
+    isolated('togo_b', 50).defender.hpLost > isolated('togo_b', 40).defender.hpLost,
+    'if this ever inverts, the radius has been modelled as an attack range');
+
+  // THE SPLIT, across five attacker sizes at a fixed defender. Straight
+  // replay of the measured cells.
+  for (const [atkN, want] of [[5, 60.13], [10, 56.39], [25, 48.16],
+    [50, 39.90], [100, 31.62]]) {
+    const r = isolated('togo_b', 10, 10, atkN, 50);
+    check(`togo_b, ${atkN} attackers: defender loses ${want}`,
+      Math.abs(r.defender.hpLost - want) < 0.06,
+      `got ${r.defender.hpLost.toFixed(2)}`);
+  }
+
+  // THE LEVEL LADDER, read at 50 km where the target is alone in the blast so
+  // the reading is the hero's 15.00 plus the whole ability.
+  for (const [lv, want] of [[1, 25], [2, 30], [3, 30], [4, 35], [5, 40],
+    [6, 45], [7, 50], [8, 55], [9, 60], [10, 65], [15, 90], [20, 115]]) {
+    const r = isolated('togo_b', 50, lv);
+    check(`togo_b level ${lv} at 50 km: ${want}`,
+      Math.abs(r.defender.hpLost - want) < 0.05,
+      `got ${r.defender.hpLost.toFixed(2)}`);
+  }
+  check('plain Tōgō is flat at 15.00 across the whole level range',
+    [1, 5, 10, 15, 20].every((lv) =>
+      Math.abs(isolated('togo', 50, lv).defender.hpLost - 15.0) < 0.05),
+    [1, 5, 10, 15, 20].map((lv) =>
+      isolated('togo', 50, lv).defender.hpLost.toFixed(2)).join(', '));
+
+  // DURATION. Six rounds, then only the hero's own attack. The discriminating
+  // shape is a per-round contribution that COLLAPSES rather than decaying.
+  const cum = (n) => isolated('togo_b', 10, 10, 10, 50).defender.hpLost && simulate({
+    terrain: 'sea', defenderTerrain: 'sea', distance: 10,
+    attacker: { rows: [{ unit: 'sub', count: 10 }], hero: { code: 'togo_b', level: 10 } },
+    defender: { rows: [{ unit: 'sub', count: 50 }] }, rounds: n }).defender.hpLost;
+  const r6 = cum(6); const r7 = cum(7); const r8 = cum(8);
+  check('rounds 1-6 each deliver the ability (measured 337.75 by round 6)',
+    Math.abs(r6 - 337.75) < 1.0, `got ${r6.toFixed(2)}`);
+  check('round 7 collapses to roughly the hero\'s own attack (measured +14.77)',
+    (r7 - r6) < 20 && (r7 - r6) > 10, `got +${(r7 - r6).toFixed(2)}`);
+  check('and round 8 matches round 7 — expired, not decaying',
+    Math.abs((r8 - r7) - (r7 - r6)) < 1.0,
+    `+${(r7 - r6).toFixed(2)} then +${(r8 - r7).toFixed(2)}`);
+  check('the ability declares 6 rounds for Tōgō and 9 for Lucien',
+    BOMBARDMENT.togo_b.rounds === 6 && BOMBARDMENT.lucien_g.rounds === 9);
+
+  // LUCIEN — a radius that grows with level, which is the axis that made a
+  // radius look like an unstable coefficient in the first place.
+  const lucien = (dist, level) => simulate({
+    distance: dist,
+    attacker: { rows: [{ unit: 'inf', count: 10 }], hero: { code: 'lucien_g', level } },
+    defender: { rows: [{ unit: 'inf', count: 50 }] }, rounds: 1 });
+  for (const [lv, radius] of [[1, 20], [5, 30], [10, 40]]) {
+    const inside = lucien(radius, lv).defender.hpLost;
+    const outside = lucien(50, lv).defender.hpLost;
+    check(`lucien_g level ${lv}: radius ${radius} km — losses rise outside it`,
+      outside > inside + 0.5, `${inside.toFixed(2)} inside, ${outside.toFixed(2)} outside`);
+  }
+  for (const [lv, want] of [[1, 23], [5, 28], [10, 38], [12, 38], [13, 43], [14, 43]]) {
+    const got = lucien(50, lv).defender.hpLost;
+    check(`lucien_g level ${lv} at 50 km: ${want}`, Math.abs(got - want) < 0.05,
+      `got ${got.toFixed(2)}`);
+  }
+  check('all fifteen of Lucien\'s levels are measured, none interpolated',
+    Array.from({ length: 15 }, (_, i) => i + 1)
+      .every((lv) => BOMBARDMENT.lucien_g.totalByLevel[lv] !== undefined));
+
+  // The two corrections this made to constants that were already in the file.
+  check('the split declares its extra participant rather than hiding it',
+    BOMBARDMENT_SPLIT.extraPool > 30 && BOMBARDMENT_SPLIT.extraPool < 50
+    && /not the hero pool|120\.6/i.test(BOMBARDMENT_SPLIT.extraPoolNote),
+    JSON.stringify(BOMBARDMENT_SPLIT.extraPool));
+  check('togo_b no longer carries a second buff curve — it was the same artifact',
+    !HEROES_OTHER_TERRAIN.togo_b.buffs.bb.curveDefending
+    && HEROES_OTHER_TERRAIN.togo_b.buffs.bb.curve[10]
+      === HEROES_OTHER_TERRAIN.togo.buffs.bb.curve[10],
+    `${HEROES_OTHER_TERRAIN.togo_b.buffs.bb.curve[10]} vs `
+      + `${HEROES_OTHER_TERRAIN.togo.buffs.bb.curve[10]}`);
+
+  // Straight replay of every isolated cell in the record, so a future edit to
+  // the constants has to survive the readings and not just the round numbers.
+  let replayed = 0;
+  for (const rec of rows) {
+    if (!['bombardment', 'bombardment_law', 'bombardment_own',
+      'bombardment_finish', 'bombardment_lucien2', 'togo_buff_clean']
+      .includes(rec.experiment)) continue;
+    const m = rec.meta;
+    const dist = m.distance;
+    if (dist === undefined || dist === null || dist <= MELEE_RANGE) continue;
+    if (m.rounds !== undefined && m.rounds !== 1) continue;
+    const want = ((m.detail || {})['B.1.1'] || {}).lost;
+    if (want == null) continue;
+    // The unit is not always in the meta -- bombardment_lucien2 records only
+    // the hero, level and distance -- so fall back to the hero, which fixes
+    // the terrain: Lucien is a land hero and Tōgō a naval one.
+    const landHero = m.hero === 'lucien' || m.hero === 'lucien_g';
+    const land = landHero || m.unit === 'inf' || m.atk === 'inf';
+    // togo_buff_clean is the one cell where the STACK also fires: battleships
+    // reach 75 km, so at 50 they are still shooting while sitting outside the
+    // ability's 40 km blast. That is what makes it a clean read of the buff.
+    const unit = land ? 'inf'
+      : (rec.experiment === 'togo_buff_clean' || m.unit === 'bb' || m.atk === 'bb'
+        ? 'bb' : 'sub');
+    const tgt = (rec.experiment === 'togo_buff_clean') ? 'cl' : unit;
+    const tgtN = (rec.experiment === 'togo_buff_clean') ? 200 : (m.def_n || 50);
+    const got = simulate({
+      terrain: land ? 'land' : 'sea', defenderTerrain: land ? 'land' : 'sea',
+      distance: dist,
+      attacker: { rows: [{ unit, count: m.atk_n || 10 }],
+        hero: { code: m.hero, level: m.level || 10 } },
+      defender: { rows: [{ unit: tgt, count: tgtN }] },
+      rounds: 1,
+    });
+    replayed += 1;
+    check(`${m.hero} lv${m.level || 10} at ${dist} km vs ${tgtN} ${tgt}: ${want}`,
+      got.defender.hpLost !== null && Math.abs(got.defender.hpLost - want) < 0.6,
+      `got ${got.defender.hpLost === null ? 'withheld' : got.defender.hpLost.toFixed(2)}`);
+  }
+  check('the isolated bombardment cells were actually replayed', replayed >= 40,
+    String(replayed));
+}
+
+
+// ===========================================================================
+// 22. MUTUAL ATTACKS — the half of the form that was never submitted
+// ===========================================================================
+// Until this stretch, every reading in results.jsonl was one stack attacking a
+// stack that was only defending: duel() is the only thing in the rig that ever
+// set a B-side target, and it always set 0. The engine therefore could not
+// express a configuration the form has offered since the first request.
+//
+// Measured, a mutual attack is TWO engagements. A attacks; the stacks are
+// updated; then B attacks with what survived, using its own attack column
+// against A's defence column. These checks replay the readings, including the
+// eight that were predicted from the law BEFORE being submitted.
+console.log('\n22. mutual attacks');
+{
+  const M = (au, an, bu, bn, rounds = 1) => simulate({
+    mutual: true,
+    attacker: { rows: [{ unit: au, count: an }] },
+    defender: { rows: [{ unit: bu, count: bn }] },
+    rounds,
+  });
+
+  check('the engine declares a mutual attack as two engagements',
+    MUTUAL.engagements === 2 && MUTUAL.destroyedNeverFires === true);
+
+  // The eight cells predicted in advance, across a roster whose attack and
+  // defence columns disagree in BOTH directions — st is 25.0/6.3 and ac is
+  // 6.0/12.0, so a rule that merely inflated everything fails the armoured car.
+  for (const [bu, wantA, wantB] of [
+    ['st', 226.12, 314.74], ['rrg', 220.67, 314.40], ['cav', 141.45, 250.00],
+    ['ac', 166.10, 315.00], ['inf', 62.00, 200.00], ['lart', 10.00, 100.00],
+    ['art', 51.00, 200.00], ['lt', 577.20, 315.00]]) {
+    const r = M('inf', 100, bu, 10);
+    check(`mutual 100 inf vs 10 ${bu}: attacker loses ${wantA}`,
+      Math.abs(r.attacker.hpLost - wantA) < 0.6,
+      `got ${r.attacker.hpLost.toFixed(2)}`);
+    check(`mutual 100 inf vs 10 ${bu}: defender loses ${wantB}`,
+      Math.abs(r.defender.hpLost - wantB) < 0.6,
+      `got ${r.defender.hpLost.toFixed(2)}`);
+  }
+
+  // A STACK DESTROYED IN ENGAGEMENT 1 NEVER FIRES. This is the whole content
+  // of "Army A attacks first", and it is the one cell that separates the two
+  // engagements from any single simultaneous exchange: a wiped DEFENDER still
+  // deals its full figure, measured long ago and unchanged, while a wiped
+  // mutual attacker deals nothing at all.
+  const dead = M('inf', 100, 'lart', 10);
+  check('ten light artillery are destroyed in engagement 1 and deal nothing',
+    Math.abs(dead.attacker.hpLost - 10.0) < 0.05 && dead.defender.wiped,
+    `attacker lost ${dead.attacker.hpLost.toFixed(2)} — 10.00 is the lart `
+      + 'DEFENCE column firing once, with no second engagement behind it');
+  const wipedDefender = simulate({
+    attacker: { rows: [{ unit: 'inf', count: 100 }] },
+    defender: { rows: [{ unit: 'lart', count: 10 }] }, rounds: 1 });
+  check('...where the same stack merely DEFENDING still deals its full figure',
+    wipedDefender.defender.wiped
+      && Math.abs(wipedDefender.attacker.hpLost - 10.0) < 0.05,
+    `${wipedDefender.attacker.hpLost.toFixed(2)}`);
+
+  // THE SIDE LETTER IS WORTH A FIFTH OF A STACK'S LOSSES.
+  const onA = M('inf', 100, 'st', 10).attacker.hpLost;
+  const onB = M('st', 10, 'inf', 100).defender.hpLost;
+  check('a hundred infantry lose 226.12 on side A and 285.56 on side B',
+    Math.abs(onA - 226.12) < 0.6 && Math.abs(onB - 285.56) < 0.6,
+    `${onA.toFixed(2)} vs ${onB.toFixed(2)}`);
+  check('so holding the A slot is strictly better for the same stack',
+    onA < onB - 1,
+    'if this ever inverts, the engagements have been ordered the wrong way');
+  check('and the declared example matches what the engine computes',
+    Math.abs(MUTUAL.aSlotAdvantageExample.onA - onA) < 0.6
+    && Math.abs(MUTUAL.aSlotAdvantageExample.onB - onB) < 0.6);
+
+  // THE PAGE'S OWN CONTROL, which is the reason to trust the rest: with only
+  // ONE side attacking, moving both stacks to the other army must change
+  // nothing. An earlier version of this experiment compared two different
+  // battles and reported that the page was wrong; the mirror keeps the roles.
+  const oneWay = simulate({
+    attacker: { rows: [{ unit: 'inf', count: 10 }] },
+    defender: { rows: [{ unit: 'st', count: 10 }] }, rounds: 1 });
+  check('one-sided: the infantry lose 63.00 and the stormtroopers 40.00',
+    Math.abs(oneWay.attacker.hpLost - 63.0) < 0.05
+    && Math.abs(oneWay.defender.hpLost - 40.0) < 0.05,
+    `${oneWay.attacker.hpLost.toFixed(2)} / ${oneWay.defender.hpLost.toFixed(2)}`);
+  check('and mutual costs both sides strictly more than one-sided does',
+    M('inf', 10, 'st', 10).defender.hpLost > oneWay.defender.hpLost,
+    'each side fires twice in a mutual round — once attacking, once defending');
+
+  // Multi-round, and the stop condition.
+  const r1 = M('inf', 100, 'ac', 10, 1);
+  const r2 = M('inf', 100, 'ac', 10, 2);
+  const r3 = M('inf', 100, 'ac', 10, 3);
+  check('mutual round 1: 166.10 / 315.00',
+    Math.abs(r1.attacker.hpLost - 166.10) < 0.6
+    && Math.abs(r1.defender.hpLost - 315.00) < 0.6,
+    `${r1.attacker.hpLost.toFixed(2)} / ${r1.defender.hpLost.toFixed(2)}`);
+  check('mutual round 2: 237.97 / 600.00',
+    Math.abs(r2.attacker.hpLost - 237.97) < 0.6
+    && Math.abs(r2.defender.hpLost - 600.00) < 0.6,
+    `${r2.attacker.hpLost.toFixed(2)} / ${r2.defender.hpLost.toFixed(2)}`);
+  check('and round 3 adds nothing — the defender is already gone',
+    Math.abs(r3.attacker.hpLost - r2.attacker.hpLost) < 0.05
+    && Math.abs(r3.defender.hpLost - r2.defender.hpLost) < 0.05,
+    `${r3.attacker.hpLost.toFixed(2)} / ${r3.defender.hpLost.toFixed(2)}`);
+
+  // Rows must still sum to their stack when a side fires twice in a round.
+  for (const r of [M('inf', 100, 'ac', 10), M('inf', 100, 'st', 10, 2)]) {
+    for (const side of ['attacker', 'defender']) {
+      const rowSum = r[side].rows.reduce(
+        (t, x) => t + (typeof x.hpLost === 'number' ? x.hpLost : 0), 0);
+      check(`mutual: ${side} rows still sum to the stack`,
+        Math.abs(rowSum - r[side].hpLost) < 0.01,
+        `${rowSum.toFixed(2)} vs ${r[side].hpLost.toFixed(2)}`);
+    }
+  }
+
+  // Straight replay of every mutual reading on file.
+  let replayed = 0;
+  for (const rec of rows) {
+    if (!['mutual', 'mutual_law', 'mutual_order', 'mutual_rounds']
+      .includes(rec.experiment)) continue;
+    const m = rec.meta;
+    if (m.mutual === false) continue;
+    if (m.a_target !== undefined && !(m.a_target === 'B.1' && m.b_target === 'A.1')) continue;
+    if (!m.a_unit || !m.b_unit) continue;
+    const wantA = ((m.detail || {})['A.1.1'] || {}).lost;
+    const wantB = ((m.detail || {})['B.1.1'] || {}).lost;
+    if (wantA == null || wantB == null) continue;
+    const got = M(m.a_unit, m.a_n, m.b_unit, m.b_n, Number(m.rounds) || 1);
+    replayed += 1;
+    check(`replay: ${m.a_n} ${m.a_unit} vs ${m.b_n} ${m.b_unit} x${m.rounds || 1}`,
+      Math.abs(got.attacker.hpLost - wantA) < 0.6
+      && Math.abs(got.defender.hpLost - wantB) < 0.6,
+      `${got.attacker.hpLost.toFixed(2)}/${got.defender.hpLost.toFixed(2)} vs `
+        + `${wantA}/${wantB}`);
+  }
+  check('the mutual readings were actually replayed', replayed >= 14,
+    String(replayed));
+}
+
+
+// ===========================================================================
+// 23. A REAL ARMY — the end-to-end check every synthetic sweep cannot be
+// ===========================================================================
+// Two armies read off a player's own screen: mixed types at awkward HP, a
+// hero, and a level-4 fortress. Everything else in this suite isolates one law
+// at a time, which is what makes a law that is individually right and wrongly
+// COMBINED invisible. This battle found three such defects in one afternoon,
+// and every one of them was hidden by the shape of the existing record rather
+// than by any weakness in it.
+//
+//   1. Building damage used ONE rate times the stack's effective units. Every
+//      building sweep used a single-type stack, where that and a per-row sum
+//      are the same number. A mixed army separates them 3.7x.
+//   2. A damaged row's HP fraction was multiplied in twice from round two on.
+//      Every multi-round sweep started at 100% HP, where the second factor is
+//      1 and the bug cannot show.
+//   3. A stack was called finished when its unit COUNT hit zero, so a defender
+//      whose last vehicle died with its hero still standing was declared alive
+//      and the battle stopped. Every measured multi-round battle ended with a
+//      pool at zero, not a hero alone.
+//
+// The armies' maxima are also an outside check on constants recovered purely
+// by black-box measurement: 35x20=700, 6x60=360, 17x25=425, 12x60=720 and
+// Kangal's 90 are exactly what the game itself displays.
+console.log('\n23. a real army');
+{
+  const A = { rows: [{ unit: 'inf', count: 30 }] };
+  const D = { rows: [{ unit: 'inf', count: 30 }] };
+  const one = simulate({ attacker: A, defender: D, rounds: 1 });
+  check('a single round reports one round fought and no decision',
+    one.rounds.fought === 1 && one.rounds.decided === false,
+    JSON.stringify(one.rounds));
+  const out = simulate({ attacker: A, defender: D, rounds: 100 });
+  check('fought to the finish, it stops when a side dies and says which round',
+    out.rounds.decided === true && out.rounds.fought > 1 && out.rounds.fought < 100,
+    JSON.stringify(out.rounds));
+  check('...and asking for more rounds than that changes nothing',
+    simulate({ attacker: A, defender: D, rounds: 500 }).rounds.fought === out.rounds.fought);
+  // The same even pair, stopped early: it takes seven rounds to decide, so at
+  // three it has not. (A weak stack against a strong one is NOT this test --
+  // that decides in round one.)
+  const stale = simulate({ attacker: A, defender: D, rounds: 3 });
+  check('a battle that runs out of rounds reports ranOut, not decided',
+    stale.rounds.decided === false && stale.rounds.ranOut === true,
+    JSON.stringify(stale.rounds));
+}
+
+{
+  const ATK = () => ({ rows: [
+    { unit: 'inf', count: 35, hpPct: (453.6 / 700) * 100 },
+    { unit: 'ac', count: 6, hpPct: (318.1 / 360) * 100 },
+    { unit: 'cav', count: 17, hpPct: (378.1 / 425) * 100 },
+  ] });
+  // The fortress level comes from the record, not from a literal: the player
+  // first said level 4 and then corrected it to 3, and both sets of readings
+  // are on file. A hard-coded 4 would have replayed the level-3 rows against
+  // the wrong building and blamed the engine.
+  const DEF = (lv, fortLevel = 4, fortPct = 100) => ({
+    rows: [{ unit: 'ac', count: 12, hpPct: (677.5 / 720) * 100 }],
+    hero: { code: 'kangal', level: lv, hpPct: (83.1 / 90) * 100 },
+    buildings: [{ code: 'fortress', level: fortLevel, hpPct: fortPct }],
+  });
+
+  check('the roster maxima match the game\'s own display',
+    UNITS.inf.maxHP * 35 === 700 && UNITS.ac.maxHP * 6 === 360
+    && UNITS.cav.maxHP * 17 === 425 && UNITS.ac.maxHP * 12 === 720
+    && HEROES.kangal.pool === 90,
+    'these were measured from scratch; the game shows 700/360/425/720/90');
+
+
+  check('a full level-3 fortress reduces damage by exactly 60%, as the site says',
+    Math.abs(fortressDR(BUILDINGS.fortress.poolAtLevel[3]) - 0.60) < 1e-9,
+    `${fortressDR(BUILDINGS.fortress.poolAtLevel[3])}`);
+  check('...and a full level-4 one by 75%',
+    Math.abs(fortressDR(BUILDINGS.fortress.poolAtLevel[4]) - 0.75) < 1e-9);
+
+
+  // A BUILDING'S HP BAR IS THE TOP LEVEL ONLY. The site's field treats "5" and
+  // "10%" as the same fortress, and "50" and "100%" likewise, so the bar is
+  // 0-50 whatever the level and a percentage is a percentage OF THAT BAND.
+  // Damage comes off the top: pool = (level - 1) x 50 + top-band HP.
+  for (const [lvl, pct, wantPool, wantDR] of [
+    [4, 100, 200, 0.750], [4, 10, 155, 0.615],
+    [3, 100, 150, 0.600], [5, 100, 250, 0.900]]) {
+    const r = simulate({
+      attacker: { rows: [{ unit: 'inf', count: 10 }] },
+      defender: { rows: [{ unit: 'inf', count: 10 }],
+        buildings: [{ code: 'fortress', level: lvl, hpPct: pct }] },
+      rounds: 1 });
+    const b = r.defender.buildings[0];
+    check(`a level-${lvl} fortress at ${pct}% of its bar holds ${wantPool} HP`,
+      Math.abs((b.hp + b.hpLost) - wantPool) < 0.01,
+      `${(b.hp + b.hpLost).toFixed(2)} — proportional-to-pool would give `
+        + `${(BUILDINGS.fortress.poolAtLevel[lvl] * pct / 100).toFixed(2)}`);
+    check(`...and reduces damage by ${(wantDR * 100).toFixed(1)}%`,
+      Math.abs(fortressDR(b.hp + b.hpLost) - wantDR) < 1e-6,
+      `${fortressDR(b.hp + b.hpLost)}`);
+  }
+  check('the two readings that separate the laws are on file',
+    rows.some((x) => x.experiment === 'fortress_hp_scale'),
+    'exp_fortress_hp_scale asked the site what its HP field counts');
+
+  // Replay every reading of this battle that is on file, at the tolerance the
+  // comparison actually supports: exact for one round, then a drift that is
+  // documented rather than tuned away.
+  let replayed = 0;
+  for (const rec of rows) {
+    if (rec.experiment !== 'real_army') continue;
+    const m = rec.meta;
+    const s = m.summary || {};
+    const wantA = (s['A.1'] || {}).hp_lost;
+    const wantB = (s['B.1'] || {}).hp_lost;
+    if (wantA == null || wantB == null) continue;
+    // The fortress spec on the record is "lvl4 100%" for the early runs and
+    // "lvl4 hp5" once the player corrected it -- level 4 but battered, 5 of the
+    // 50-HP top band. Both forms are parsed rather than assumed, because the
+    // whole point of this section is that a wrong building silently blames the
+    // engine.
+    const fortLevel = Number((/lvl(\d)/.exec(m.fortress || '') || [])[1]) || 4;
+    const fortAbs = /hp(\d+(?:\.\d+)?)/.exec(m.fortress || '');
+    const fortPct = fortAbs
+      ? (Number(fortAbs[1]) / BUILDINGS.fortress.hpPerLevel) * 100
+      : (Number((/(\d+)%/.exec(m.fortress || '') || [])[1]) || 100);
+    const r = simulate({ attacker: ATK(),
+      defender: DEF(m.hero_level, fortLevel, fortPct), rounds: m.rounds });
+    replayed += 1;
+    // "Fought out" is not a round number -- rounds 6, 7 and 8 are still
+    // running. It is whether the recorded battle ENDED, which the defender's
+    // total tells you: 760.6 is its whole pool.
+    const foughtOut = wantB >= 760;
+    // "Early" is not a round number either. A level-3 fortress falls sooner, so
+    // its round 5 sits as deep into the battle as a level-4's round 7 -- and
+    // keying the tolerance to the round number made the same model look exact
+    // at one fortress level and wrong at the other. What actually governs the
+    // agreement is how far the loser has been ground down: the two track
+    // closely while both sides are healthy and compound apart as one nears
+    // death. DEF_POOL is the defender's full 677.5 + 83.1.
+    const DEF_POOL = 760.6;
+    const tight = wantB < DEF_POOL * 0.65;
+    if (tight) {
+      check(`real army (fort ${fortLevel}@${Math.round(fortPct)}%), ${m.rounds} rd, hero lv${m.hero_level}: attacker ${wantA}`,
+        Math.abs(r.attacker.hpLost - wantA) <= Math.max(0.05, wantA * 0.01),
+        `got ${r.attacker.hpLost.toFixed(2)}`);
+      check(`real army (fort ${fortLevel}@${Math.round(fortPct)}%), ${m.rounds} rd, hero lv${m.hero_level}: defender ${wantB}`,
+        Math.abs(r.defender.hpLost - wantB) <= Math.max(0.05, wantB * 0.01),
+        `got ${r.defender.hpLost.toFixed(2)}`);
+    } else if (foughtOut) {
+      // What IS right about a battle fought to the end: the winner, and the
+      // loser's exact total.
+      check(`real army fought out (fort ${fortLevel}, hero lv${m.hero_level}): the DEFENDER is wiped`,
+        r.defender.wiped && !r.attacker.wiped
+        && Math.abs(r.defender.hpLost - wantB) < 0.05,
+        `defender lost ${r.defender.hpLost.toFixed(2)} of ${wantB}, `
+          + `attacker wiped=${r.attacker.wiped}`);
+      // This used to be reported rather than asserted, because the model drifted
+      // up to 5% by the end. Reading the server's OWN per-round survivor counts
+      // found the two causes -- damage allocated by opening counts instead of
+      // survivors, and a hero whose output never wore down -- and the drift is
+      // now under 1%. An assertion that once could not be made is made.
+      // 0.05 HP — the resolution of the number the site prints, not a
+      // percentage. This line has been walked down twice: it was 5% when the
+      // real army first arrived, 1% after the survivor-weighting and
+      // hero-decay defects, and 1.5% after the surplus-discard fix, which made
+      // it WORSE because these battles started running the extra round the
+      // site runs and carried more of the residual with them. Reading the
+      // fortress DR column closed that residual, and the worst relative error
+      // across every real-army row is now 0.0034%.
+      check(`real army fought out (fort ${fortLevel}, hero lv${m.hero_level}): attacker total`,
+        Math.abs(r.attacker.hpLost - wantA) <= 0.05,
+        `${r.attacker.hpLost.toFixed(2)} vs ${wantA} — `
+          + `${((r.attacker.hpLost - wantA) / wantA * 100).toFixed(4)}%`);
+      // THE LINE THIS SUITE COULD NOT ASSERT. For as long as the real-army
+      // rows have been on file this was a cannotReproduce reading "the site
+      // finishes the fortress; this model leaves it at 97-100%". It is an
+      // assertion now, exact on all ten rows and at three different pools.
+      // The cause was not the building at all: a saturated row's surplus
+      // damage was being passed to the hero, which killed the defender a round
+      // early and stopped the fortress short. See PROVENANCE['DAMAGE.surplusDiscarded'].
+      check(`real army fought out (fort ${fortLevel}, hero lv${m.hero_level}): fortress DESTROYED, exactly`,
+        r.defender.buildings[0].destroyed
+        && Math.abs(r.defender.buildings[0].hpLost
+          - (BUILDINGS.fortress.poolAtLevel[fortLevel]
+            - BUILDINGS.fortress.hpPerLevel * (1 - fortPct / 100))) < 0.005,
+        `${r.defender.buildings[0].hpLost.toFixed(4)} of `
+          + `${BUILDINGS.fortress.poolAtLevel[fortLevel]
+            - BUILDINGS.fortress.hpPerLevel * (1 - fortPct / 100)}, `
+          + `destroyed=${r.defender.buildings[0].destroyed}`);
+    } else {
+      // ASSERTED NOW, at the printed resolution. For most of this project
+      // these rounds could only be REPORTED: they were the "endgame drift",
+      // 1-4% and unexplained, and the suite printed them rather than pretend
+      // a tolerance around them meant anything. Three defects later — damage
+      // allocated by opening counts, a hero whose output never wore down, a
+      // saturated row's surplus passed on instead of dropped — and one
+      // unread column later, they are ordinary lines.
+      check(`real army, ${m.rounds} rd (fort ${fortLevel}, hero lv${m.hero_level}), attacker ${wantA}`,
+        Math.abs(r.attacker.hpLost - wantA) <= 0.05,
+        `engine ${r.attacker.hpLost.toFixed(2)}`);
+      check(`real army, ${m.rounds} rd (fort ${fortLevel}, hero lv${m.hero_level}), defender ${wantB}`,
+        Math.abs(r.defender.hpLost - wantB) <= 0.05,
+        `engine ${r.defender.hpLost.toFixed(2)}`);
+    }
+  }
+  check('the real-army readings were replayed', replayed >= 4, String(replayed));
+
+
+  // ---- THE SERVER'S OWN SURVIVOR COUNTS ----------------------------------
+  // settings() sent updateCounts="" for the whole project, so every reading on
+  // file is HP lost and nothing else: survivors, remaining pool and deaths
+  // were always INFERRED. Turning the switch on makes the site rewrite the
+  // form it returns with the post-battle figures, which checks the death rule
+  // everything else is built on -- and found two defects nothing else could.
+  {
+    const uc = rows.filter((x) => x.experiment === 'update_counts');
+    check('the server\'s own survivor counts are on file at last', uc.length >= 1,
+      `${uc.length} readings`);
+    for (const rec of uc) {
+      const back = rec.meta.form_back || {};
+      const d = rec.meta.detail || {};
+      // 10 inf v 10 inf, one round: A loses 50.0 with 2 dead, B loses 40.0.
+      const r = simulate({ attacker: { rows: [{ unit: 'inf', count: 10 }] },
+        defender: { rows: [{ unit: 'inf', count: 10 }] }, rounds: 1 });
+      for (const [slot, side] of [['A.1.1', r.attacker], ['B.1.1', r.defender]]) {
+        const srvLeft = Number(back[`${slot}.count`]);
+        const srvHp = Number(back[`${slot}.hp`]);
+        if (!Number.isFinite(srvLeft)) continue;
+        check(`${slot}: the engine's survivor count matches the server's own`,
+          side.unitsLeft === srvLeft, `${side.unitsLeft} vs ${srvLeft}`);
+        check(`${slot}: and so does the HP it says they have left`,
+          Math.abs((side.pool - side.hpLost) - srvHp) < 0.05,
+          `${(side.pool - side.hpLost).toFixed(2)} vs ${srvHp}`);
+      }
+      void d;
+    }
+  }
+
+  // Incoming damage is split by (target factor x SURVIVING count). Weighting
+  // by the opening count is right in round one and wrong from round two, and
+  // right always for a single-type stack -- which is every mixed-stack reading
+  // on file, all of them one round.
+  {
+    const two = simulate({
+      attacker: { rows: [{ unit: 'inf', count: 35, hpPct: (453.6 / 700) * 100 },
+        { unit: 'ac', count: 6, hpPct: (318.1 / 360) * 100 },
+        { unit: 'cav', count: 17, hpPct: (378.1 / 425) * 100 }] },
+      defender: { rows: [{ unit: 'ac', count: 12, hpPct: (677.5 / 720) * 100 }],
+        hero: { code: 'kangal', level: 9, hpPct: (83.1 / 90) * 100 },
+        buildings: [{ code: 'fortress', level: 4, hpPct: 10 }] },
+      rounds: 2 });
+    const byUnit = {};
+    for (const x of two.attacker.rows) byUnit[x.unit] = x;
+    // The server's readback after two rounds: 24 infantry on 294.9, 6 armoured
+    // cars on 258.7, 13 cavalry on 259.2.
+    for (const [u, left, hp, start] of [['inf', 24, 294.9, 453.6],
+      ['ac', 6, 258.7, 318.1], ['cav', 13, 259.2, 378.1]]) {
+      check(`round 2, ${u}: ${left} left on ${hp} HP, as the server reports`,
+        byUnit[u].count - byUnit[u].deaths === left
+        && Math.abs((start - byUnit[u].hpLost) - hp) < 0.1,
+        `${byUnit[u].count - byUnit[u].deaths} left on `
+          + `${(start - byUnit[u].hpLost).toFixed(1)}`);
+    }
+    check('allocationWeights uses survivors, not the opening count',
+      (() => {
+        const w = allocationWeights([{ unit: { code: 'inf' }, count: 35, deaths: 6 }]);
+        return Math.abs(w[0] - 0.5 * 29) < 1e-9;
+      })(), 'a row that has lost units draws less fire');
+  }
+
+  // A hero wears down like anything else. Its own output scales with its own
+  // HP -- measured long ago -- but the multiplier was baked in once from its
+  // OPENING HP, so it fired at full strength all battle.
+  {
+    const r2 = simulate({
+      attacker: { rows: [{ unit: 'inf', count: 35, hpPct: (453.6 / 700) * 100 },
+        { unit: 'ac', count: 6, hpPct: (318.1 / 360) * 100 },
+        { unit: 'cav', count: 17, hpPct: (378.1 / 425) * 100 }] },
+      defender: { rows: [{ unit: 'ac', count: 12, hpPct: (677.5 / 720) * 100 }],
+        hero: { code: 'kangal', level: 9, hpPct: (83.1 / 90) * 100 },
+        buildings: [{ code: 'fortress', level: 4, hpPct: 10 }] },
+      rounds: 2 });
+    const line = r2.derivation.find((x) => /^R2 Defender hero/.test(x.label));
+    check('a hero\'s round-2 contribution uses its CURRENT HP, not its opening HP',
+      line && Math.abs(line.value - 17.78) < 0.05,
+      line ? `${line.value.toFixed(2)} — 18.54 is the opening-HP figure, `
+        + '17.78 is what the site gives' : 'no R2 hero line');
+    const hero = r2.defender.rows.find((x) => x.isHero);
+    check('...and the hero is on 75.0 HP after two rounds, as the server says',
+      Math.abs((83.1 - hero.hpLost) - 75.0) < 0.05,
+      `${(83.1 - hero.hpLost).toFixed(2)}`);
+  }
+
+  // The three defects, asserted directly so none can quietly return.
+  {
+    // 1. Per-row building damage. One rate for the stack gives 10.41.
+    const r = simulate({ attacker: ATK(), defender: DEF(9), rounds: 1 });
+    check('building damage sums the rows, not one rate x the stack',
+      Math.abs(r.defender.damageToBuildings - 38.06) < 0.1,
+      `${r.defender.damageToBuildings.toFixed(2)} — a single infantry rate gives 10.41`);
+  }
+  {
+    // 2. A damaged stack must not be charged for its opening damage twice.
+    // Two rounds at 50% HP: round two's output must use the CURRENT fraction.
+    const half = simulate({ attacker: { rows: [{ unit: 'inf', count: 20, hpPct: 50 }] },
+      defender: { rows: [{ unit: 'inf', count: 20 }] }, rounds: 2 });
+    const line = half.derivation.find((d) => /^R2 Attacker output/.test(d.label));
+    const mm = line && /m\(([\d.]+)\)=([\d.]+)/.exec(String(line.formula));
+    check('a damaged row\'s m() argument and its value agree in later rounds',
+      !mm || Math.abs((0.05 + 0.95 * Number(mm[1])) - Number(mm[2])) < 1e-3,
+      mm ? `m(${mm[1]}) printed as ${mm[2]}, but 0.05+0.95x${mm[1]} = `
+        + `${(0.05 + 0.95 * Number(mm[1])).toFixed(4)}` : 'no R2 line');
+  }
+  {
+    // 3. A hero alone is still a live stack.
+    const heroOnly = simulate({
+      attacker: { rows: [{ unit: 'ht', count: 40 }] },
+      defender: { rows: [{ unit: 'inf', count: 2 }], hero: { code: 'kangal', level: 9 } },
+      rounds: 20 });
+    check('a stack whose units are dead but whose hero lives keeps fighting',
+      heroOnly.defender.wiped,
+      `defender pool left ${(heroOnly.defender.pool || 0).toFixed(2)} — the loop `
+        + 'used to stop the moment the unit count hit zero');
+  }
+}
+
+// ===========================================================================
+// 24. MORE THAN ONE STACK A SIDE — measured, and deliberately not modelled
+// ===========================================================================
+// Every reading before these seven was one stack attacking one stack, which is
+// also all this engine computes. So this section replays nothing: it asserts
+// the ARITHMETIC of the three laws against the recorded readings directly, and
+// then asserts that the app says out loud it does not do them.
+//
+// The distinction matters more than usual here. A law that is measured and
+// unmodelled is not a gap in the record, and filing it under "what nobody has
+// measured" would be a lie in the comfortable direction. It goes in
+// SCOPE_LIMITS, with what the player should do about it by hand.
+console.log('\n24. MORE THAN ONE STACK A SIDE');
+
+const msRows = rows.filter((r) => String(r.experiment).startsWith('multi_stack'));
+check('the multi-stack sweep is on disk, all seven requests',
+  msRows.length === 7, String(msRows.length));
+
+const msBy = (exp, tag) => msRows.find(
+  (r) => r.experiment === exp && (tag === undefined || r.meta.tag === tag));
+const rd = (row, slot) => row.readings[slot];
+
+// --- law 1: attacking one stack of a pile is attacking the pile ------------
+// A.1 attacks B.1 alone; B.2 is idle beside it at 0 km. If co-location did
+// nothing, B.2 would lose 0.0 and A.1 would lose one stack's worth of return
+// fire. Both halves of that are false.
+const idle = msBy('multi_stack_idle');
+check('an IDLE co-located stack still takes damage it was never aimed at',
+  rd(idle, 'B.2.1') === 20.0, String(rd(idle, 'B.2.1')));
+check('and the attacker\u2019s output is SPLIT between them, not doubled',
+  rd(idle, 'B.1.1') + rd(idle, 'B.2.1') === 40.0,
+  `${rd(idle, 'B.1.1')} + ${rd(idle, 'B.2.1')}`);
+check('the split is even between two identical stacks',
+  rd(idle, 'B.1.1') === rd(idle, 'B.2.1'));
+// Ten infantry defending deal 50.00 — measured long ago, and the number this
+// prediction was made from. A.1 takes two of them.
+check('BOTH co-located defenders answer, at full strength: 50 + 50',
+  rd(idle, 'A.1.1') === 100.0, String(rd(idle, 'A.1.1')));
+check('a stack that is not attacking takes nothing when nothing reaches it',
+  rd(idle, 'A.2.1') === 0.0, String(rd(idle, 'A.2.1')));
+
+// --- law 2: concentration adds, and the defender weakens between attackers --
+const focus = msBy('multi_stack_focus');
+check('two stacks on one target: the damage is exactly additive, 40 + 40',
+  rd(focus, 'B.1.1') === 80.0, String(rd(focus, 'B.1.1')));
+check('the FIRST attacker takes a full defensive answer',
+  rd(focus, 'A.1.1') === 50.0, String(rd(focus, 'A.1.1')));
+// B.1 is on 160 of 200 by the time it answers A.2 — a fifth of its pool gone
+// to A.1's 40. 50.00 x 0.8 = 40.00, and that is what A.2 loses.
+check('the SECOND takes 0.8 of one, the defender having lost a fifth answering the first',
+  rd(focus, 'A.2.1') === 50.0 * (1 - rd(focus, 'B.1.1') / 2 / 200),
+  `${rd(focus, 'A.2.1')} vs ${50.0 * (1 - rd(focus, 'B.1.1') / 2 / 200)}`);
+// THE SAME ARITHMETIC, PREDICTED FORWARD onto a configuration it was not
+// derived from: four stacks, two attacking two. A.1 fires first and takes
+// 50 + 50 from two untouched defenders; A.2 fires second and takes 45 + 45,
+// each defender now on 180 of 200.
+const base = msBy('multi_stack', 'no fortress');
+check('four stacks: the first attacker takes 50 + 50',
+  rd(base, 'A.1.1') === 100.0, String(rd(base, 'A.1.1')));
+check('and the second takes 45 + 45, predicted before it was submitted',
+  rd(base, 'A.2.1') === 2 * 50.0 * (1 - 20.0 / 200), String(rd(base, 'A.2.1')));
+check('each defender loses 20 from each attacker, 40 in all',
+  rd(base, 'B.1.1') === 40.0 && rd(base, 'B.2.1') === 40.0);
+
+// --- law 3: a building is inherited at 0 km, and 1 km is the way out -------
+const f0 = msBy('multi_stack', 'fortress on B.1, B.2 at 0 km');
+const f1 = msBy('multi_stack', 'fortress on B.1, B.2 at 1 km');
+check('at 0 km a stack with NO building of its own is protected identically',
+  rd(f0, 'B.2.1') === rd(f0, 'B.1.1'), `${rd(f0, 'B.2.1')} vs ${rd(f0, 'B.1.1')}`);
+check('and that protection is the fortress\u2019s, not a rounding artefact',
+  rd(f0, 'B.2.1') < rd(base, 'B.2.1') / 8,
+  `${rd(f0, 'B.2.1')} against ${rd(base, 'B.2.1')} unprotected`);
+check('ONE KILOMETRE ends it: the same stack loses nine times as much',
+  rd(f1, 'B.2.1') > 8 * rd(f0, 'B.2.1'),
+  `${rd(f1, 'B.2.1')} at 1 km against ${rd(f0, 'B.2.1')} at 0 km`);
+check('while the fortress\u2019s owner is unaffected by where the neighbour stands',
+  Math.abs(rd(f1, 'B.1.1') - rd(f0, 'B.1.1')) <= 0.1,
+  `${rd(f1, 'B.1.1')} vs ${rd(f0, 'B.1.1')}`);
+check('the level-5 fortress is on the board in both, at the same HP',
+  rd(f0, 'B.1.bldg.1') === 6.0 && rd(f1, 'B.1.bldg.1') === 6.0);
+
+// --- the exception, and it is exact ---------------------------------------
+// An Airplane Convoy is flagged in the roster as stacking with nothing. This
+// is the first measurement of what that costs it: the fortress appears beside
+// it and its losses do not move by a hundredth.
+const c0 = msBy('multi_stack', 'convoy, no fortress');
+const c1 = msBy('multi_stack', 'convoy, fortress');
+check('an Airplane Convoy at 0 km does NOT inherit the fortress',
+  rd(c1, 'B.2.1') === rd(c0, 'B.2.1'),
+  `${rd(c1, 'B.2.1')} with fortress, ${rd(c0, 'B.2.1')} without`);
+check('while its neighbour, which does inherit, drops by an order of magnitude',
+  rd(c1, 'B.1.1') < rd(c0, 'B.1.1') / 8,
+  `${rd(c1, 'B.1.1')} against ${rd(c0, 'B.1.1')}`);
+// Not a new fact — STACK_GROUP has said the convoy is a group of one since the
+// stack-limits probe. What is new is the PRICE: a group of one does not get to
+// stand in somebody else's fortress. The two records have to agree, because a
+// convoy quietly folded into 'land' would take the inheritance with it.
+check('the roster already flagged the convoy as a stack group of its own',
+  STACK_GROUP.convoy === 'convoy'
+  && /stacks with nothing/i.test(STACK_GROUP_LABEL.convoy),
+  `${STACK_GROUP.convoy} / ${STACK_GROUP_LABEL.convoy}`);
+check('and it is the only unit in the roster with that group',
+  Object.keys(STACK_GROUP).filter((u) => STACK_GROUP[u] === 'convoy').length === 1,
+  JSON.stringify(Object.keys(STACK_GROUP).filter((u) => STACK_GROUP[u] === 'convoy')));
+// Unlike defenders do NOT split evenly, which is the one thing this sweep
+// shows and cannot pin down. Recorded as an observation, not a rule.
+check('two UNLIKE defenders split unevenly — observed, and not enough to fix a rule',
+  rd(c0, 'B.1.1') !== rd(c0, 'B.2.1')
+  && rd(c0, 'B.1.1') + rd(c0, 'B.2.1') === 80.0,
+  `${rd(c0, 'B.1.1')} / ${rd(c0, 'B.2.1')}`);
+
+// --- and the app has to SAY it does not do any of this ---------------------
+check('MULTI_STACK declares itself unmodelled rather than implying otherwise',
+  MULTI_STACK.modelledByThisApp === false
+  && MULTI_STACK.stacksPerSideModelled === 1);
+check('the escape distance is recorded as the measured 1 km',
+  MULTI_STACK.escapeDistanceKm === 1);
+check('the convoy is named as the inheritance exception',
+  MULTI_STACK.buildingInheritanceExceptions.includes('convoy'));
+check('the readings block matches the rows on disk, so it cannot drift',
+  MULTI_STACK.readings.concentrated['B.1'] === rd(focus, 'B.1.1')
+  && MULTI_STACK.readings.fortressAt1km['B.2'] === rd(f1, 'B.2.1')
+  && MULTI_STACK.readings.convoyWithFortress['B.2'] === rd(c1, 'B.2.1'));
+check('the army-total finding is recorded where a reader will meet it',
+  MULTI_STACK.oneResultTablePerArmy === true
+  && /190/.test(PROVENANCE['MULTI_STACK.armyTable'].method)
+  && /all the stacks/i.test(PROVENANCE['MULTI_STACK.armyTable'].method),
+  PROVENANCE['MULTI_STACK.armyTable'].method);
+check('and it says plainly that no reading already on disk is invalidated',
+  /2,585/.test(PROVENANCE['MULTI_STACK.armyTable'].notEvidenceFor),
+  PROVENANCE['MULTI_STACK.armyTable'].notEvidenceFor);
+check('and the stale assertion that hid it for 2,585 readings is written down',
+  /stale/i.test(PROVENANCE['RESULTS.staleAssertion'].note));
+
+// SCOPE_LIMITS is a different list from NOT_MEASURED and the suite enforces it.
+// The temptation, every time, is to fold an unmodelled law into the gap list
+// because the gap list is already rendered. That would tell the reader nobody
+// knows, when the truth is that it is known and this page declines to compute
+// it — and the reader is the one who has to make up the difference.
+check('SCOPE_LIMITS exists and carries the multi-stack entry',
+  SCOPE_LIMITS.some((s) => s.key === 'multi_stack'), JSON.stringify(SCOPE_LIMITS.map((s) => s.key)));
+check('every scope limit says what to do instead — a limit without advice is an excuse',
+  SCOPE_LIMITS.every((s) => s.what && s.why && s.whatToDoInstead),
+  JSON.stringify(SCOPE_LIMITS.filter((s) => !s.whatToDoInstead).map((s) => s.key)));
+check('and NOT ONE of them has leaked into the "nobody has measured this" list',
+  SCOPE_LIMITS.every((s) => !NOT_MEASURED.some((g) => g.key === s.key)),
+  JSON.stringify(NOT_MEASURED.map((g) => g.key)));
+check('the multi-stack advice names the two laws a player can apply by hand',
+  /co-located|pile/i.test(SCOPE_LIMITS.find((s) => s.key === 'multi_stack').whatToDoInstead)
+  && /1 km/i.test(SCOPE_LIMITS.find((s) => s.key === 'multi_stack').whatToDoInstead));
+
+// ===========================================================================
+// 25. THE BUG HUNT — a sweep aimed at this engine rather than at the game
+// ===========================================================================
+// Every other sweep in results.jsonl asks the site a question. This one asked
+// the MODEL a question and used the site as the answer key, so the cells were
+// picked where the engine was most likely to be wrong rather than where a law
+// is cleanest.
+//
+// Where that is, is readable straight off the archive: count the rounds column
+// by experiment and nearly every sweep here is maxRounds=1. Trenches,
+// buildings, allocation, saturation, terrain — all measured at one round. A
+// law that is right for one round and applied wrongly on the second is
+// therefore INVISIBLE in the record, and that is the exact class of defect the
+// real-army run turned up six of.
+//
+// Eighteen cells, predictions written to disk before the first request. All
+// eighteen came back to the printed decimal. That is worth less than it looks
+// — it means these cells did not reach a defect, not that there is none — but
+// two of the three prongs had never been exercised at all, so they are now
+// assertions rather than hopes.
+console.log('\n25. THE BUG HUNT');
+
+const bh = rows.filter((r) => r.experiment === 'bughunt');
+check('the bug-hunt sweep is on disk, all eighteen cells',
+  bh.length === 18, String(bh.length));
+check('every cell carries the prediction that was made BEFORE it was submitted',
+  bh.every((r) => r.meta.predicted && typeof r.meta.predicted.atk_lost === 'number'));
+
+for (const r of bh) {
+  const c = r.meta.cell;
+  const res = simulate({
+    attacker: { unit: c.atk.unit, count: c.atk.count, trench: c.atkTrench || 0 },
+    defender: {
+      unit: c.def.unit, count: c.def.count, trench: c.defTrench || 0,
+      buildings: c.fortress ? [{ code: 'fortress', level: c.fortress }] : [],
+    },
+    rounds: c.rounds,
+  });
+  const eA = r.readings['A.1.1'];
+  const eB = r.readings['B.1.1'];
+  const eBldg = r.readings['B.1.bldg.1'];
+  const tag = `${c.id} ${c.prong} ${c.rounds}rd`;
+  check(`${tag}: attacker loses ${eA}`,
+    near(res.attacker.hpLost, eA, lostTol(eA)), `engine ${fmt(res.attacker.hpLost)}`);
+  check(`${tag}: defender loses ${eB}`,
+    near(res.defender.hpLost, eB, lostTol(eB)), `engine ${fmt(res.defender.hpLost)}`);
+  if (eBldg !== undefined && eBldg !== null) {
+    // The building row prints one decimal, so 0.05 is span rounding, not drift.
+    check(`${tag}: fortress loses ${eBldg}`,
+      near(res.defender.buildings[0].hpLost, eBldg, 0.06),
+      `engine ${fmt(res.defender.buildings[0].hpLost)}`);
+  }
+  if (!near(res.attacker.hpLost, eA, lostTol(eA))) cannotReproduce(`bughunt ${tag} attacker`, eA, res.attacker.hpLost);
+  if (!near(res.defender.hpLost, eB, lostTol(eB))) cannotReproduce(`bughunt ${tag} defender`, eB, res.defender.hpLost);
+}
+
+// --- A FORTRESS WITH NOBODY LEFT TO DEFEND IT ------------------------------
+// This prong existed to hunt one specific suspect. The suite has long printed
+// a discrepancy it could not explain: fought to the end, the site destroys the
+// real army's fortress and this engine leaves it at 97-100%. The obvious
+// culprit was the STOP CONDITION — the engine ends a battle when the defending
+// side's unit pool is gone, and a fortress standing over a dead garrison might
+// well still be a target. If so, every fought-out battle with a building in it
+// would be wrong, and nothing in the record could have told us.
+//
+// It is not the stop condition. Six ht kill five infantry by round 3 and leave
+// 90.2 HP of a level-5 fortress standing, and the site returns THE IDENTICAL
+// numbers at 5 rounds, 8 rounds and 100. The battle really is over when the
+// last defender dies; the building is not finished off, not at any horizon.
+{
+  const afterGarrison = bh.filter((r) => r.meta.cell.prong === 'fortress_after_garrison');
+  const byRounds = Object.fromEntries(afterGarrison.map((r) => [r.meta.cell.rounds, r]));
+  check('the garrison is dead by round 3 with the fortress still standing',
+    byRounds[3].meta.detail['B.1.1'].died === 5
+    && byRounds[3].readings['B.1.bldg.1'] === 159.8,
+    `${byRounds[3].meta.detail['B.1.1'].died} dead, fortress ${byRounds[3].readings['B.1.bldg.1']} of 250`);
+  for (const n of [5, 8, 100]) {
+    check(`${n} rounds changes NOTHING — the fortress is not finished off`,
+      byRounds[n].readings['B.1.bldg.1'] === byRounds[3].readings['B.1.bldg.1']
+      && byRounds[n].readings['A.1.1'] === byRounds[3].readings['A.1.1']
+      && byRounds[n].readings['B.1.1'] === byRounds[3].readings['B.1.1'],
+      `bldg ${byRounds[n].readings['B.1.bldg.1']} vs ${byRounds[3].readings['B.1.bldg.1']}`);
+  }
+  // 100 rounds is the point. A stop condition that was merely LATE would show
+  // up somewhere between 5 and 100; one that never fires would grind a 90 HP
+  // fortress to nothing many times over.
+  check('and the engine stops in the same round the site does',
+    simulate({
+      attacker: { unit: 'ht', count: 6 },
+      defender: { unit: 'inf', count: 5, buildings: [{ code: 'fortress', level: 5 }] },
+      rounds: 100,
+    }).rounds.fought === 3);
+  // The converse, from prong C: a DESTROYED building does not end the battle
+  // either. The fortress falls at round 3 with the garrison alive, and round 4
+  // goes ahead and wipes them.
+  const grind = bh.filter((r) => r.meta.cell.prong === 'building_grind_no_deaths');
+  const g3 = grind.find((r) => r.meta.cell.rounds === 3);
+  const g5 = grind.find((r) => r.meta.cell.rounds === 5);
+  check('a destroyed building does not end the battle either',
+    g3.meta.detail['B.1.bldg.1'].destroyed === 1
+    && g3.meta.detail['B.1.1'].died === 21
+    && g5.meta.detail['B.1.1'].died === 40,
+    `${g3.meta.detail['B.1.1'].died} dead at 3 rounds, ${g5.meta.detail['B.1.1'].died} at 5`);
+  check('so the rule is about the garrison, not about what is left standing',
+    /unit pool/i.test(PROVENANCE['BATTLE.stopCondition'].method));
+  // And this prong could NOT tell "no units" from "no HP at all", because it
+  // fielded no hero. exp_fort_drift did, and they are different conditions.
+  // Recorded here rather than left implied: a finding that reads wider than
+  // its evidence is how the last three defects survived as long as they did.
+  check('and it says so itself — a hero was outside what this prong could see',
+    /hero/i.test(PROVENANCE['BATTLE.stopCondition'].notEvidenceFor),
+    PROVENANCE['BATTLE.stopCondition'].notEvidenceFor.slice(0, 90));
+}
+
+// --- A TRENCH OVER MORE THAN ONE ROUND -------------------------------------
+// Two dozen trench levels are measured and every single reading was a single
+// round. A trench changes both the pool and the output, and a factor applied
+// to the OPENING state instead of to the survivors is precisely the defect
+// found twice before — allocation weights, and the hero's own output. Eight
+// cells at two levels; all eight exact.
+{
+  const tr = bh.filter((r) => r.meta.cell.prong === 'trench_over_rounds');
+  check('eight trench cells across two levels and five round counts',
+    tr.length === 8 && new Set(tr.map((r) => r.meta.cell.defTrench)).size === 2);
+  check('the trench keeps working past round one, not just in it',
+    tr.every((r) => near(
+      simulate({
+        attacker: { unit: 'inf', count: 20 },
+        defender: { unit: 'inf', count: 20, trench: r.meta.cell.defTrench },
+        rounds: r.meta.cell.rounds,
+      }).defender.hpLost, r.readings['B.1.1'], lostTol(r.readings['B.1.1']))));
+  // The discriminator: a level-20 trench must still be a level-20 trench in
+  // round three. If the engine were applying it once at setup, the multi-round
+  // cells would drift apart from the site while the one-round cells stayed
+  // exact — which is exactly what the archive could never have shown.
+  const t20 = tr.filter((r) => r.meta.cell.defTrench === 20);
+  const t5 = tr.filter((r) => r.meta.cell.defTrench === 5);
+  check('and the two levels stay apart over rounds, so it is not being dropped',
+    t20.find((r) => r.meta.cell.rounds === 3).readings['B.1.1']
+    !== t5.find((r) => r.meta.cell.rounds === 3).readings['B.1.1']);
+}
+
+check('no bug-hunt cell had to be filed as unreproduced',
+  !unreproduced.some((u) => String(u.what).startsWith('bughunt ')),
+  JSON.stringify(unreproduced.filter((u) => String(u.what).startsWith('bughunt ')).map((u) => u.what)));
+
+// ===========================================================================
+// 26. THE FORTRESS RESIDUAL — the one number this engine never reproduced
+// ===========================================================================
+// Fought to the end, the site destroyed the real army's level-4 fortress and
+// this engine stopped at 193.83 with 6.17 HP of it standing. It had been
+// printed as an unreproduced measurement for as long as those rows existed.
+//
+// Almost everything about it was already knowable from the archive, for free:
+// the building-damage RATE matched the site at every round the site had been
+// asked for, exp_bughunt had settled the stop condition directly, and the same
+// army against a pool of 150 or 155 finished the building and agreed exactly.
+// Only the full 200 fell short, and only by 6.17. So the fortress was never
+// the defect — it was the readout of one.
+//
+// exp_fort_drift ran the site's own per-round readback over the rounds that
+// actually diverge, and the answer is one line of arithmetic:
+//
+//   A SATURATED ROW'S SURPLUS DAMAGE IS DISCARDED, NOT PASSED ON.
+//
+// The defender enters round 9 with 10.5 HP of armoured cars and Kangal on
+// 42.4. The attacker swings about 74. The site applies 10.5 to the cars and
+// 21.2 to the hero — 31.7 — and DROPS the rest; the hero lives, round 10 is
+// fought, and the fortress falls. This engine handed the cars' surplus to the
+// hero, killed it in round 9, and stopped a round early with the fortress
+// intact. Every symptom followed from that: the missing 6.17 HP, the battle
+// ending at 9 rounds instead of 10, and a hero that appeared to add nothing.
+console.log('\n26. THE FORTRESS RESIDUAL');
+
+const fd = rows.filter((r) => r.experiment === 'fort_drift');
+check('the fort_drift sweep is on disk, all twelve cells',
+  fd.length === 12, String(fd.length));
+
+const ladder = fd.filter((r) => r.meta.update_counts === true)
+  .sort((a, b) => a.meta.rounds - b.meta.rounds);
+check('the readback ladder covers rounds 1 through 9',
+  ladder.length === 9 && ladder.every((r, i) => r.meta.rounds === i + 1),
+  ladder.map((r) => r.meta.rounds).join(','));
+
+const FD_ATK = () => ({ rows: [
+  { unit: 'inf', count: 35, hpPct: (453.6 / 700) * 100 },
+  { unit: 'ac', count: 6, hpPct: (318.1 / 360) * 100 },
+  { unit: 'cav', count: 17, hpPct: (378.1 / 425) * 100 },
+] });
+const FD_DEF = (hero) => ({
+  rows: [{ unit: 'ac', count: 12, hpPct: (677.5 / 720) * 100 }],
+  ...(hero ? { hero: { code: 'kangal', level: 9, hpPct: (83.1 / 90) * 100 } } : {}),
+  buildings: [{ code: 'fortress', level: 4, hpPct: 100 }],
+});
+// A side's `rows` INCLUDES its hero and the hero comes first, so rows[0] is
+// NOT the unit row. Reading it as one made every round look like a round-one
+// wipe while the predictions were being written; it cost nothing only because
+// they were written before the requests went out.
+const unitRows = (side) => side.rows.filter((r) => !r.isHero);
+const heroOf = (side) => side.rows.find((r) => r.isHero);
+const left = (r) => r.pool - r.hpLost;
+const aliveOf = (r) => (r.unitsLeft !== null && r.unitsLeft !== undefined
+  ? r.unitsLeft : r.count - r.deaths);
+
+// ROUNDS 1-6 ARE EXACT IN EVERY QUANTITY, and that is what makes the rest
+// diagnosable. Three attacker rows' survivors and HP, the defender's
+// survivors and HP, the hero's HP and the fortress's — forty-eight numbers,
+// all from the site's own form, none of them inferred.
+let exactRounds = 0;
+for (const row of ladder) {
+  const n = row.meta.rounds;
+  const back = row.meta.form_back;
+  const r = simulate({ attacker: FD_ATK(), defender: FD_DEF(true), rounds: n });
+  const [inf, ac, cav] = unitRows(r.attacker);
+  const du = unitRows(r.defender)[0];
+  const hero = heroOf(r.defender);
+  const fortSite = (Number(back['B.1.bldg.1.lvl']) - 1) * 50
+    + Number(back['B.1.bldg.1.hp']);
+  // Counts are integers and must match exactly — a survivor count is not a
+  // quantity that rounds.
+  check(`round ${n}: the site's own survivor counts, all four rows`,
+    aliveOf(inf) === Number(back['A.1.1.count'])
+    && aliveOf(ac) === Number(back['A.1.2.count'])
+    && aliveOf(cav) === Number(back['A.1.3.count'])
+    && aliveOf(du) === Number(back['B.1.1.count']),
+    `${aliveOf(inf)}/${back['A.1.1.count']} ${aliveOf(ac)}/${back['A.1.2.count']} `
+      + `${aliveOf(cav)}/${back['A.1.3.count']} ${aliveOf(du)}/${back['B.1.1.count']}`);
+  // The form prints one decimal, so 0.06 is the readback's own resolution.
+  // The attacker is asserted only through round 7. By round 8 it carries the
+  // late-round residual too, second-hand: this engine's defender is a little
+  // too healthy from round 7, so it fires a little too hard, so the attacker
+  // ends up a little too battered. Same defect, arriving from the other side.
+  const atkOk = near(left(inf), Number(back['A.1.1.hp']), 0.06)
+    && near(left(ac), Number(back['A.1.2.hp']), 0.06)
+    && near(left(cav), Number(back['A.1.3.hp']), 0.06);
+  const atkDetail = `${left(inf).toFixed(2)}/${back['A.1.1.hp']} `
+    + `${left(ac).toFixed(2)}/${back['A.1.2.hp']} ${left(cav).toFixed(2)}/${back['A.1.3.hp']}`;
+  if (n <= 7) {
+    check(`round ${n}: the attacker's remaining HP, row by row`, atkOk, atkDetail);
+  } else if (!atkOk) {
+    // Reported as engine/site pairs rather than a value and a NaN — a column
+    // of NaN in the unreproduced list tells the reader nothing about how far
+    // out it is, which is the only thing that list is for.
+    cannotReproduce(`fort_drift round ${n} attacker HP (engine/site)`,
+      `${back['A.1.1.hp']}, ${back['A.1.2.hp']}, ${back['A.1.3.hp']}`,
+      `${left(inf).toFixed(2)}, ${left(ac).toFixed(2)}, ${left(cav).toFixed(2)}`,
+      'the late-round residual reaching the attacker through the defender it over-feeds');
+  }
+  check(`round ${n}: the fortress's own remaining HP`,
+    near(r.defender.buildings[0].hp, fortSite, 0.06),
+    `${r.defender.buildings[0].hp.toFixed(2)} vs ${fortSite.toFixed(2)}`);
+  const defOk = near(left(du), Number(back['B.1.1.hp']), 0.06);
+  const heroOk = near(left(hero), Number(back['B.1.hero.hp']), 0.06);
+  if (n <= 6) {
+    check(`round ${n}: the defender's HP and its hero's, both exact`,
+      defOk && heroOk,
+      `def ${left(du).toFixed(2)}/${back['B.1.1.hp']} hero ${left(hero).toFixed(2)}/${back['B.1.hero.hp']}`);
+    if (defOk && heroOk) exactRounds += 1;
+  } else {
+    // Rounds 7-9 are the residual, and it is REPORTED with its size rather
+    // than asserted at a tolerance chosen to swallow it.
+    if (!defOk) {
+      cannotReproduce(`fort_drift round ${n} defender HP`,
+        Number(back['B.1.1.hp']), left(du), 'late-round output drift — NOT_MEASURED.late_round_output');
+    }
+    if (!heroOk) {
+      cannotReproduce(`fort_drift round ${n} hero HP`,
+        Number(back['B.1.hero.hp']), left(hero), 'same cause, same rounds');
+    }
+  }
+}
+check('six consecutive rounds match the site in every quantity it reports',
+  exactRounds === 6, String(exactRounds));
+
+// --- THE FIX, AND THE TWO MEASUREMENTS THAT FORCED IT ----------------------
+{
+  const r9 = ladder.find((x) => x.meta.rounds === 9);
+  const back9 = r9.meta.form_back;
+  check('the site ends round 9 with no units and a LIVE hero',
+    Number(back9['B.1.1.count']) === 0 && Number(back9['B.1.1.hp']) === 0
+    && Number(back9['B.1.hero.hp']) > 0,
+    `count ${back9['B.1.1.count']} hp ${back9['B.1.1.hp']} hero ${back9['B.1.hero.hp']}`);
+  const eng9 = simulate({ attacker: FD_ATK(), defender: FD_DEF(true), rounds: 9 });
+  check('and so does this engine, now — it used to call the side wiped here',
+    !eng9.defender.wiped && left(heroOf(eng9.defender)) > 0,
+    `wiped=${eng9.defender.wiped} hero ${left(heroOf(eng9.defender)).toFixed(2)}`);
+  // The methodological control. Everything above is read through updateCounts,
+  // a switch this project had used once. If it changed the battle, the ladder
+  // would be measuring the switch.
+  const plain9 = fd.find((x) => x.meta.rounds === 9 && x.meta.update_counts === false);
+  check('updateCounts does not change the battle it reports',
+    Math.abs(plain9.readings['B.1.bldg.1'] - 193.8) < 0.05
+    && Math.abs(eng9.defender.buildings[0].hpLost - plain9.readings['B.1.bldg.1']) < 0.06,
+    `site ${plain9.readings['B.1.bldg.1']}, engine ${eng9.defender.buildings[0].hpLost.toFixed(2)}`);
+
+  // THE ISOLATED REPRODUCTION, away from the real army entirely. This is
+  // exp_bughunt's prong A — six heavy tanks, five infantry, a level-5
+  // fortress, whose fortress survives at 159.8 — with a hero added. The hero
+  // buys a fourth round and the fortress takes 208.3 instead. Before the fix
+  // this engine said 157.78: it had the hero soaking a round's worth of
+  // surplus and dying alongside the troops, so the hero bought nothing.
+  const prongA = fd.find((x) => x.meta.tag === 'prongA_with_hero');
+  const eA = simulate({
+    attacker: { unit: 'ht', count: 6 },
+    defender: { unit: 'inf', count: 5, hero: { code: 'kangal', level: 9 },
+      buildings: [{ code: 'fortress', level: 5 }] },
+    rounds: 100,
+  });
+  check('prong A with a hero: the fortress takes 208.3, not 159.8',
+    Math.abs(prongA.readings['B.1.bldg.1'] - 208.3) < 0.05
+    && near(eA.defender.buildings[0].hpLost, prongA.readings['B.1.bldg.1'], 0.06),
+    `site ${prongA.readings['B.1.bldg.1']}, engine ${eA.defender.buildings[0].hpLost.toFixed(2)}`);
+  check('a 50 HP miss before the fix, exact after it',
+    Math.abs(eA.defender.buildings[0].hpLost - 157.78) > 45);
+  check('the hero buys a whole extra round and nothing else changes',
+    eA.rounds.fought === 4 && Math.abs(eA.defender.hpLost - 190) < 0.05,
+    `fought ${eA.rounds.fought}, defender ${eA.defender.hpLost.toFixed(2)}`);
+  // And the no-hero control, which the engine already got right. It matters
+  // because it shows the fix did not simply add damage everywhere: without a
+  // hero there is no row left to soak a surplus, and the answer is unchanged.
+  const noHero = fd.find((x) => x.meta.hero_level === null);
+  const eN = simulate({ attacker: FD_ATK(), defender: FD_DEF(false), rounds: 100 });
+  check('the no-hero control is unmoved: fortress destroyed, 200.0',
+    noHero.readings['B.1.bldg.1'] === 200.0
+    && eN.defender.buildings[0].destroyed
+    && near(eN.defender.buildings[0].hpLost, 200, 0.06));
+  check('and its defender total agrees to the printed decimal',
+    Math.abs(eN.defender.hpLost - noHero.readings['B.1.1']) < 0.05,
+    `${eN.defender.hpLost.toFixed(2)} vs ${noHero.readings['B.1.1']}`);
+}
+
+// --- the residual that is LEFT, named and sized --------------------------
+// Not a smaller version of the same thing. The engine's attacker output runs
+// low from round 7 on a state that matches the site exactly in every round
+// before it, and the shortfall grows. It is declared rather than absorbed.
+{
+  // This block used to check that the leftover residual was DECLARED as a gap.
+  // exp_late_drift closed it, so what is checked now is that it closed rather
+  // than quietly evaporated — and what closed it, which is not what two sweeps
+  // of chasing assumed.
+  check('the leftover residual is closed, and by the fortress rather than the attacker',
+    !NOT_MEASURED.some((g) => g.key === 'late_round_output')
+    && /DR column|damage reduction/i.test(PROVENANCE['FORTRESS.dr.foundBy'].note),
+    PROVENANCE['FORTRESS.dr.foundBy'].note.slice(0, 90));
+  check('and the surplus rule that WAS settled is recorded as measured',
+    PROVENANCE['DAMAGE.surplusDiscarded'].confidence === 'measured'
+    && /discard/i.test(PROVENANCE['DAMAGE.surplusDiscarded'].method));
+  check('the old caveat claiming the remainder rule is unknown is gone',
+    !/no measured mixture ever saturated/i.test(
+      readFileSync(new URL('../engine.js', import.meta.url), 'utf8')));
+}
+
+// ===========================================================================
+// 27. THE LATE-ROUND RESIDUAL — which was never in the attacker at all
+// ===========================================================================
+// Two sweeps chased this as a drift in the ATTACKER'S OUTPUT. The reasoning
+// was sound and the conclusion was wrong: the attacker's survivors, its
+// remaining HP, its deaths and the fortress's HP all matched the site's own
+// readback exactly at the start of every divergent round, so the error had to
+// be in the output term. It was not. The output was right and the DEFENDER'S
+// MITIGATION was wrong.
+//
+// exp_late_drift asked four questions and the cheap one paid for the rest.
+//
+//   G. IS THE SITE MEMORYLESS? Take the site's own round-6 and round-7 states
+//      out of the readback and resubmit them as fresh ONE-ROUND battles. They
+//      reproduce the increments the long battle showed, so a round is a pure
+//      function of the state it starts from and the whole residual is
+//      reproducible in a single request. That also means 2,600 single-round
+//      readings were never handicapped by being single rounds.
+//   H. A single-type deep ladder, 20 heavy tanks against 20 over twelve
+//      rounds with nothing else on the board: exact at every round, down to
+//      f = 0.39. E(n), m(f), the death rule and the round loop are clean.
+//   I, J. The real army with the fortress removed, and with the hero removed.
+//
+// And the G cells carried the answer in a column this project has been
+// parsing since its first fortress request and had never read: the site
+// PRINTS its own damage reduction. It said 26.1% where the engine computed
+// 27.665%. Seventy-three (HP, DR) pairs were already sitting in results.jsonl.
+console.log('\n27. THE LATE-ROUND RESIDUAL');
+
+const ld = rows.filter((r) => r.experiment === 'late_drift');
+const drl = rows.filter((r) => r.experiment === 'fortress_dr_low');
+check('the late-drift sweep is on disk, all twenty cells',
+  ld.length === 20, String(ld.length));
+check('and the DR ladder, all twelve',
+  drl.length === 12, String(drl.length));
+
+// --- G: the site is memoryless -------------------------------------------
+// The most valuable single fact this sweep produced, and it cost two requests.
+{
+  const g = ld.filter((r) => r.meta.prong === 'G');
+  check('two mid-battle states were resubmitted as one-round battles',
+    g.length === 2, String(g.length));
+  for (const r of g) {
+    const nx = r.meta.predicted.site_next;
+    // The long battle's increments come from readbacks printed to one decimal
+    // and differenced, so 0.15 is two of those roundings, not slack.
+    check(`${r.meta.state}: one round from that state = what the long battle did next`,
+      Math.abs(r.readings['B.1.1'] - nx.def) <= 0.15
+      && Math.abs(r.readings['B.1.hero'] - nx.hero) <= 0.15
+      && Math.abs(r.readings['B.1.bldg.1'] - nx.fort) <= 0.15,
+      `one round ${r.readings['B.1.1']}/${r.readings['B.1.hero']}/${r.readings['B.1.bldg.1']}`
+        + ` vs long battle ${nx.def}/${nx.hero}/${nx.fort}`);
+    // And the engine now reproduces the one-round answer directly.
+    const st = r.meta.cell;
+    const sim = simulate({
+      attacker: { rows: [
+        { unit: 'inf', count: st.inf[0], hpPct: (Number(st.inf[1]) / (st.inf[0] * 20)) * 100 },
+        { unit: 'ac', count: st.ac[0], hpPct: (Number(st.ac[1]) / (st.ac[0] * 60)) * 100 },
+        { unit: 'cav', count: st.cav[0], hpPct: (Number(st.cav[1]) / (st.cav[0] * 25)) * 100 },
+      ] },
+      defender: {
+        rows: [{ unit: 'ac', count: st.def[0], hpPct: (Number(st.def[1]) / (st.def[0] * 60)) * 100 }],
+        hero: { code: 'kangal', level: 9, hpPct: (Number(st.hero) / 90) * 100 },
+        buildings: [{ code: 'fortress', level: 1, hpPct: (Number(st.fort) / 50) * 100 }],
+      },
+      rounds: 1,
+    });
+    check(`${r.meta.state}: and this engine reproduces it`,
+      near(sim.defender.rows.find((x) => !x.isHero).hpLost, r.readings['B.1.1'], 0.06)
+      && near(sim.defender.rows.find((x) => x.isHero).hpLost, r.readings['B.1.hero'], 0.06)
+      && near(sim.defender.buildings[0].hpLost, r.readings['B.1.bldg.1'], 0.06),
+      `${sim.defender.rows.find((x) => !x.isHero).hpLost.toFixed(2)} vs ${r.readings['B.1.1']}`);
+  }
+}
+
+// --- H: the core law is clean over twelve rounds --------------------------
+{
+  const h = ld.filter((r) => r.meta.prong === 'H').sort((a, b) => a.meta.rounds - b.meta.rounds);
+  check('the single-type ladder runs a full twelve rounds', h.length === 12);
+  for (const r of h) {
+    const sim = simulate({ attacker: { unit: 'ht', count: 20 },
+      defender: { unit: 'ht', count: 20 }, rounds: r.meta.rounds });
+    check(`ht 20v20 x${r.meta.rounds}: ${r.readings['A.1.1']} / ${r.readings['B.1.1']}`,
+      near(sim.attacker.hpLost, r.readings['A.1.1'], 0.06)
+      && near(sim.defender.hpLost, r.readings['B.1.1'], 0.06),
+      `${sim.attacker.hpLost.toFixed(2)} / ${sim.defender.hpLost.toFixed(2)}`);
+    // The readback's own survivor counts, not inferred from the damage.
+    check(`ht 20v20 x${r.meta.rounds}: survivors match the site's form`,
+      (20 - sim.attacker.rows[0].deaths) === Number(r.meta.form_back['A.1.1.count'])
+      && (20 - sim.defender.rows[0].deaths) === Number(r.meta.form_back['B.1.1.count']),
+      `${20 - sim.attacker.rows[0].deaths}/${r.meta.form_back['A.1.1.count']}`);
+  }
+  // The point of the ladder: it goes deep enough to be worth something. Both
+  // sides end on five units at f = 0.39, well down the m(f) curve, and nothing
+  // drifts. Whatever was wrong needed a fortress; it was never the core law.
+  const last = h[h.length - 1];
+  check('and it ends deep — five units a side at 39% HP, still exact',
+    Number(last.meta.form_back['A.1.1.count']) === 5
+    && Number(last.meta.form_back['A.1.1.hp']) / (5 * 260) < 0.40,
+    `${last.meta.form_back['A.1.1.count']} units, ${last.meta.form_back['A.1.1.hp']} HP`);
+}
+
+// --- I and J: strip the fortress, strip the hero --------------------------
+{
+  const RA = () => ({ rows: [
+    { unit: 'inf', count: 35, hpPct: (453.6 / 700) * 100 },
+    { unit: 'ac', count: 6, hpPct: (318.1 / 360) * 100 },
+    { unit: 'cav', count: 17, hpPct: (378.1 / 425) * 100 },
+  ] });
+  for (const r of ld.filter((x) => x.meta.prong === 'I' || x.meta.prong === 'J')) {
+    const m = r.meta;
+    const sim = simulate({
+      attacker: RA(),
+      defender: {
+        rows: [{ unit: 'ac', count: 12, hpPct: (677.5 / 720) * 100 }],
+        ...(m.hero ? { hero: { code: 'kangal', level: 9, hpPct: (83.1 / 90) * 100 } } : {}),
+        ...(m.fortress ? { buildings: [{ code: 'fortress', level: 4, hpPct: 100 }] } : {}),
+      },
+      rounds: m.rounds,
+    });
+    const back = m.form_back;
+    const rowsOf = sim.attacker.rows.filter((x) => !x.isHero);
+    check(`${m.prong}${m.rounds} (${m.fortress ? 'fortress' : 'no fortress'}, `
+      + `${m.hero ? 'hero' : 'no hero'}): every row against the site's form`,
+      rowsOf.every((x, i) => near(x.pool - x.hpLost, Number(back[`A.1.${i + 1}.hp`]), 0.06))
+      && near(sim.defender.rows.find((x) => !x.isHero).pool
+        - sim.defender.rows.find((x) => !x.isHero).hpLost,
+      Number(back['B.1.1.hp']), 0.06),
+      rowsOf.map((x, i) => `${(x.pool - x.hpLost).toFixed(2)}/${back[`A.1.${i + 1}.hp`]}`).join(' '));
+  }
+}
+
+// --- the DR ladder itself -------------------------------------------------
+// No inference at all in these twelve: the site prints the number, so each
+// request reads a point off the curve rather than solving for it through a
+// damage figure.
+{
+  for (const r of drl) {
+    const hp = Number(r.meta.fortress_hp);
+    const site = (r.meta.detail['B.1.bldg.1'] || {}).dr_before;
+    if (site === undefined || site === null) {
+      check(`a ${hp} HP fortress renders no DR clause at all`,
+        hp < 10 && fortressDR(hp) === 0, `engine ${fortressDR(hp)}`);
+    } else {
+      check(`fortress at ${hp} HP: the site prints ${site}%`,
+        Math.abs(fortressDR(hp) * 100 - site) < 0.05,
+        `engine ${(fortressDR(hp) * 100).toFixed(2)}%`);
+    }
+  }
+  const inert = drl.filter((r) => !(r.meta.detail['B.1.bldg.1'] || {}).dr_before);
+  check('five rungs below 10 HP confer nothing, and the lowest that does is 10',
+    inert.length === 5
+    && inert.every((r) => Number(r.meta.fortress_hp) < 10)
+    && Math.max(...inert.map((r) => Number(r.meta.fortress_hp))) === 9.5,
+    inert.map((r) => r.meta.fortress_hp).join(','));
+}
+
+// --- and the column that was there all along ------------------------------
+// The archive is checked against the corrected curve wholesale: every
+// (HP, DR) pair any sweep ever recorded, including 58 that the old formula
+// already fitted and 13 it never could.
+{
+  const pairs = new Set();
+  for (const r of rows) {
+    for (const d of Object.values((r.meta && r.meta.detail) || {})) {
+      if (!d || typeof d !== 'object' || d.dr_before === undefined) continue;
+      if (d.pool !== undefined) pairs.add(`${d.pool.toFixed(2)}|${d.dr_before}`);
+      if (d.level !== undefined && d.hp_top_level !== undefined) {
+        pairs.add(`${((d.level - 1) * 50 + d.hp_top_level).toFixed(2)}|${d.dr_after}`);
+      }
+    }
+  }
+  const pts = [...pairs].map((k) => k.split('|').map(Number))
+    .filter(([hp, dr]) => dr > 0);
+  check('the archive already held 60+ readings of the answer',
+    pts.length >= 60, String(pts.length));
+  const bad = pts.filter(([hp, dr]) => Math.abs(fortressDR(hp) * 100 - dr) > 0.2);
+  check('and the corrected curve fits every one of them',
+    bad.length === 0,
+    bad.map(([hp, dr]) => `${hp}->${dr} vs ${(fortressDR(hp) * 100).toFixed(2)}`).join(', '));
+  const oldFormula = (hp) => Math.min(1, 0.15 * (hp / 50 + 1));
+  const wouldFail = pts.filter(([hp, dr]) => Math.abs(oldFormula(hp) * 100 - dr) > 0.2);
+  check('where the single formula it replaced missed a dozen of them',
+    wouldFail.length >= 10 && wouldFail.every(([hp]) => hp < 50 || hp > 250),
+    `${wouldFail.length} misses, worst `
+      + `${Math.max(...wouldFail.map(([hp, dr]) => Math.abs(oldFormula(hp) * 100 - dr))).toFixed(2)} points`);
+}
+
+// ===========================================================================
+console.log('');
+if (unreproduced.length) {
+  console.log('MEASUREMENTS THE ENGINE COULD NOT REPRODUCE:');
+  for (const u of unreproduced) {
+    console.log(`  - ${u.what}: recorded ${u.expected}, engine ${fmt(u.got)}${u.note ? ` (${u.note})` : ''}`);
+  }
+  console.log('');
+}
+if (failures.length) {
+  console.log(`${failures.length} CHECK(S) FAILED, ${ok} passed`);
+  for (const f of failures) console.log(`  FAILED: ${f.label}\n          ${f.detail}`);
+  process.exit(1);
+}
+console.log(`ALL ${ok} CHECKS PASSED`);
+console.log('Tolerances: HP lost ±0.005 where the summary table gave 2 decimals, ±0.05 where only '
+  + 'a 1-decimal span was recorded; pools asserted inside the bracket implied by 3-significant-figure '
+  + 'percentages; death counts exact.');

@@ -1,0 +1,254 @@
+[
+ {
+  "id": "A1",
+  "prong": "fortress_after_garrison",
+  "rounds": 1,
+  "atk": {
+   "unit": "ht",
+   "count": 6
+  },
+  "def": {
+   "unit": "inf",
+   "count": 5
+  },
+  "fortress": 5
+ },
+ {
+  "id": "A2",
+  "prong": "fortress_after_garrison",
+  "rounds": 2,
+  "atk": {
+   "unit": "ht",
+   "count": 6
+  },
+  "def": {
+   "unit": "inf",
+   "count": 5
+  },
+  "fortress": 5
+ },
+ {
+  "id": "A3",
+  "prong": "fortress_after_garrison",
+  "rounds": 3,
+  "atk": {
+   "unit": "ht",
+   "count": 6
+  },
+  "def": {
+   "unit": "inf",
+   "count": 5
+  },
+  "fortress": 5
+ },
+ {
+  "id": "A4",
+  "prong": "fortress_after_garrison",
+  "rounds": 5,
+  "atk": {
+   "unit": "ht",
+   "count": 6
+  },
+  "def": {
+   "unit": "inf",
+   "count": 5
+  },
+  "fortress": 5
+ },
+ {
+  "id": "A5",
+  "prong": "fortress_after_garrison",
+  "rounds": 8,
+  "atk": {
+   "unit": "ht",
+   "count": 6
+  },
+  "def": {
+   "unit": "inf",
+   "count": 5
+  },
+  "fortress": 5
+ },
+ {
+  "id": "A6",
+  "prong": "fortress_after_garrison",
+  "rounds": 100,
+  "atk": {
+   "unit": "ht",
+   "count": 6
+  },
+  "def": {
+   "unit": "inf",
+   "count": 5
+  },
+  "fortress": 5
+ },
+ {
+  "id": "B1",
+  "prong": "trench_over_rounds",
+  "rounds": 1,
+  "atk": {
+   "unit": "inf",
+   "count": 20
+  },
+  "def": {
+   "unit": "inf",
+   "count": 20
+  },
+  "defTrench": 20
+ },
+ {
+  "id": "B2",
+  "prong": "trench_over_rounds",
+  "rounds": 2,
+  "atk": {
+   "unit": "inf",
+   "count": 20
+  },
+  "def": {
+   "unit": "inf",
+   "count": 20
+  },
+  "defTrench": 20
+ },
+ {
+  "id": "B3",
+  "prong": "trench_over_rounds",
+  "rounds": 3,
+  "atk": {
+   "unit": "inf",
+   "count": 20
+  },
+  "def": {
+   "unit": "inf",
+   "count": 20
+  },
+  "defTrench": 20
+ },
+ {
+  "id": "B4",
+  "prong": "trench_over_rounds",
+  "rounds": 5,
+  "atk": {
+   "unit": "inf",
+   "count": 20
+  },
+  "def": {
+   "unit": "inf",
+   "count": 20
+  },
+  "defTrench": 20
+ },
+ {
+  "id": "B5",
+  "prong": "trench_over_rounds",
+  "rounds": 8,
+  "atk": {
+   "unit": "inf",
+   "count": 20
+  },
+  "def": {
+   "unit": "inf",
+   "count": 20
+  },
+  "defTrench": 20
+ },
+ {
+  "id": "B6",
+  "prong": "trench_over_rounds",
+  "rounds": 1,
+  "atk": {
+   "unit": "inf",
+   "count": 20
+  },
+  "def": {
+   "unit": "inf",
+   "count": 20
+  },
+  "defTrench": 5
+ },
+ {
+  "id": "B7",
+  "prong": "trench_over_rounds",
+  "rounds": 3,
+  "atk": {
+   "unit": "inf",
+   "count": 20
+  },
+  "def": {
+   "unit": "inf",
+   "count": 20
+  },
+  "defTrench": 5
+ },
+ {
+  "id": "B8",
+  "prong": "trench_over_rounds",
+  "rounds": 8,
+  "atk": {
+   "unit": "inf",
+   "count": 20
+  },
+  "def": {
+   "unit": "inf",
+   "count": 20
+  },
+  "defTrench": 5
+ },
+ {
+  "id": "C1",
+  "prong": "building_grind_no_deaths",
+  "rounds": 1,
+  "atk": {
+   "unit": "ht",
+   "count": 10
+  },
+  "def": {
+   "unit": "inf",
+   "count": 40
+  },
+  "fortress": 5
+ },
+ {
+  "id": "C2",
+  "prong": "building_grind_no_deaths",
+  "rounds": 2,
+  "atk": {
+   "unit": "ht",
+   "count": 10
+  },
+  "def": {
+   "unit": "inf",
+   "count": 40
+  },
+  "fortress": 5
+ },
+ {
+  "id": "C3",
+  "prong": "building_grind_no_deaths",
+  "rounds": 3,
+  "atk": {
+   "unit": "ht",
+   "count": 10
+  },
+  "def": {
+   "unit": "inf",
+   "count": 40
+  },
+  "fortress": 5
+ },
+ {
+  "id": "C4",
+  "prong": "building_grind_no_deaths",
+  "rounds": 5,
+  "atk": {
+   "unit": "ht",
+   "count": 10
+  },
+  "def": {
+   "unit": "inf",
+   "count": 40
+  },
+  "fortress": 5
+ }
+]
