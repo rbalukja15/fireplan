@@ -1,18 +1,64 @@
-name: trenchline
+# One site, two calculators, one workflow.
+#
+# The deployed artifact is Trenchline's PWA build at the root with the
+# research calculator (web/, dependency-free, relative paths) copied to
+# /research/. Both gates run before anything is packaged:
+#   - the research gate replays results.jsonl against web/engine.js and runs
+#     every offline Python suite (they prove the measurement designs still
+#     hold; a failure means a constant's provenance is broken);
+#   - the trenchline gate is its vitest suite plus both builds.
+#
+# ONE MANUAL STEP BEFORE THE FIRST DEPLOY, which cannot be automated:
+#   Settings -> Pages -> Build and deployment -> Source: "GitHub Actions".
+# Until then the deploy job fails with a 404 from the Pages API.
+
+name: site
 
 on:
   push:
-    # The claude/ branch entry gives immediate Pages feedback while Trenchline
-    # is developed there — drop it from this list once merged to main.
-    branches: [main, claude/supremacy-noxiaz-evaluation-l32ocd]
+    branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
-concurrency:
-  group: pages
-  cancel-in-progress: true
+permissions:
+  contents: read
 
 jobs:
+  verify-research:
+    name: Verify the model against the record
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # web/ stays dependency-free by design: no build step, no lockfile.
+      - name: Confirm the research app is still dependency-free
+        run: |
+          test ! -e web/package.json || (echo "web/ grew a package.json — this workflow assumes no build step" && exit 1)
+          test ! -e package-lock.json || (echo "repo root grew a lockfile — trenchline/ owns the only one" && exit 1)
+
+      - name: Research engine suite (replays results.jsonl)
+        run: node web/test/engine.test.mjs
+
+      # EVERY suite, discovered rather than listed — a list drifts, a glob
+      # cannot, and an empty glob fails loudly.
+      - name: Offline suites (no network)
+        run: |
+          shopt -s failglob
+          for t in test_*.py; do
+            echo "=== $t"
+            python3 "$t"
+          done
+
   build:
+    name: Test and package both calculators
+    needs: verify-research
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -29,6 +75,8 @@ jobs:
       - run: npm run build:web
       - run: npm run build:ext
       - run: npm run zip:ext
+      - name: Compose the site (trenchline root + research calculator)
+        run: cp -r ../web dist/web/research
       - uses: actions/upload-pages-artifact@v3
         with:
           path: trenchline/dist/web
@@ -40,8 +88,15 @@ jobs:
             trenchline/dist/trenchline-firefox.zip
 
   deploy:
+    name: Deploy to GitHub Pages
     needs: build
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    # cancel-in-progress stays false: a Pages deployment cancelled mid-flight
+    # can leave the site half-published, so a queued run waits instead.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     permissions:
       pages: write
       id-token: write

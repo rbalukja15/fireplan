@@ -9,40 +9,87 @@ import { ALL_UNITS, UNIT_LABELS, classOf } from './units.ts'
  * The Engine Data panel edits a deep-merged copy; this file stays the
  * canonical record of what has actually been established. */
 
-const PROBE = 'dxcalc_probe.py sweep'
 const HELP = 'dxcalc help page'
-const GAME = 'live-game army totals (count × HP divides cleanly)'
 const TBD = 'not measured yet'
+
+/* The atk/def/HP tables below are imported from the sibling research
+ * calculator (../../../web/data.js), whose test suite replays every value
+ * against results.jsonl — 168+ recorded dxcalc responses. atk and def are
+ * SAME-CLASS (diagonal) coefficients: a unit fighting its own kind. Attack
+ * is per-TARGET-class in reality (tac is 3.0 vs air but 30.0 vs ground), so
+ * Trenchline's single-table model understates cross-class matchups; the
+ * research calculator at /research/ carries the full measured matrices. */
+const DIAGONAL = 'results.jsonl diagonal duels (see web/data.js)'
 
 function coeff(value: number, status: Coefficient['status'], source: string): Coefficient {
   return { value, status, source }
 }
 
-/** Base damage per unit per full round. */
+/** Base ATTACK damage per unit per full round (same-class diagonal). */
 const DAMAGE: Partial<Record<UnitCode, Coefficient>> = {
-  inf: coeff(4, 'confirmed', PROBE),
-  cav: coeff(15, 'confirmed', PROBE),
-  art: coeff(8, 'confirmed', PROBE),
-  ht: coeff(45, 'confirmed', PROBE),
-  tac: coeff(25, 'observed', 'probe: 25.0 vs infantry but 0.0 vs heavy tank — target-class rule unresolved'),
+  inf: coeff(4, 'confirmed', DIAGONAL),
+  cav: coeff(15, 'confirmed', DIAGONAL),
+  ac: coeff(6, 'confirmed', DIAGONAL),
+  lart: coeff(5, 'confirmed', DIAGONAL),
+  art: coeff(8, 'confirmed', DIAGONAL),
+  rrg: coeff(20, 'confirmed', DIAGONAL),
+  lt: coeff(30, 'confirmed', DIAGONAL),
+  ht: coeff(45, 'confirmed', DIAGONAL),
+  convoy: coeff(1, 'confirmed', DIAGONAL),
+  st: coeff(25, 'confirmed', DIAGONAL),
+  bal: coeff(3, 'confirmed', DIAGONAL + '; measured flat 3.0 vs ground too'),
+  int: coeff(20, 'confirmed', DIAGONAL + '; only 5.0 vs ground'),
+  tac: coeff(3, 'confirmed', DIAGONAL + '; 30.0 vs ground — the common case'),
+  zep: coeff(5, 'confirmed', DIAGONAL + '; 5.0 vs ground'),
+  sub: coeff(40, 'confirmed', DIAGONAL),
+  cl: coeff(10, 'confirmed', DIAGONAL),
+  bb: coeff(40, 'confirmed', DIAGONAL),
 }
 
-/** Damage per unit per round when DEFENDING (return fire). dxcalc gives
- * defenders different strength: a live response showed 12 defending inf
- * beating 10 inf + 2 art, impossible with defense == attack. Values below
- * default to the attack figure until the probe sweeps defense separately. */
-const DEFENSE: Partial<Record<UnitCode, Coefficient>> = {}
+/** DEFENSE damage per unit per round (return fire, same-class diagonal).
+ * Measured separately from attack — dxcalc demonstrably treats them
+ * differently (12 defending inf beat 10 inf + 2 art; see calibration/). */
+const DEFENSE: Partial<Record<UnitCode, Coefficient>> = {
+  inf: coeff(5, 'confirmed', DIAGONAL),
+  cav: coeff(7.5, 'confirmed', DIAGONAL),
+  ac: coeff(12, 'confirmed', DIAGONAL),
+  lart: coeff(1, 'confirmed', DIAGONAL),
+  art: coeff(2.7, 'confirmed', DIAGONAL),
+  rrg: coeff(6.7, 'confirmed', DIAGONAL),
+  lt: coeff(30, 'confirmed', DIAGONAL),
+  ht: coeff(45, 'confirmed', DIAGONAL),
+  convoy: coeff(1, 'confirmed', DIAGONAL),
+  st: coeff(6.3, 'confirmed', DIAGONAL),
+  bal: coeff(3, 'confirmed', DIAGONAL),
+  int: coeff(20, 'confirmed', DIAGONAL),
+  tac: coeff(3, 'confirmed', DIAGONAL),
+  zep: coeff(5, 'confirmed', DIAGONAL),
+  sub: coeff(40, 'confirmed', DIAGONAL),
+  cl: coeff(10, 'confirmed', DIAGONAL),
+  bb: coeff(40, 'confirmed', DIAGONAL),
+}
+
+const BRACKET = 'results.jsonl pool bracket (see web/data.js maxHPBracket)'
 
 /** Hit points of one healthy unit. */
 const MAX_HP: Partial<Record<UnitCode, Coefficient>> = {
-  cav: coeff(25, 'observed', GAME),
-  ac: coeff(60, 'observed', GAME),
-  lt: coeff(175, 'observed', GAME),
-  ht: coeff(260, 'observed', GAME),
-  st: coeff(40, 'observed', GAME),
-  art: coeff(20, 'observed', GAME),
-  bal: coeff(20, 'observed', GAME),
-  inf: coeff(20, 'observed', 'dxcalc response: 12-inf pool reads back as 240 HP → 20 per unit'),
+  inf: coeff(20, 'confirmed', BRACKET),
+  cav: coeff(25, 'confirmed', BRACKET),
+  ac: coeff(60, 'confirmed', BRACKET),
+  lart: coeff(10, 'confirmed', BRACKET),
+  art: coeff(20, 'confirmed', BRACKET),
+  rrg: coeff(60, 'confirmed', BRACKET),
+  lt: coeff(175, 'confirmed', BRACKET),
+  ht: coeff(260, 'confirmed', BRACKET),
+  convoy: coeff(20, 'confirmed', BRACKET),
+  st: coeff(40, 'confirmed', BRACKET),
+  bal: coeff(20, 'confirmed', BRACKET),
+  int: coeff(60, 'confirmed', BRACKET),
+  tac: coeff(80, 'confirmed', BRACKET),
+  zep: coeff(140, 'confirmed', BRACKET),
+  sub: coeff(100, 'observed', BRACKET + '; no independent check'),
+  cl: coeff(50, 'observed', BRACKET + '; no independent check'),
+  bb: coeff(200, 'observed', BRACKET + '; no independent check'),
 }
 
 /** Attack range beyond melee, km. */

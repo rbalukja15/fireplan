@@ -151,17 +151,33 @@ describe('simulate', () => {
     expect(r.sides.A.hpLost).toBe(0)
   })
 
-  it('declares stalemate when nothing can die', () => {
+  it('declares stalemate when the round cap arrives first', () => {
+    // convoys chip 1 HP per round at 20 HP pools — one round decides nothing
     const r = simulate(
       duel(
-        [{ unit: 'convoy', count: 1, hpPct: 100 }], // unknown damage -> 0
         [{ unit: 'convoy', count: 1, hpPct: 100 }],
-        5,
+        [{ unit: 'convoy', count: 1, hpPct: 100 }],
+        1,
       ),
       DATA,
     )
     expect(r.winner).toBe('stalemate')
-    expect(r.warnings.some((w) => w.includes('unmeasured'))).toBe(true)
+  })
+
+  it('warns when an unmeasured terrain multiplier is used', () => {
+    const r = simulate(
+      armies(
+        {
+          stacks: [
+            stack({ id: 'A1', terrain: 'sea', target: 0, units: [{ unit: 'sub', count: 2, hpPct: 100 }] }),
+          ],
+        },
+        { stacks: [stack({ id: 'B1', terrain: 'sea', units: [{ unit: 'cl', count: 2, hpPct: 100 }] })] },
+        3,
+      ),
+      DATA,
+    )
+    expect(r.warnings.some((w) => w.includes("terrain 'sea'") && w.includes('unmeasured'))).toBe(true)
   })
 
   it('handles an empty side at round zero', () => {
@@ -173,11 +189,11 @@ describe('simulate', () => {
     expect(r.rounds).toBe(0)
   })
 
-  it('uses the defense figure for return fire (calibration divergence knob)', () => {
+  it('uses the defense figure for return fire (matches the dxcalc calibration)', () => {
     // dxcalc's live response for this battle has the DEFENDER winning
-    // (calibration/dxcalc-10inf2art-vs-12inf.html). With defense == attack our
-    // engine has the attacker winning; raising infantry defense flips it,
-    // proving return fire reads the defense table.
+    // (calibration/dxcalc-10inf2art-vs-12inf.html). The measured tables
+    // (inf: atk 4.0, def 5.0) reproduce that; flattening defense back to the
+    // attack value flips it, proving return fire reads the defense table.
     const setup = duel(
       [
         { unit: 'inf', count: 10, hpPct: 100 },
@@ -185,13 +201,17 @@ describe('simulate', () => {
       ],
       [{ unit: 'inf', count: 12, hpPct: 100 }],
     )
-    expect(simulate(setup, DATA).winner).toBe('A')
-    const buffed = mergeEngineData({ units: { inf: { defense: 8 } } })
-    expect(simulate(setup, buffed).winner).toBe('B')
+    expect(simulate(setup, DATA).winner).toBe('B')
+    const flattened = mergeEngineData({ units: { inf: { defense: 4 } } })
+    expect(simulate(setup, flattened).winner).toBe('A')
   })
 
   it('golden regression: 10 inf + 2 art vs 12 inf on land', () => {
     // Tripwire for the engine's arithmetic: update consciously, never casually.
+    // The live dxcalc response for this exact battle (calibration/) reads:
+    // attacker wiped (−240), defender −175.9 in ~9 rounds. The engine agrees
+    // on winner, wipe, and round count; the defender-loss gap (~19 HP) is the
+    // remaining model error (damage distribution / kill rules).
     const r = simulate(
       duel(
         [
@@ -202,10 +222,10 @@ describe('simulate', () => {
       ),
       DATA,
     )
-    expect(r.winner).toBe('A')
-    expect(r.rounds).toBe(8)
-    expect(r.sides.A.hpLost).toBeCloseTo(164.2056600495499, 6)
-    expect(r.sides.B.hpLost).toBeCloseTo(240, 6)
+    expect(r.winner).toBe('B')
+    expect(r.rounds).toBe(9)
+    expect(r.sides.A.hpLost).toBeCloseTo(240, 6)
+    expect(r.sides.B.hpLost).toBeCloseTo(194.7679897975567, 6)
   })
 })
 

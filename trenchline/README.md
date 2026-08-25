@@ -53,18 +53,24 @@ the app edits any value and persists overrides locally — battle reports
 list a warning for every unmeasured value they relied on.
 
 Confirmed by the probe: stack scaling `E(n)` (cap 35 effective units),
-damaged-unit multiplier `m(f) = 0.05 + 0.95f`, base attack damage for
-infantry/cavalry/artillery/heavy tank, patrol's 4×¼ ticks. Documented
-assumptions (simultaneous exchange, HP-proportional damage spread,
-return-fire splitting) are listed at the top of `src/engine/simulate.ts` —
-each is a thing a future probe sweep could falsify.
+damaged-unit multiplier `m(f) = 0.05 + 0.95f`, patrol's 4×¼ ticks, and —
+imported from the research calculator's replay-tested tables
+(`../web/data.js`, backed by `../results.jsonl`) — same-class attack,
+defense, and per-unit HP for all 17 units. Attack is per-*target*-class in
+the real game (a bomber does 3.0 vs air but 30.0 vs ground); Trenchline's
+single-table model uses the same-class diagonal, so cross-class matchups
+are approximate — the [research calculator](../web/) carries the full
+measured matrices. Documented assumptions (simultaneous exchange,
+HP-proportional damage spread, return-fire splitting) are listed at the top
+of `src/engine/simulate.ts` — each is a thing a future probe sweep could
+falsify.
 
 `calibration/` holds captured dxcalc responses. The first one already paid
 for itself: it proved the export payload works, pinned infantry at
 20 HP/unit, and showed dxcalc gives defenders different strength than
-attackers (12 defending inf beat 10 inf + 2 art). The engine therefore
-carries separate attack/defense tables; defense values are `unknown` until
-swept.
+attackers (12 defending inf beat 10 inf + 2 art) — which the measured
+defense table now reproduces: the engine's golden test agrees with that
+response on winner, wipe, and round count.
 
 ## Roadmap
 

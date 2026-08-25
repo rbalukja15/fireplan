@@ -2726,19 +2726,31 @@ HERO_FIELDS = ("B.1.hero.abb", "B.1.hero.lvl", "B.1.hero.hp")
 HERO_ATK_FIELDS = ("A.1.hero.abb", "A.1.hero.lvl", "A.1.hero.hp")
 
 
+# The 22 hero codes exactly as addHero()'s <option value=...> template lists
+# them. The codes are facts about the form's field values; bytro.js itself is
+# dxter's copyrighted client JS and is deliberately not in this repo.
+HERO_CODES = [
+    "rbaron", "thaden", "alvin", "lucien", "lucien_g", "johan", "pershing",
+    "otto", "togo", "togo_b", "tatiana", "tatiana_home", "joffre_home",
+    "joffre", "marco", "hank", "kangal", "allen", "georg", "larab",
+    "maeve", "ivan",
+]
+
+
 def hero_options() -> list[str]:
-    """The 23 hero codes, read out of the page's own addHero() template.
+    """The hero codes, read out of the page's own addHero() template.
 
     They are not on the GET form -- addHero() injects them client-side, exactly
-    like a building row -- so they have to come from bytro.js rather than from
-    p.select_options.
+    like a building row -- so they come from bytro.js when a local copy of it
+    sits next to this script (save https://dxcalc.com/js/bytro.js to refresh
+    the roster), and from the HERO_CODES transcription otherwise.
     """
     try:
         js = open("bytro.js").read()
     except OSError:
-        return []
+        return list(HERO_CODES)
     block = js[js.find("hero.abb"):js.find("hero.lvl")]
-    return re.findall(r'<option value="([^"]+)"', block)
+    return re.findall(r'<option value="([^"]+)"', block) or list(HERO_CODES)
 
 
 def exp_heroes(p: Probe) -> None:
@@ -2767,7 +2779,9 @@ def exp_heroes(p: Probe) -> None:
     """
     heroes = hero_options()
     if not heroes:
-        print("  ! no hero list found in bytro.js.", file=sys.stderr)
+        print("  ! no hero list: bytro.js is not in the repo (it is dxter's", file=sys.stderr)
+        print("    copyrighted client JS). Save https://dxcalc.com/js/bytro.js", file=sys.stderr)
+        print("    next to this script to run the hero experiment.", file=sys.stderr)
         return
     abb, lvl, hp = HERO_FIELDS
     print(f"  {len(heroes)} heroes from the page's own addHero() template\n")

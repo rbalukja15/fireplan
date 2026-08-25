@@ -95,12 +95,16 @@ export default function App() {
 
           <footer className="colophon">
             <p>
-              Engine coefficients recovered by black-box probing of{' '}
+              Engine coefficients measured by black-box probing of{' '}
               <a href="https://dxcalc.com/s1914" target="_blank" rel="noreferrer">
                 dxter&rsquo;s calculator
               </a>
-              ; unverified values are flagged in Engine data. Fan-made tool — not
-              affiliated with Bytro Labs or dxcalc.
+              ; unverified values are flagged in Engine data, and the fully
+              measured cross-class model lives in the{' '}
+              <a href="https://rbalukja15.github.io/dxcalc/research/" target="_blank" rel="noreferrer">
+                research calculator
+              </a>
+              . Fan-made tool — not affiliated with Bytro Labs or dxcalc.
             </p>
           </footer>
         </div>
