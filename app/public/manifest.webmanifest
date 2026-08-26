@@ -1,6 +1,6 @@
 {
-  "name": "Trenchline — S1914 Combat Calculator",
-  "short_name": "Trenchline",
+  "name": "Fireplan — S1914 Combat Calculator",
+  "short_name": "Fireplan",
   "description": "Supremacy 1914 combat calculator: client-side battle simulation with probe-verified math and one-click export to dxCalc.",
   "start_url": ".",
   "scope": ".",

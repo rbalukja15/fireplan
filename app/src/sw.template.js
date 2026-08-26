@@ -1,8 +1,8 @@
-/* Trenchline service worker (web build only).
+/* Fireplan service worker (web build only).
  * The build injects the emitted asset list and a per-build cache id, so a
  * deploy invalidates exactly one cache generation on activate. */
 const PRECACHE = __PRECACHE_MANIFEST__
-const CACHE = 'trenchline-' + __BUILD_ID__
+const CACHE = 'fireplan-' + __BUILD_ID__
 const BASE = __BASE_URL__
 
 const FONT_HOSTS = ['fonts.googleapis.com', 'fonts.gstatic.com']
@@ -23,7 +23,11 @@ self.addEventListener('activate', (event) => {
       .then((keys) =>
         Promise.all(
           keys
-            .filter((k) => k.startsWith('trenchline-') && k !== CACHE)
+            .filter(
+              (k) =>
+                (k.startsWith('fireplan-') || k.startsWith('trenchline-')) &&
+                k !== CACHE,
+            )
             .map((k) => caches.delete(k)),
         ),
       )

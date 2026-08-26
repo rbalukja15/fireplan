@@ -1,4 +1,4 @@
-# Trenchline
+# Fireplan
 
 A Supremacy 1914 combat calculator that runs everywhere from one codebase:
 an installable PWA and a Chrome/Firefox extension. All combat math executes
@@ -30,7 +30,7 @@ npm ci && npm run build:ext
 - Firefox: `about:debugging#/runtime/this-firefox` → *Load Temporary Add-on* →
   any file inside `dist/ext`
 
-`npm run zip:ext` produces `dist/trenchline-{chrome,firefox}.zip` for store
+`npm run zip:ext` produces `dist/fireplan-{chrome,firefox}.zip` for store
 uploads (the Chrome zip strips `browser_specific_settings`).
 
 ## Develop
@@ -52,7 +52,7 @@ dxcalc response), or `unknown` (placeholder). The **Engine data** panel in
 the app edits any value and persists overrides locally — battle reports
 list a warning for every unmeasured value they relied on.
 
-Trenchline has no combat model of its own: `src/engine/research.ts` is a
+Fireplan has no combat model of its own: `src/engine/research.ts` is a
 typed adapter over the research calculator's engine (`../web/engine.js` +
 `../web/data.js`), whose test suite replays every constant against
 `../results.jsonl` — 168+ recorded dxcalc responses. That is where the

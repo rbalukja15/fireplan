@@ -20,11 +20,11 @@ function zip(name, transformManifest) {
     writeFileSync(path, JSON.stringify(manifest, null, 2))
   }
   mkdirSync(out, { recursive: true })
-  const target = resolve(out, `trenchline-${name}.zip`)
+  const target = resolve(out, `fireplan-${name}.zip`)
   rmSync(target, { force: true })
   execFileSync('zip', ['-qr', target, '.'], { cwd: staging })
   rmSync(staging, { recursive: true, force: true })
-  console.log(`dist/trenchline-${name}.zip`)
+  console.log(`dist/fireplan-${name}.zip`)
 }
 
 zip('firefox')

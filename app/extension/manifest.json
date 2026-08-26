@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "Trenchline — S1914 Combat Calculator",
-  "short_name": "Trenchline",
+  "name": "Fireplan — S1914 Combat Calculator",
+  "short_name": "Fireplan",
   "version": "0.1.0",
   "description": "Supremacy 1914 combat calculator: client-side battle simulation with probe-verified math and one-click export to dxCalc.",
   "action": {
@@ -22,7 +22,7 @@
   "permissions": [],
   "browser_specific_settings": {
     "gecko": {
-      "id": "trenchline@rbalukja15.github.io",
+      "id": "fireplan@rbalukja15.github.io",
       "strict_min_version": "115.0"
     }
   }

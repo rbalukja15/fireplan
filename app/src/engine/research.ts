@@ -1,4 +1,4 @@
-/* The one engine. Trenchline used to carry its own simplified combat model;
+/* The one engine. Fireplan used to carry its own simplified combat model;
  * it is gone. This adapter wraps the research calculator's engine
  * (../../web/engine.js) — the clean-room implementation whose test suite
  * replays every value against results.jsonl — so heroes, buildings, trench

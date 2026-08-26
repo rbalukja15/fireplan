@@ -8,11 +8,11 @@ black-box measurement, plus two calculators built on what it measured.
 | --- | --- |
 | `dxcalc_probe.py` | The measurement rig: stdlib-only Python that submits controlled battles to dxcalc.com (politely throttled) and records readings to `results.jsonl` — 168+ rows, each one a real response. |
 | `web/` | The **research calculator**: dependency-free, no build step, every constant tagged with its measurement provenance. Its test suite replays `results.jsonl` row by row. Deployed at `/research/`. |
-| `trenchline/` | **Trenchline**: a React PWA + Chrome/Firefox extension version of the calculator — installable on a phone, with an editable Engine Data panel and one-click "Send to dxCalc" export. Deployed at the site root. |
+| `app/` | **Fireplan**: a React PWA + Chrome/Firefox extension version of the calculator — installable on a phone, with an editable Engine Data panel and one-click "Send to dxCalc" export. Deployed at the site root. |
 | `test_*.py` | Offline suites that guard the rig: they prove each experiment design could distinguish the hypotheses it ruled between. No network. |
 | `HANDOVER.md` | The research log and methodology contract. |
 
-The deployed site: **https://rbalukja15.github.io/fireplan/** (Trenchline;
+The deployed site: **https://rbalukja15.github.io/fireplan/** (Fireplan;
 the research calculator lives under [`/research/`](https://rbalukja15.github.io/fireplan/research/)).
 
 ## Provenance & notices
@@ -25,7 +25,7 @@ the research calculator lives under [`/research/`](https://rbalukja15.github.io/
   is original.
 - The repo contains a few **captured HTML responses** from dxcalc.com
   (`last_response.html`, `fortress_result.html`, `multi_stack_response.html`,
-  `trenchline/calibration/`). They are kept as the fixtures the offline test
+  `app/calibration/`). They are kept as the fixtures the offline test
   suites replay — measurement records for interoperability research. dxter's
   client JavaScript (`bytro.js`) is deliberately **not** included. If you are
   dxter and want the captures removed or changed, open an issue or email —

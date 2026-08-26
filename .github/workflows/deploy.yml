@@ -1,12 +1,12 @@
 # One site, two calculators, one workflow.
 #
-# The deployed artifact is Trenchline's PWA build at the root with the
+# The deployed artifact is Fireplan's PWA build at the root with the
 # research calculator (web/, dependency-free, relative paths) copied to
 # /research/. Both gates run before anything is packaged:
 #   - the research gate replays results.jsonl against web/engine.js and runs
 #     every offline Python suite (they prove the measurement designs still
 #     hold; a failure means a constant's provenance is broken);
-#   - the trenchline gate is its vitest suite plus both builds.
+#   - the app gate is its vitest suite plus both builds.
 #
 # ONE MANUAL STEP BEFORE THE FIRST DEPLOY, which cannot be automated:
 #   Settings -> Pages -> Build and deployment -> Source: "GitHub Actions".
@@ -62,30 +62,30 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: trenchline
+        working-directory: app
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: trenchline/package-lock.json
+          cache-dependency-path: app/package-lock.json
       - run: npm ci
       - run: npm test
       - run: npm run build:web
       - run: npm run build:ext
       - run: npm run zip:ext
-      - name: Compose the site (trenchline root + research calculator)
+      - name: Compose the site (Fireplan root + research calculator)
         run: cp -r ../web dist/web/research
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: trenchline/dist/web
+          path: app/dist/web
       - uses: actions/upload-artifact@v4
         with:
-          name: trenchline-extension
+          name: fireplan-extension
           path: |
-            trenchline/dist/trenchline-chrome.zip
-            trenchline/dist/trenchline-firefox.zip
+            app/dist/fireplan-chrome.zip
+            app/dist/fireplan-firefox.zip
 
   deploy:
     name: Deploy to GitHub Pages

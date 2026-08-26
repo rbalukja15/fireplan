@@ -48,7 +48,7 @@ export default function App() {
         <div className="shell">
           <header className="masthead">
             <div className="wordmark">
-              <h1>Trenchline</h1>
+              <h1>Fireplan</h1>
               <p className="tagline">Supremacy 1914 · combat calculator</p>
             </div>
             <nav className="masthead-actions">
