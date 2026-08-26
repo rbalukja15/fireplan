@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { BattleResult } from './engine/research.ts'
 import { runBattle } from './engine/research.ts'
 import { ExportGuardError, buildDxcalcPayload } from './export/dxcalcPayload.ts'
@@ -14,6 +14,20 @@ export default function App() {
   const [state, dispatch, flush] = usePersistentReducer()
   const [result, setResult] = useState<BattleResult | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [updateReady, setUpdateReady] = useState(false)
+
+  // Long-open sessions: when a deploy's fresh service worker takes over
+  // (sw.js uses skipWaiting), offer a reload. First-visit controller
+  // acquisition is not an update, hence the hadController guard.
+  useEffect(() => {
+    if (!(import.meta.env.MODE === 'web' && 'serviceWorker' in navigator)) return
+    const hadController = Boolean(navigator.serviceWorker.controller)
+    const onChange = (): void => {
+      if (hadController) setUpdateReady(true)
+    }
+    navigator.serviceWorker.addEventListener('controllerchange', onChange)
+    return () => navigator.serviceWorker.removeEventListener('controllerchange', onChange)
+  }, [])
 
   const runSimulation = (): void => {
     setError(null)
@@ -67,6 +81,15 @@ export default function App() {
           {error && <p className="banner error">{error}</p>}
 
           {result && <ReportView result={result} />}
+
+          {updateReady && (
+            <div className="update-toast" role="status">
+              <span>A new version of Fireplan is ready.</span>
+              <button className="btn small primary" onClick={() => window.location.reload()}>
+                Reload
+              </button>
+            </div>
+          )}
 
           <footer className="colophon">
             <p>
