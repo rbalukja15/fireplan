@@ -99,6 +99,7 @@ export type Action =
   | { type: 'addBuilding'; side: SideKey }
   | { type: 'setBuilding'; side: SideKey; index: number; patch: Partial<BuildingPick> }
   | { type: 'removeBuilding'; side: SideKey; index: number }
+  | { type: 'importSide'; side: SideKey; rows: Row[]; trench: number }
   | { type: 'setBattle'; patch: Partial<AppState['battle']> }
   | { type: 'setActiveSide'; side: SideKey }
   | { type: 'loadState'; state: AppState }
@@ -190,6 +191,16 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'removeBuilding':
       next[action.side].buildings.splice(action.index, 1)
       return next
+    case 'importSide': {
+      const seen = new Set<string>()
+      const rows = action.rows
+        .filter((r) => UNITS[r.unit] && r.count > 0 && !seen.has(r.unit) && seen.add(r.unit) !== undefined)
+        .slice(0, MAX_UNIT_ROWS)
+      if (!rows.length) return state
+      next[action.side].rows = rows.map((r) => ({ ...r }))
+      next[action.side].trench = clamp(action.trench, 0, TRENCH_MAX_LEVEL)
+      return next
+    }
     case 'setBattle':
       Object.assign(next.battle, action.patch)
       next.battle.rounds = Math.max(0.25, Math.min(100, Number(next.battle.rounds) || 1))

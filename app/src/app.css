@@ -797,3 +797,78 @@ body.popup .colophon {
   font-size: 0.85rem;
   max-width: min(92vw, 480px);
 }
+
+/* ---- import panel (extension only) ------------------------------------ */
+
+.import-panel {
+  background: var(--desk-2);
+  border: 1px solid var(--hairline);
+  border-left: 4px solid var(--amber);
+  border-radius: 3px;
+  padding: 10px 12px;
+  margin-bottom: 16px;
+}
+
+.import-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.import-head .sub-head {
+  color: var(--text-dim);
+}
+
+.import-status {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  flex: 1;
+  min-width: 140px;
+}
+
+.import-status.ok {
+  color: var(--olive);
+}
+
+.import-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.import-armies {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.import-armies li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8rem;
+}
+
+.import-armies .mono {
+  flex: 1;
+}
+
+.import-note {
+  margin: 8px 0 0;
+  color: var(--text-dim);
+}
+
+.import-report {
+  width: 100%;
+  margin-top: 8px;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  background: var(--ink);
+  color: var(--text);
+  border: 1px solid var(--hairline);
+}

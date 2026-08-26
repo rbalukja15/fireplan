@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "name": "Fireplan — S1914 Combat Calculator",
   "short_name": "Fireplan",
-  "version": "0.1.0",
-  "description": "Supremacy 1914 combat calculator: client-side battle simulation with probe-verified math and one-click export to dxCalc.",
+  "version": "0.3.0",
+  "description": "Supremacy 1914 combat calculator: client-side battle simulation with probe-verified math, one-click export to dxCalc, and army import from the open game tab.",
   "action": {
     "default_popup": "popup.html",
     "default_icon": {
@@ -20,6 +20,21 @@
     "128": "icons/icon-128.png"
   },
   "permissions": [],
+  "host_permissions": ["*://*.supremacy1914.com/*"],
+  "content_scripts": [
+    {
+      "matches": ["*://*.supremacy1914.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["page-probe.js"],
+      "matches": ["*://*.supremacy1914.com/*"]
+    }
+  ],
   "browser_specific_settings": {
     "gecko": {
       "id": "fireplan@rbalukja15.github.io",

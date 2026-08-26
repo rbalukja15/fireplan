@@ -7,6 +7,7 @@ import { usePersistentReducer } from './state/persistence.ts'
 import { toBattleConfig } from './state/store.ts'
 import { DispatchCtx, StateCtx } from './state/context.ts'
 import { ArmyTabs } from './components/ArmyTabs.tsx'
+import { ImportPanel } from './components/ImportPanel.tsx'
 import { BattleControls } from './components/BattleControls.tsx'
 import { ReportView } from './components/ReportView.tsx'
 
@@ -73,6 +74,8 @@ export default function App() {
               )}
             </nav>
           </header>
+
+          <ImportPanel />
 
           <ArmyTabs />
 

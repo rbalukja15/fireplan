@@ -33,6 +33,26 @@ npm ci && npm run build:ext
 `npm run zip:ext` produces `dist/fireplan-{chrome,firefox}.zip` for store
 uploads (the Chrome zip strips `browser_specific_settings`).
 
+### Army import from the game
+
+The extension asks for one host permission — `*.supremacy1914.com` — to run
+a read-only content script on the game. With a game tab open, the popup
+shows an **Import from game** panel: *Read armies* pulls stacks straight
+into the calculator (unrecognised units are dropped and reported, trench
+carries over), and everything stays in the browser — nothing is sent
+anywhere.
+
+The extractor that reads the live game's state is an adapter behind
+`extension/page-probe.js` (`readArmies()`), and it is deliberately
+conservative: until a real game session has been mapped it reports
+"unmapped" rather than guessing at numbers. To map it, open the game,
+click **Copy game structure report** — a bounded, redacted summary of the
+page's globals (strings truncated, URL query never included) — and share
+it in an issue. One adapter function later, import works for everyone.
+The whole pipeline is exercised end-to-end in CI-independent tests against
+a faked game origin, so only that adapter is untested against the real
+game.
+
 ## Develop
 
 ```
@@ -71,12 +91,9 @@ straight against that response.
 
 ## Roadmap
 
-- **Probe the defense table** — fixed duels against defending stacks,
-  reading attacker HP loss (the biggest accuracy gap, see `calibration/`).
-- **Live army import** — `src/import/armyImport.ts` is the seam: a content
-  script on supremacy1914.com can register an `ArmyImportSource` and the UI
-  grows an Import menu with no core changes. Needs a live game session to
-  reverse-engineer selectors.
-- Heroes and buildings (dxcalc models both; coefficients unmeasured).
-- Air/naval damage matrices, terrain multipliers (probe experiments exist:
-  `damage_air`, `damage_sea`, `terrain`).
+- **Map the live game for army import** — the pipeline ships; the one
+  missing piece is the page adapter, written from a "game structure
+  report" captured in a real session (see above).
+- **Multi-round carry-over** — every recorded measurement used
+  maxRounds = 1, so round-to-round carry-over is the engine's biggest
+  flagged extrapolation; a small probe sweep would pin it.

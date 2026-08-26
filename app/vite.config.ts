@@ -1,7 +1,7 @@
 /// <reference types="vitest/config" />
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
-import { readFileSync, copyFileSync } from 'node:fs'
+import { readFileSync, copyFileSync, readdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -39,16 +39,16 @@ function serviceWorkerPlugin(base: string): Plugin {
   }
 }
 
-// Ext build only: drop the WebExtension manifest into the output.
+// Ext build only: drop the WebExtension manifest, content script and page
+// probe into the output (they are plain self-contained JS — no bundling).
 function extensionManifestPlugin(outDir: string): Plugin {
   return {
     name: 'trenchline:ext-manifest',
     apply: 'build',
     closeBundle() {
-      copyFileSync(
-        resolve(here, 'extension/manifest.json'),
-        resolve(here, outDir, 'manifest.json'),
-      )
+      for (const f of readdirSync(resolve(here, 'extension'))) {
+        copyFileSync(resolve(here, 'extension', f), resolve(here, outDir, f))
+      }
     },
   }
 }
