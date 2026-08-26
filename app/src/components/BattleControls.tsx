@@ -1,5 +1,6 @@
 import type { AttackerTerrain, DefenderTerrain } from '../engine/research.ts'
 import { patrolEligible } from '../engine/research.ts'
+import { NumField } from './fields.tsx'
 import { toBattleConfig } from '../state/store.ts'
 import { useAppDispatch, useAppState } from '../state/context.ts'
 
@@ -48,11 +49,12 @@ export function BattleControls({
       </label>
       <label className="control">
         <span>distance km</span>
-        <input
-          type="number"
-          min={0}
+        <NumField
           value={battle.distance}
-          onChange={(e) => dispatch({ type: 'setBattle', patch: { distance: Number(e.target.value) } })}
+          min={0}
+          max={10000}
+          integer
+          onCommit={(distance) => dispatch({ type: 'setBattle', patch: { distance } })}
         />
       </label>
       <label className="control checkbox" title="Both stacks attack each other (dxcalc's B.1 vs A.1)">
@@ -84,13 +86,12 @@ export function BattleControls({
       {!battle.fightToEnd && (
         <label className="control">
           <span>rounds</span>
-          <input
-            type="number"
+          <NumField
+            value={battle.rounds}
             min={0.25}
             max={100}
-            step={0.25}
-            value={battle.rounds}
-            onChange={(e) => dispatch({ type: 'setBattle', patch: { rounds: Number(e.target.value) } })}
+            title="Whole rounds, or quarter fractions like 0.25 (patrol ticks)"
+            onCommit={(rounds) => dispatch({ type: 'setBattle', patch: { rounds } })}
           />
         </label>
       )}

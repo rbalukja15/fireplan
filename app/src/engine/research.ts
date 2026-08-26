@@ -141,6 +141,8 @@ interface UnitDef {
   code: UnitCode
   label: string
   cls: 'land' | 'air' | 'sea'
+  /** Hit points of one healthy unit (measured; see maxHPBracket in data.js). */
+  maxHP: number
 }
 
 interface HeroDef {
@@ -154,9 +156,11 @@ interface BuildingDef {
   label: string
   maxLevel: number
   mitigates: boolean
+  hpPerLevel: number | null
+  poolAtLevel: Record<number, number>
 }
 
-const D = DATA as {
+const D = DATA as unknown as {
   UNITS: Record<UnitCode, UnitDef>
   ROSTER_ORDER: UnitCode[]
   HEROES: Record<string, HeroDef>
@@ -183,6 +187,18 @@ export const BUILDING_CODES: string[] = Object.keys(BUILDINGS)
 
 export function heroDef(code: string): HeroDef | null {
   return HEROES[code] ?? null
+}
+
+/** Full-health HP pool of a unit row — what an absolute HP entry is read against. */
+export function rowMaxPool(unit: UnitCode, count: number): number {
+  return (UNITS[unit]?.maxHP ?? 0) * Math.max(0, count)
+}
+
+/** Full-health HP pool of a building at a level. */
+export function buildingPool(code: string, level: number): number {
+  const b = BUILDINGS[code]
+  if (!b) return 0
+  return b.poolAtLevel?.[level] ?? (b.hpPerLevel ?? 0) * level
 }
 
 /* Re-exported closed forms, for tests and future UI hints. */

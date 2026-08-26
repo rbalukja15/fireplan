@@ -116,6 +116,13 @@ export function freeUnits(side: SideConfig, exceptRow?: number): UnitCode[] {
 const clamp = (v: number, lo: number, hi: number): number =>
   Math.min(hi, Math.max(lo, Math.round(v) || lo))
 
+// HP percentages keep their decimals (87.5% is a real reading in game)
+const clampPct = (v: number): number => {
+  const n = Number(v)
+  if (!Number.isFinite(n) || n <= 0) return 100
+  return Math.min(100, Math.round(n * 100) / 100)
+}
+
 export function reducer(state: AppState, action: Action): AppState {
   const next: AppState = structuredClone(state)
   switch (action.type) {
@@ -128,8 +135,8 @@ export function reducer(state: AppState, action: Action): AppState {
         )
         if (!taken) row.unit = action.patch.unit
       }
-      if (action.patch.count !== undefined) row.count = clamp(Number(action.patch.count), 0, 500)
-      if (action.patch.hpPct !== undefined) row.hpPct = clamp(Number(action.patch.hpPct), 1, 100)
+      if (action.patch.count !== undefined) row.count = clamp(Number(action.patch.count), 0, 5000)
+      if (action.patch.hpPct !== undefined) row.hpPct = clampPct(Number(action.patch.hpPct))
       return next
     }
     case 'addRow': {
@@ -159,7 +166,7 @@ export function reducer(state: AppState, action: Action): AppState {
       if (action.patch.level !== undefined) {
         hero.level = clamp(Number(action.patch.level), 1, HEROES[hero.code]?.maxLevel || 20)
       }
-      if (action.patch.hpPct !== undefined) hero.hpPct = clamp(Number(action.patch.hpPct), 1, 100)
+      if (action.patch.hpPct !== undefined) hero.hpPct = clampPct(Number(action.patch.hpPct))
       return next
     }
     case 'addBuilding': {
@@ -177,7 +184,7 @@ export function reducer(state: AppState, action: Action): AppState {
       if (action.patch.level !== undefined) {
         b.level = clamp(Number(action.patch.level), 1, BUILDINGS[b.code]?.maxLevel ?? 5)
       }
-      if (action.patch.hpPct !== undefined) b.hpPct = clamp(Number(action.patch.hpPct), 1, 100)
+      if (action.patch.hpPct !== undefined) b.hpPct = clampPct(Number(action.patch.hpPct))
       return next
     }
     case 'removeBuilding':
