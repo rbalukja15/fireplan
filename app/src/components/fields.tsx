@@ -93,7 +93,10 @@ export function HpField({
   title?: string
   onCommit: (pct: number) => void
 }) {
-  const { text, setText, focused } = useEditableText(String(pct))
+  // The settled display always carries the % suffix, so an absolute entry
+  // that just got converted can never be misread as HP (403 over a 480 pool
+  // becomes "83.96%", with the absolute echoed underneath).
+  const { text, setText, focused } = useEditableText(`${pct}%`)
   const parse = (raw: string): number | null => {
     const isPercent = raw.trim().endsWith('%')
     const n = toNumber(raw.replace('%', ''))
@@ -103,38 +106,46 @@ export function HpField({
     }
     return Math.min(100, n)
   }
+  const absolute = maxPool > 0 ? Math.round((pct / 100) * maxPool * 10) / 10 : null
   return (
-    <input
-      type="text"
-      inputMode="decimal"
-      autoComplete="off"
-      spellCheck={false}
-      title={
-        title ??
-        'Percentage (87.5 or 87.5%), or the absolute HP total shown in game — values over 100 are converted for you.'
-      }
-      value={text}
-      onFocus={() => {
-        focused.current = true
-      }}
-      onChange={(e) => {
-        setText(e.target.value)
-        const raw = e.target.value
-        const n = toNumber(raw.replace('%', ''))
-        // live-commit plain in-range percentages only; absolute totals and
-        // suffixed input settle on blur
-        if (n !== null && n > 0 && n <= 100 && !raw.includes('%')) onCommit(n)
-      }}
-      onBlur={() => {
-        focused.current = false
-        const parsed = parse(text)
-        if (parsed === null) {
-          setText(String(pct))
-        } else {
-          onCommit(parsed)
-          setText(String(parsed))
+    <div className="hp-cell">
+      <input
+        type="text"
+        inputMode="decimal"
+        autoComplete="off"
+        spellCheck={false}
+        title={
+          title ??
+          'Percentage (87.5 or 87.5%), or the absolute HP total shown in game — values over 100 are converted for you.'
         }
-      }}
-    />
+        value={text}
+        onFocus={() => {
+          focused.current = true
+        }}
+        onChange={(e) => {
+          setText(e.target.value)
+          const raw = e.target.value
+          const n = toNumber(raw.replace('%', ''))
+          // live-commit plain in-range percentages only; absolute totals and
+          // suffixed input settle on blur
+          if (n !== null && n > 0 && n <= 100 && !raw.includes('%')) onCommit(n)
+        }}
+        onBlur={() => {
+          focused.current = false
+          const parsed = parse(text)
+          if (parsed === null) {
+            setText(`${pct}%`)
+          } else {
+            onCommit(parsed)
+            setText(`${parsed}%`)
+          }
+        }}
+      />
+      {absolute !== null && (
+        <span className="hp-echo" aria-hidden>
+          {absolute} / {maxPool} hp
+        </span>
+      )}
+    </div>
   )
 }

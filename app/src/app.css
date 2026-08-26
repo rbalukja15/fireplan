@@ -872,3 +872,21 @@ body.popup .colophon {
   color: var(--text);
   border: 1px solid var(--hairline);
 }
+
+/* ---- hp field with absolute echo -------------------------------------- */
+
+.hp-cell {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.hp-echo {
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
+  color: var(--paper-dim);
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
