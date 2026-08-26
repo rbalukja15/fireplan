@@ -1,45 +1,26 @@
-import { useMemo, useState } from 'react'
-import type { BattleReport as Report, BattleSetup } from './engine/types.ts'
-import { mergeEngineData } from './engine/data/coefficients.ts'
-import { simulate } from './engine/simulate.ts'
-import { monteCarlo, type MonteCarloResult } from './engine/montecarlo.ts'
+import { useState } from 'react'
+import type { BattleResult } from './engine/research.ts'
+import { runBattle } from './engine/research.ts'
 import { ExportGuardError, buildDxcalcPayload } from './export/dxcalcPayload.ts'
 import { submitToDxcalc } from './export/dxcalcSubmit.ts'
 import { usePersistentReducer } from './state/persistence.ts'
+import { toBattleConfig } from './state/store.ts'
 import { DispatchCtx, StateCtx } from './state/context.ts'
 import { ArmyTabs } from './components/ArmyTabs.tsx'
-import { SimControls } from './components/SimControls.tsx'
-import { BattleReportView, VarianceReportView } from './components/BattleReport.tsx'
-import { EngineDataPanel } from './components/EngineDataPanel.tsx'
-
-export type SimResult =
-  | { kind: 'single'; report: Report }
-  | { kind: 'mc'; mc: MonteCarloResult }
+import { BattleControls } from './components/BattleControls.tsx'
+import { ReportView } from './components/ReportView.tsx'
 
 export default function App() {
   const [state, dispatch, flush] = usePersistentReducer()
-  const [result, setResult] = useState<SimResult | null>(null)
+  const [result, setResult] = useState<BattleResult | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [dataOpen, setDataOpen] = useState(false)
-
-  const engineData = useMemo(
-    () => mergeEngineData(state.engineOverrides),
-    [state.engineOverrides],
-  )
-
-  const setup = (): BattleSetup => ({
-    armies: state.armies,
-    maxRounds: state.settings.maxRounds,
-  })
 
   const runSimulation = (): void => {
     setError(null)
+    // The engine contract says simulate() never throws — it reports failure
+    // through coverage instead. The try is a last line, not the design.
     try {
-      if (state.settings.variance) {
-        setResult({ kind: 'mc', mc: monteCarlo(setup(), engineData, state.settings.varianceRuns) })
-      } else {
-        setResult({ kind: 'single', report: simulate(setup(), engineData) })
-      }
+      setResult(runBattle(toBattleConfig(state)))
     } catch (e) {
       setResult(null)
       setError(e instanceof Error ? e.message : String(e))
@@ -50,7 +31,7 @@ export default function App() {
   const sendToDxcalc = (): void => {
     setError(null)
     try {
-      const payload = buildDxcalcPayload(setup(), { variance: state.settings.variance })
+      const payload = buildDxcalcPayload(toBattleConfig(state))
       flush()
       submitToDxcalc(payload)
     } catch (e) {
@@ -76,33 +57,26 @@ export default function App() {
                   Open full tab
                 </a>
               )}
-              <button className="btn ghost" onClick={() => setDataOpen((v) => !v)}>
-                Engine data
-              </button>
             </nav>
           </header>
 
-          {dataOpen && <EngineDataPanel data={engineData} onClose={() => setDataOpen(false)} />}
-
           <ArmyTabs />
 
-          <SimControls onSimulate={runSimulation} onSendToDxcalc={sendToDxcalc} />
+          <BattleControls onSimulate={runSimulation} onSendToDxcalc={sendToDxcalc} />
 
           {error && <p className="banner error">{error}</p>}
 
-          {result?.kind === 'single' && <BattleReportView report={result.report} />}
-          {result?.kind === 'mc' && <VarianceReportView mc={result.mc} />}
+          {result && <ReportView result={result} />}
 
           <footer className="colophon">
             <p>
-              Engine coefficients measured by black-box probing of{' '}
-              <a href="https://dxcalc.com/s1914" target="_blank" rel="noreferrer">
-                dxter&rsquo;s calculator
-              </a>
-              ; unverified values are flagged in Engine data, and the fully
-              measured cross-class model lives in the{' '}
+              Powered by the same replay-tested engine as the{' '}
               <a href="https://rbalukja15.github.io/fireplan/research/" target="_blank" rel="noreferrer">
                 research calculator
+              </a>
+              : every coefficient measured by black-box probing of{' '}
+              <a href="https://dxcalc.com/s1914" target="_blank" rel="noreferrer">
+                dxter&rsquo;s calculator
               </a>
               . Fan-made tool — not affiliated with Bytro Labs or dxcalc.
             </p>

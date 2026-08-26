@@ -52,25 +52,22 @@ dxcalc response), or `unknown` (placeholder). The **Engine data** panel in
 the app edits any value and persists overrides locally — battle reports
 list a warning for every unmeasured value they relied on.
 
-Confirmed by the probe: stack scaling `E(n)` (cap 35 effective units),
-damaged-unit multiplier `m(f) = 0.05 + 0.95f`, patrol's 4×¼ ticks, and —
-imported from the research calculator's replay-tested tables
-(`../web/data.js`, backed by `../results.jsonl`) — same-class attack,
-defense, and per-unit HP for all 17 units. Attack is per-*target*-class in
-the real game (a bomber does 3.0 vs air but 30.0 vs ground); Trenchline's
-single-table model uses the same-class diagonal, so cross-class matchups
-are approximate — the [research calculator](../web/) carries the full
-measured matrices. Documented assumptions (simultaneous exchange,
-HP-proportional damage spread, return-fire splitting) are listed at the top
-of `src/engine/simulate.ts` — each is a thing a future probe sweep could
-falsify.
+Trenchline has no combat model of its own: `src/engine/research.ts` is a
+typed adapter over the research calculator's engine (`../web/engine.js` +
+`../web/data.js`), whose test suite replays every constant against
+`../results.jsonl` — 168+ recorded dxcalc responses. That is where the
+heroes (both hero tables, buffs, bombardment), buildings (fortress damage
+reduction, per-building pools), the trench staircase (measured to level
+20), cross-class attack/defence matrices, patrol, embarkation and the
+E(n)/m(f) closed forms all come from. Every battle report carries the
+engine's own coverage verdict (measured / estimated / unknown), its
+caveats, and a step-by-step derivation.
 
 `calibration/` holds captured dxcalc responses. The first one already paid
-for itself: it proved the export payload works, pinned infantry at
-20 HP/unit, and showed dxcalc gives defenders different strength than
-attackers (12 defending inf beat 10 inf + 2 art) — which the measured
-defense table now reproduces: the engine's golden test agrees with that
-response on winner, wipe, and round count.
+for itself during development: it proved the export payload works
+end-to-end, and the engine reproduces it to print precision — the golden
+test asserts the attacker wipe (−240.0) and the defender's 175.9 HP loss
+straight against that response.
 
 ## Roadmap
 

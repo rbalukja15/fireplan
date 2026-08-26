@@ -684,3 +684,93 @@ body.popup .tagline {
 body.popup .colophon {
   display: none;
 }
+
+/* ---- v2: side sub-blocks, coverage, derivation ------------------------ */
+
+.sub-block {
+  margin-top: 12px;
+  border-top: 1px dashed var(--paper-dim);
+  padding-top: 8px;
+}
+
+.sub-head {
+  font-family: var(--font-display);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-size: 0.85rem;
+  margin: 0 0 6px;
+  color: var(--paper-dim);
+}
+
+.trench-block label span {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--paper-dim);
+  margin-bottom: 2px;
+}
+
+.trench-block input {
+  max-width: 90px;
+}
+
+.coverage {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  padding: 8px 12px;
+  border-radius: 2px;
+  margin: 0 0 12px;
+}
+
+.coverage b {
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.coverage-measured {
+  background: color-mix(in srgb, var(--olive) 22%, var(--paper) 78%);
+  border-left: 3px solid #3c5220;
+}
+
+.coverage-estimated {
+  background: color-mix(in srgb, var(--amber) 20%, var(--paper) 80%);
+  border-left: 3px solid var(--amber);
+}
+
+.coverage-unknown {
+  background: color-mix(in srgb, var(--signal) 16%, var(--paper) 84%);
+  border-left: 3px solid var(--signal-deep);
+}
+
+.derivation {
+  margin-top: 14px;
+  font-size: 0.78rem;
+}
+
+.derivation summary {
+  cursor: pointer;
+  font-family: var(--font-display);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--paper-dim);
+}
+
+.derivation ol {
+  margin: 8px 0 0;
+  padding-left: 22px;
+}
+
+.derivation li {
+  margin-bottom: 5px;
+  border-bottom: 1px dotted var(--paper-2);
+  padding-bottom: 4px;
+}
+
+.bldg-table {
+  margin-top: 8px;
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}

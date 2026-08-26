@@ -1,4 +1,4 @@
-import type { Army, Side } from '../engine/types.ts'
+import type { SideConfig, SideKey } from '../engine/research.ts'
 
 /* The seam for pulling armies out of a live game instead of typing them.
  *
@@ -11,7 +11,7 @@ export interface ArmyImportSource {
   id: string
   label: string
   available(): boolean
-  importArmy(side: Side): Promise<Army>
+  importSide(side: SideKey): Promise<SideConfig>
 }
 
 export const importSources: ArmyImportSource[] = []

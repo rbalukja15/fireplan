@@ -1,6 +1,6 @@
 import { useEffect, useReducer, useRef } from 'react'
 import type { Action, AppState } from './store.ts'
-import { initialState, reducer } from './store.ts'
+import { initialState, migrateV1, reducer } from './store.ts'
 
 const KEY = 'trenchline:v1'
 const DEBOUNCE_MS = 300
@@ -9,9 +9,10 @@ export function loadPersisted(): AppState {
   try {
     const raw = localStorage.getItem(KEY)
     if (!raw) return initialState()
-    const parsed = JSON.parse(raw) as AppState
-    if (parsed?.schema !== 1) return initialState()
-    return parsed
+    const parsed = JSON.parse(raw) as { schema?: number }
+    if (parsed?.schema === 2) return parsed as AppState
+    if (parsed?.schema === 1) return migrateV1(parsed)
+    return initialState()
   } catch {
     return initialState()
   }

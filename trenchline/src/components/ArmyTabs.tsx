@@ -1,8 +1,11 @@
-import type { Side } from '../engine/types.ts'
+import type { SideKey } from '../engine/research.ts'
 import { useAppDispatch, useAppState } from '../state/context.ts'
-import { ArmyPanel } from './ArmyPanel.tsx'
+import { SidePanel } from './SidePanel.tsx'
 
-const SIDE_LABEL: Record<Side, string> = { A: 'Attacking', B: 'Defending' }
+const SIDES: Array<{ key: SideKey; label: string }> = [
+  { key: 'attacker', label: 'Attacking army' },
+  { key: 'defender', label: 'Defending army' },
+]
 
 /** One DOM, two layouts: tabs on a phone, both panels side by side on a
  * desk-width screen (the tab strip hides itself via CSS). */
@@ -12,27 +15,22 @@ export function ArmyTabs() {
   return (
     <div className="board">
       <div className="tabstrip" role="tablist">
-        {(['A', 'B'] as const).map((side) => (
+        {SIDES.map(({ key, label }) => (
           <button
-            key={side}
+            key={key}
             role="tab"
-            aria-selected={activeSide === side}
-            className={activeSide === side ? 'tab active' : 'tab'}
-            onClick={() => dispatch({ type: 'setActiveSide', side })}
+            aria-selected={activeSide === key}
+            className={activeSide === key ? 'tab active' : 'tab'}
+            onClick={() => dispatch({ type: 'setActiveSide', side: key })}
           >
-            {SIDE_LABEL[side]}
+            {label.split(' ')[0]}
           </button>
         ))}
       </div>
       <div className="board-grid">
-        {(['A', 'B'] as const).map((side) => (
-          <section
-            key={side}
-            className={
-              'board-col' + (activeSide === side ? ' active' : ' inactive')
-            }
-          >
-            <ArmyPanel side={side} label={SIDE_LABEL[side]} />
+        {SIDES.map(({ key, label }) => (
+          <section key={key} className={'board-col' + (activeSide === key ? ' active' : ' inactive')}>
+            <SidePanel side={key} label={label} />
           </section>
         ))}
       </div>

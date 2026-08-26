@@ -61,6 +61,8 @@ export default defineConfig(({ mode }) => {
   if (isExt) input.popup = resolve(here, 'popup.html')
   return {
     base,
+    // the research engine (../web) is imported from outside the vite root
+    server: { fs: { allow: ['..'] } },
     plugins: [
       react(),
       isExt ? extensionManifestPlugin(outDir) : serviceWorkerPlugin(base),
