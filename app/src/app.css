@@ -352,7 +352,16 @@ input[type='checkbox'] {
   display: grid;
   grid-template-columns: minmax(0, 1.5fr) minmax(48px, 0.55fr) minmax(92px, 0.95fr) 26px;
   gap: 6px;
-  align-items: center;
+  /* top-aligned, not centered: the hp cell carries an echo line underneath,
+   * so centering would sink the unit/count boxes below the hp box */
+  align-items: start;
+}
+
+.unit-row select,
+.unit-row input,
+.unit-row .btn.tiny,
+.unit-row .hp-mode {
+  height: 30px;
 }
 
 .unit-row-head {
