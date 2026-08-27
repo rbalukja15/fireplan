@@ -350,7 +350,7 @@ input[type='checkbox'] {
 
 .unit-row {
   display: grid;
-  grid-template-columns: minmax(0, 1.8fr) minmax(58px, 0.7fr) minmax(58px, 0.7fr) 30px;
+  grid-template-columns: minmax(0, 1.5fr) minmax(48px, 0.55fr) minmax(92px, 0.95fr) 26px;
   gap: 6px;
   align-items: center;
 }
@@ -889,4 +889,36 @@ body.popup .colophon {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* ---- hp unit toggle --------------------------------------------------- */
+
+.hp-row {
+  display: flex;
+  gap: 3px;
+  min-width: 0;
+}
+
+.hp-row input {
+  min-width: 0;
+  flex: 1;
+}
+
+.hp-mode {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  width: 26px;
+  padding: 0;
+  border: 1px solid var(--paper-dim);
+  border-radius: 2px;
+  background: var(--paper-2);
+  color: var(--paper-ink);
+  cursor: pointer;
+}
+
+.hp-mode:disabled {
+  opacity: 0.4;
+  cursor: default;
 }

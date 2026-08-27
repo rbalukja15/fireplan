@@ -12,7 +12,8 @@ import {
 } from '../engine/research.ts'
 import { freeUnits } from '../state/store.ts'
 import { useAppDispatch, useAppState } from '../state/context.ts'
-import { HpField, NumField } from './fields.tsx'
+import { NumField } from './fields.tsx'
+import { HpField } from './hpfield.tsx'
 
 export function SidePanel({ side, label }: { side: SideKey; label: string }) {
   const state = useAppState()
@@ -32,7 +33,7 @@ export function SidePanel({ side, label }: { side: SideKey; label: string }) {
           <div className="unit-row unit-row-head" aria-hidden>
             <span>unit</span>
             <span>count</span>
-            <span>hp % / abs</span>
+            <span>hp</span>
             <span />
           </div>
           {s.rows.map((row, r) => {
@@ -113,7 +114,6 @@ export function SidePanel({ side, label }: { side: SideKey; label: string }) {
               <HpField
                 pct={s.hero.hpPct}
                 maxPool={HEROES[s.hero.code]?.pool ?? 0}
-                title="Hero HP: percentage, or absolute over 100"
                 onCommit={(hpPct) => dispatch({ type: 'patchHero', side, patch: { hpPct } })}
               />
               <button className="btn tiny danger" title="Remove hero" onClick={() => dispatch({ type: 'setHero', side, hero: null })}>
@@ -148,7 +148,6 @@ export function SidePanel({ side, label }: { side: SideKey; label: string }) {
               <HpField
                 pct={b.hpPct}
                 maxPool={buildingPool(b.code, b.level)}
-                title="Building HP: percentage, or absolute over 100"
                 onCommit={(hpPct) => dispatch({ type: 'setBuilding', side, index: i, patch: { hpPct } })}
               />
               <button
