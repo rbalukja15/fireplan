@@ -2880,6 +2880,50 @@ console.log('\n12t. every hero has a column per class, on both sides');
       const h20 = l20.attacker.rows.find((x) => x.isHero);
       return Math.abs(h1.damageDealt - 25) < 0.05 && Math.abs(h20.damageDealt - 125) < 0.05;
     })());
+
+  // A COLUMN IS FOR THE WHOLE BATTLE, NOT ROUND ONE. refreshRound rebuilds a
+  // hero's attack every round from atkFull, which is the BASE column, and the
+  // class ratio used to be lost there: Lawrence attacking fighters read 4.5 in
+  // round one and 42.4 in round two. A land battle cannot show it -- the ratio
+  // is 1 -- and every multi-round hero reading on file is land against land,
+  // which is how it went unnoticed. The expected round-two figure is the
+  // column x m(the hero's HP after round one), that HP read off the same
+  // battle stopped after one round.
+  const L = HEROES.larab;
+  const columnHolds = (label, cfg, side, cls) => {
+    const one = simulate({ ...cfg, rounds: 1 });
+    const two = simulate({ ...cfg, rounds: 2 });
+    const hero = one[side].rows.find((x) => x.isHero);
+    const col = (side === 'attacker' ? L.atkByTargetClass : L.defByAttackerClass)[cls];
+    const r2 = two.derivation.find((d) => d.label
+      === `R2 ${side === 'attacker' ? 'Attacker' : 'Defender'} hero: ${L.label}`);
+    const want = col * hpMultiplier((hero.pool - hero.hpLost) / hero.pool);
+    check(`${label}: round two stays on the ${cls} column, ${fmt(want)}`,
+      !!r2 && hero.hpLost > 0 && Math.abs(r2.value - want) < 1e-9,
+      r2 ? `got ${fmt(r2.value)} (column ${col}, land ${side === 'attacker'
+        ? L.atkByTargetClass.land : L.defByAttackerClass.land})` : 'no round-two hero line');
+  };
+  const withLarab = (unit, count) => ({ rows: [{ unit, count }], hero: { code: 'larab', level: 1 } });
+  const atkAir = { terrain: 'land', defenderTerrain: 'land',
+    attacker: withLarab('lart', 19), defender: { rows: [{ unit: 'int', count: 200 }] } };
+  const atkNaval = { terrain: 'land', defenderTerrain: 'sea',
+    attacker: withLarab('lart', 19), defender: { rows: [{ unit: 'bb', count: 3 }] } };
+  columnHolds('Lawrence attacking parked fighters', atkAir, 'attacker', 'air');
+  columnHolds('Lawrence attacking battleships', atkNaval, 'attacker', 'naval');
+  columnHolds('Lawrence defending against fighters', { terrain: 'air', defenderTerrain: 'land',
+    attacker: { rows: [{ unit: 'int', count: 10 }] }, defender: withLarab('lart', 10) }, 'defender', 'air');
+  columnHolds('Lawrence defending against battleships', { terrain: 'sea', defenderTerrain: 'land',
+    attacker: { rows: [{ unit: 'bb', count: 3 }] }, defender: withLarab('lart', 10) }, 'defender', 'naval');
+  // ...and the pile engine shares the same two functions, so it must agree.
+  {
+    const single = simulate({ ...atkNaval, rounds: 4, mode: 'strike', distance: 0 });
+    const multi = simulateMulti({ terrain: 'land', defenderTerrain: 'sea', rounds: 4,
+      attackers: [atkNaval.attacker], defenders: [atkNaval.defender] });
+    check('simulateMulti keeps the column across rounds too, matching simulate()',
+      Math.abs(single.defender.hpLost - multi.defenders[0].hpLost) < 1e-9
+      && Math.abs(single.attacker.hpLost - multi.attackers[0].hpLost) < 1e-9,
+      `${fmt(single.defender.hpLost)} vs ${fmt(multi.defenders[0].hpLost)}`);
+  }
 }
 
 // ===========================================================================

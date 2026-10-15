@@ -1297,7 +1297,12 @@ function applyHeroColumn(side, cls) {
   if (!t || t[cls] === undefined) return;
   const base = side.hero.def.atkColumnBase || 'land';
   if (t[base] === undefined || t[base] === 0) return;
-  side.hero.atk *= t[cls] / t[base];
+  // Kept, not just applied: refreshRound rebuilds atk from atkFull -- the
+  // BASE column -- every round after the first, and without the ratio a hero
+  // fighting air or naval reverted to its land figure from round two on
+  // (Lawrence against fighters: 4.5, then 42.4).
+  side.hero.columnRatio = t[cls] / t[base];
+  side.hero.atk *= side.hero.columnRatio;
   side.hero.atkColumn = cls;
 }
 
@@ -3160,6 +3165,7 @@ function refreshRound(side) {
   if (side.hero && side.hero.poolFull > 0) {
     const heroLeft = Math.max(0, side.hero.pool - (side.hero.hpLost || 0));
     side.hero.atk = side.hero.atkFull
+      * (side.hero.columnRatio === undefined ? 1 : side.hero.columnRatio)
       * hpMultiplier(heroLeft / side.hero.poolFull);
   }
   const live = side.rows.map((r) => ({
