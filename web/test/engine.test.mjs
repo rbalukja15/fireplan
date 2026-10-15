@@ -49,7 +49,7 @@ import {
   BOMBARDMENT, BOMBARDMENT_SPLIT, HERO_REACH,
   MUTUAL,
   MULTI_STACK, SCOPE_LIMITS, STACK_GROUP, STACK_GROUP_LABEL,
-  FORTRESS,
+  FORTRESS, DAMAGE_ALLOCATION,
 } from '../data.js';
 import {
   heroBuff,
@@ -57,6 +57,7 @@ import {
   allocationWeights,
   effectiveUnits, hpMultiplier, fortressDR, trenchFactors, coverageOf, simulate,
   combatClass, attackCoefficient, targetClassFor,
+  simulateMulti,
 } from '../engine.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -4732,15 +4733,15 @@ check('the roster already flagged the convoy as a stack group of its own',
 check('and it is the only unit in the roster with that group',
   Object.keys(STACK_GROUP).filter((u) => STACK_GROUP[u] === 'convoy').length === 1,
   JSON.stringify(Object.keys(STACK_GROUP).filter((u) => STACK_GROUP[u] === 'convoy')));
-// Unlike defenders do NOT split evenly, which is the one thing this sweep
-// shows and cannot pin down. Recorded as an observation, not a rule.
-check('two UNLIKE defenders split unevenly — observed, and not enough to fix a rule',
+// Unlike defenders do NOT split evenly. On its own this sweep could not pin
+// down why; section 24b shows it is the row allocation law already on file.
+check('two UNLIKE defenders split unevenly — see 24b for the law that explains it',
   rd(c0, 'B.1.1') !== rd(c0, 'B.2.1')
   && rd(c0, 'B.1.1') + rd(c0, 'B.2.1') === 80.0,
   `${rd(c0, 'B.1.1')} / ${rd(c0, 'B.2.1')}`);
 
 // --- and the app has to SAY it does not do any of this ---------------------
-check('MULTI_STACK declares itself unmodelled rather than implying otherwise',
+check('the PAGE declares one stack a side on its form rather than implying otherwise',
   MULTI_STACK.modelledByThisApp === false
   && MULTI_STACK.stacksPerSideModelled === 1);
 check('the escape distance is recorded as the measured 1 km',
@@ -4778,6 +4779,181 @@ check('and NOT ONE of them has leaked into the "nobody has measured this" list',
 check('the multi-stack advice names the two laws a player can apply by hand',
   /co-located|pile/i.test(SCOPE_LIMITS.find((s) => s.key === 'multi_stack').whatToDoInstead)
   && /1 km/i.test(SCOPE_LIMITS.find((s) => s.key === 'multi_stack').whatToDoInstead));
+
+// ===========================================================================
+// 24b. simulateMulti() — the same laws, computed
+// ===========================================================================
+// Section 24 proves the laws from the readings by hand. This one holds the
+// engine that computes them to the same seven readings, and then to
+// simulate() itself: with one stack a side there is nothing for the pile laws
+// to do, so any difference between the two engines is a defect in one of
+// them. That second check is what keeps a second battle loop from drifting
+// away from the replay-tested first.
+console.log('\n24b. simulateMulti() — MORE THAN ONE STACK, COMPUTED');
+
+{
+  const ten = (unit) => ({ rows: [{ unit, count: 10, hpPct: 100 }], trench: 0, buildings: [], hero: null });
+  const fortified = (s) => ({ ...s, buildings: [{ code: 'fortress', level: 5, hpPct: 100 }] });
+  // Each row's configuration, rebuilt from its own meta. A stack that is
+  // present but idle (A.2 in multi_stack_idle) is simply not an attacker.
+  const configFor = (r) => {
+    if (r.experiment === 'multi_stack_idle') {
+      return { attackers: [ten('inf')], defenders: [ten('inf'), ten('inf')], idle: ['A.2.1'] };
+    }
+    if (r.experiment === 'multi_stack_focus') {
+      return { attackers: [ten('inf'), ten('inf')], defenders: [ten('inf')], idle: [] };
+    }
+    const b1 = r.meta.fortress ? fortified(ten('inf')) : ten('inf');
+    const b2 = { ...ten(r.meta.b2_unit === 'convoy' ? 'convoy' : 'inf'), distance: r.meta.b2_pos || 0 };
+    return { attackers: [ten('inf'), ten('inf')], defenders: [b1, b2], idle: [] };
+  };
+  const slotOf = (res, slot) => {
+    const m = /^([AB])\.(\d+)\.(1|bldg\.1)$/.exec(slot);
+    const side = (m[1] === 'A' ? res.attackers : res.defenders)[Number(m[2]) - 1];
+    if (!side) return { lost: undefined, died: undefined };
+    if (m[3] === 'bldg.1') return { lost: side.buildings[0] && side.buildings[0].hpLost, died: null };
+    return { lost: side.hpLost, died: side.deaths };
+  };
+  let worstMs = 0;
+  for (const r of msRows) {
+    const c = configFor(r);
+    const res = simulateMulti({ attackers: c.attackers, defenders: c.defenders, rounds: 1, terrain: 'land' });
+    const tag = `${r.experiment}${r.meta.tag ? ` (${r.meta.tag})` : ''}`;
+    const misses = [];
+    for (const [slot, want] of Object.entries(r.readings)) {
+      if (c.idle.includes(slot)) {
+        if (want !== 0) misses.push(`${slot}: idle stack recorded ${want}`);
+        continue;
+      }
+      const got = slotOf(res, slot);
+      const d = Math.abs(got.lost - want);
+      worstMs = Math.max(worstMs, d);
+      if (!(d <= 0.05 + 1e-9)) misses.push(`${slot} ${want} vs ${fmt(got.lost)}`);
+      const det = r.meta.detail && r.meta.detail[slot];
+      if (det && typeof det.died === 'number' && got.died !== null && got.died !== det.died) {
+        misses.push(`${slot} deaths ${det.died} vs ${got.died}`);
+      }
+    }
+    check(`simulateMulti reproduces ${tag}, every HP figure and death count`,
+      misses.length === 0, misses.join('; '));
+    check(`  and calls it measured — it is inside the envelope the laws were read in`,
+      res.coverage.level === 'measured', `${res.coverage.level}: ${res.coverage.reason}`);
+  }
+  check('worst residual across the seven readings is inside a 1-decimal span’s print',
+    worstMs <= 0.05 + 1e-9, fmt(worstMs));
+
+  // --- the unlike split is the row allocation law, with nothing fitted ------
+  const convoyRow = msBy('multi_stack', 'convoy, no fortress');
+  const cr = simulateMulti({ ...(({ attackers, defenders }) => ({ attackers, defenders }))(configFor(convoyRow)),
+    rounds: 1, terrain: 'land' });
+  check('the convoy split comes out of TARGET_FACTOR x survivors with no free parameter',
+    Math.abs(cr.defenders[0].hpLost - 27.62) < 0.01 && Math.abs(cr.defenders[1].hpLost - 52.38) < 0.01
+    && DAMAGE_ALLOCATION === 'attack_times_count' && MULTI_STACK.splitAcrossPile === 'rowAllocation',
+    `${fmt(cr.defenders[0].hpLost)} / ${fmt(cr.defenders[1].hpLost)}`);
+  check('and the rivals it beat are written down where a reader will meet them',
+    /12\.4/.test(PROVENANCE['MULTI_STACK.unlikeSplit'].residual)
+    && /Not fitted/.test(PROVENANCE['MULTI_STACK.unlikeSplit'].method),
+    PROVENANCE['MULTI_STACK.unlikeSplit'].residual);
+
+  // --- the law players get backwards: return fire is not shared ------------
+  const pile = [ten('inf'), ten('inf')];
+  const alone = simulateMulti({ attackers: [ten('inf')], defenders: pile, rounds: 1 });
+  const joined = simulateMulti({ attackers: [ten('inf'), ten('inf')], defenders: pile, rounds: 1 });
+  check('a second attacker does NOT lighten the first one’s bill: 100 alone, 100 joined',
+    alone.attackers[0].hpLost === 100 && joined.attackers[0].hpLost === 100,
+    `${alone.attackers[0].hpLost} / ${joined.attackers[0].hpLost}`);
+  check('so two attackers pay 190 where one paid 100 — return fire is never divided',
+    joined.attackers[0].hpLost + joined.attackers[1].hpLost === 190 && MULTI_STACK.returnFireDividedAmongAttackers === false,
+    String(joined.attackers[0].hpLost + joined.attackers[1].hpLost));
+
+  // --- one stack a side: identical to simulate(), across a sweep ------------
+  let seed = 914;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+  const LANDU = ['inf', 'cav', 'ac', 'art', 'lart', 'lt', 'ht', 'st'];
+  const quiet = Object.keys(HEROES).filter((h) => !BOMBARDMENT[h]);
+  const randomStack = (def) => {
+    const units = [...LANDU].sort(() => rnd() - 0.5).slice(0, 1 + Math.floor(rnd() * 3));
+    const s = {
+      rows: units.map((u) => ({ unit: u, count: 1 + Math.floor(rnd() * 70),
+        hpPct: rnd() < 0.5 ? 100 : Math.round(20 + rnd() * 80) })),
+      trench: rnd() < 0.4 ? Math.floor(rnd() * 21) : 0, buildings: [], hero: null,
+    };
+    if (rnd() < 0.35) {
+      s.hero = { code: quiet[Math.floor(rnd() * quiet.length)], level: 1 + Math.floor(rnd() * 10),
+        hpPct: rnd() < 0.6 ? 100 : Math.round(30 + rnd() * 70) };
+    }
+    if (def && rnd() < 0.4) {
+      s.buildings = [{ code: 'fortress', level: 1 + Math.floor(rnd() * 5), hpPct: Math.round(10 + rnd() * 90) }];
+    }
+    return s;
+  };
+  const FIELDS = ['hpLost', 'deaths', 'damageDealt', 'outputRaw', 'unitsLeft', 'damageToBuildings'];
+  let compared = 0;
+  const drift = [];
+  for (let i = 0; i < 400; i += 1) {
+    const A = randomStack(false);
+    const B = randomStack(true);
+    const ranged = rnd() < 0.15;
+    if (ranged) A.rows = [{ unit: 'art', count: 1 + Math.floor(rnd() * 60), hpPct: 100 }];
+    const distance = ranged ? 6 + Math.floor(rnd() * 44) : 0;
+    const rounds = rnd() < 0.5 ? 1 : 1 + Math.floor(rnd() * 15);
+    const one = simulate({ attacker: A, defender: B, rounds, mode: 'strike', terrain: 'land', distance });
+    const many = simulateMulti({ attackers: [{ ...A, distance }], defenders: [B], rounds, terrain: 'land' });
+    compared += 1;
+    const diffs = [];
+    for (const [k, s1, s2] of [['A', one.attacker, many.attackers[0]], ['B', one.defender, many.defenders[0]]]) {
+      for (const f of FIELDS) {
+        const a = s1[f]; const b = s2[f];
+        if ((a === null) !== (b === null) || (a !== null && Math.abs(a - b) > 1e-6)) diffs.push(`${k}.${f} ${a} vs ${b}`);
+      }
+    }
+    if (one.rounds.fought !== many.rounds.fought) diffs.push(`rounds ${one.rounds.fought} vs ${many.rounds.fought}`);
+    if (one.coverage.level !== many.coverage.level) diffs.push(`coverage ${one.coverage.level} vs ${many.coverage.level}`);
+    if (diffs.length) drift.push(`#${i} ${diffs.slice(0, 3).join(', ')}`);
+  }
+  check(`one stack a side, ${compared} random battles: simulateMulti() IS simulate()`,
+    drift.length === 0, drift.slice(0, 5).join(' | '));
+
+  // --- what it refuses, and that it says so --------------------------------
+  const refused = (label, cfg) => {
+    const res = simulateMulti(cfg);
+    check(`refused, not approximated: ${label}`,
+      res.coverage.level === 'unknown' && res.attackers.every((s) => s.hpLost === null)
+      && res.derivation.length > 0, `${res.coverage.level}: ${res.coverage.reason}`);
+  };
+  const airS = { rows: [{ unit: 'tac', count: 10, hpPct: 100 }], trench: 0, buildings: [], hero: null };
+  refused('patrol into a pile', { attackers: [airS], defenders: pile, mode: 'patrol', terrain: 'air', defenderTerrain: 'land' });
+  refused('an air stack striking a pile on the ground', { attackers: [airS], defenders: pile, terrain: 'air', defenderTerrain: 'land' });
+  refused('mutual attack between piles', { attackers: [ten('inf')], defenders: pile, mutual: true });
+  refused('a bombardment-ability hero', { attackers: [{ ...ten('inf'), hero: { code: Object.keys(BOMBARDMENT).find((h) => HEROES[h]) || Object.keys(BOMBARDMENT)[0], level: 5, hpPct: 100 } }], defenders: pile });
+  refused('no defenders at all', { attackers: [ten('inf')], defenders: [] });
+  for (const junk of [null, undefined, {}, { attackers: [null], defenders: [null] }, { attackers: 'x', defenders: 7 },
+    { attackers: [{ rows: [{ unit: 'nope', count: 3 }] }], defenders: [ten('inf')] }]) {
+    let threw = false;
+    let res = null;
+    try { res = simulateMulti(junk); } catch (e) { threw = true; }
+    check(`never throws on ${JSON.stringify(junk)}`, !threw && res && res.coverage, threw ? 'threw' : '');
+  }
+
+  // --- outside the envelope the laws were read in: estimated, with a reason
+  const est = (label, cfg, re) => {
+    const res = simulateMulti(cfg);
+    check(`estimated, not measured: ${label}`,
+      res.coverage.level === 'estimated' && re.test(res.coverage.reason), `${res.coverage.level}: ${res.coverage.reason}`);
+  };
+  est('three stacks a side', { attackers: [ten('inf'), ten('inf'), ten('inf')], defenders: [ten('inf'), ten('inf'), ten('inf')] }, /two stacks a side/);
+  est('several rounds', { attackers: [ten('inf'), ten('inf')], defenders: pile, rounds: 5 }, /Multi-round/);
+  est('artillery shelling a pile from range', { attackers: [{ ...ten('art'), distance: 20 }], defenders: pile }, /Ranged fire into a pile/);
+  est('a defender 3 km from the pile', { attackers: [ten('inf')], defenders: [ten('inf'), { ...ten('inf'), distance: 3 }] }, /0 and 1 km/);
+  est('a defender half a kilometre from the fortress', { attackers: [ten('inf')], defenders: [fortified(ten('inf')), { ...ten('inf'), distance: 0.5 }] }, /between 0 and 1 km/);
+
+  check('the PAGE still says one stack a side; the ENGINE says where piles are computed',
+    MULTI_STACK.modelledByThisApp === false && MULTI_STACK.modelledByEngine === true
+    && MULTI_STACK.engineEntryPoint === 'simulateMulti' && typeof simulateMulti === 'function');
+  check('and the scope limit tells a player the law they are most likely to get backwards',
+    /never shared/i.test(SCOPE_LIMITS.find((s) => s.key === 'multi_stack').whatToDoInstead),
+    SCOPE_LIMITS.find((s) => s.key === 'multi_stack').whatToDoInstead);
+}
 
 // ===========================================================================
 // 25. THE BUG HUNT — a sweep aimed at this engine rather than at the game

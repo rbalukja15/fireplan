@@ -1531,16 +1531,25 @@ export const MUTUAL = {
 //    hundredth. It is the same unit the roster already flags as stacking with
 //    nothing, and this is the first measurement of what that costs it.
 //
-// WHAT THIS APP DOES. It models ONE stack a side and says so in the interface.
-// Nothing above is implemented, because implementing it means asking the user
-// for a position in kilometres per stack and a target per stack, and the two
-// laws that matter most to a player -- co-located defenders join in, and the
-// defender weakens between concentrated attackers -- are both things a player
-// can apply to a one-stack answer by hand once they know them. They are here
-// to be known.
+// WHAT THIS APP DOES. The page's form still asks for ONE stack a side and says
+// so in the interface, because more means a position in kilometres and a
+// target for every stack. The ENGINE computes piles: simulateMulti() in
+// engine.js resolves all of the above as a sequence of exchanges, built from
+// the same primitives as simulate() and held to it -- one stack a side must
+// reproduce simulate() exactly, and all seven readings are replayed.
+//
+// The one thing a player gets wrong composing these by hand is the direction
+// of return fire. It is never shared among attackers: every attacking stack
+// eats every defender's full answer. The defender weakening between
+// attackers is the ONLY relief a second attacker gets, and it is paid for by
+// the first.
 export const MULTI_STACK = {
   modelledByThisApp: false,
   stacksPerSideModelled: 1,
+  modelledByEngine: true,
+  engineEntryPoint: 'simulateMulti',
+  returnFireDividedAmongAttackers: false,
+  splitAcrossPile: 'rowAllocation',
   oneResultTablePerArmy: true,
   coLocatedDefendersAllFight: true,
   attackerOutputSplitAcrossCoLocatedDefenders: true,
@@ -1573,9 +1582,9 @@ export const MULTI_STACK = {
 export const SCOPE_LIMITS = [
   {
     key: 'multi_stack',
-    what: 'One stack a side. A real battle can have several stacks in each army, and this page models exactly one.',
-    why: 'The laws are measured and they are in MULTI_STACK: co-located defenders all join in and split the attacker\u2019s output between them; concentrated attacks add up, with the defender answering each attacker in turn and weakening as it goes; a building at 0 km is inherited by every land stack standing on it, an Airplane Convoy excepted; and moving a stack 1 km away takes it out of the building entirely. Modelling them means asking for a position in kilometres and a target for every stack, which is a different form from this one.',
-    whatToDoInstead: 'Attacking a pile: add the defenders\u2019 stacks together to see what comes back at you, since all of them answer. Piling on: the figures add, and each attacker after the first takes less return fire in proportion to how much of the defender\u2019s pool is already gone. Defending near a fortress you do not want: 1 km is enough to leave it.',
+    what: 'One stack a side on this form. A real battle can have several stacks in each army; the engine computes that (simulateMulti), but this page asks for exactly one.',
+    why: 'The laws are measured and they are in MULTI_STACK: co-located defenders all join in and split the attacker\u2019s output between them; concentrated attacks add up, with the defender answering each attacker in turn and weakening as it goes; a building at 0 km is inherited by every land stack standing on it, an Airplane Convoy excepted; and moving a stack 1 km away takes it out of the building entirely. The engine models them \u2014 simulateMulti() in engine.js, which replays all seven readings and reproduces this page\u2019s own one-stack result exactly \u2014 but feeding it means asking for a position in kilometres and a target for every stack, which is a different form from this one.',
+    whatToDoInstead: 'Attacking a pile: add the defenders\u2019 stacks together to see what comes back at you, since all of them answer \u2014 and every one of your attacking stacks takes that whole amount; return fire is never shared between attackers. Piling on: the figures add, and each attacker after the first takes less return fire in proportion to how much of the defender\u2019s pool is already gone. Defending near a fortress you do not want: 1 km is enough to leave it.',
   },
   {
     key: 'mutual_second_engagement_extras',
@@ -1661,7 +1670,14 @@ export const PROVENANCE = {
     source: 'results.jsonl, experiments=multi_stack (5), multi_stack_idle (1), multi_stack_focus (1) \u2014 seven requests, all ten-infantry stacks so every figure is a clean multiple of a known one.',
     method: 'Each of the help page\u2019s three multi-stack claims was turned into a pair of configurations differing in ONE thing, and the prediction was written down first. Co-location: A.1 attacks B.1 with B.2 idle beside it \u2014 A.1\u2019s 40.0 comes back as 20.0/20.0 and A.1 takes 50.00 + 50.00. Concentration: A.1 and A.2 both on B.1 \u2014 80.0 taken, 50.0 and 40.0 dealt back, the second attacker paying 0.8 of the first because the defender has lost a fifth of its pool answering the first. Inheritance: the same level-5 fortress with B.2 at 0 km and at 1 km \u2014 4.2/4.2 against 4.3/38.9.',
     tolerance: 'Exact to the printed decimal on the two laws with independent arithmetic. A.1 takes 100.0 against a predicted 50 + 50; A.2 takes 90.0 against a predicted 45 + 45; B.1 loses 80.0 against a predicted 40 + 40. The convoy exception is exact in the strongest available sense \u2014 adding the fortress moves B.1 from 27.6 to 2.9 and moves the convoy from 52.4 to 52.4.',
-    notEvidenceFor: 'Any of it at three or more stacks, at distances other than 0 and 1 km, or with the two co-located defenders differing in unit type from each other \u2014 the split across co-located defenders was read on identical stacks, where an even 20.0/20.0 cannot distinguish \u201chalf each\u201d from \u201cby pool share\u201d from \u201cby target factor\u201d. The convoy run is the one cell with unlike defenders and it splits 27.6/52.4, which is not even; that is a real observation and it is not enough to fix a rule.',
+    notEvidenceFor: 'Any of it at three or more stacks, at distances other than 0 and 1 km, or with the two co-located defenders differing in unit type from each other \u2014 the split across co-located defenders was read on identical stacks, where an even 20.0/20.0 cannot distinguish \u201chalf each\u201d from \u201cby pool share\u201d from \u201cby target factor\u201d. The convoy run is the one cell with unlike defenders, and on its own it could not fix a rule — see MULTI_STACK.unlikeSplit for the rule that turned out to be already on file.',
+  },
+  'MULTI_STACK.unlikeSplit': {
+    confidence: 'measured',
+    source: 'results.jsonl, experiment=multi_stack, tags "convoy, no fortress" and "convoy, fortress" — ten infantry (B.1) beside ten Airplane Convoys (B.2), two ten-infantry attackers.',
+    method: 'Not fitted. The split across a pile is this engine’s ROW allocation — target factor x survivors (DAMAGE_ALLOCATION, TARGET_FACTOR), measured on mixed stacks long before the pile sweep — applied to the pile’s stacks as though they were one stack’s rows. Infantry weigh 0.50 a survivor and a convoy 1.00, so A.1’s 40.0 lands 13.33/26.67; the convoy loses a unit, and A.2’s 40.0 lands 14.29/25.71 against weights of 5.0 and 9.0.',
+    residual: 'Predicted 27.62 / 52.38 with A.2 taking 55.52, against a printed 27.6 / 52.4 / 55.5; with the fortress, 2.89 / 52.38 and 58.37 against 2.9 / 52.4 / 58.4. Every figure inside its print precision with zero free parameters. An even split, a pool-share split and a head-count split each give 40.0 / 40.0 and miss the convoy by 12.4 HP.',
+    notEvidenceFor: 'Unlike defenders of different CLASSES. Infantry and the convoy are both land; a pile mixing classes would put a different attack column on each part of it, and nothing on record says how. simulateMulti() refuses one.',
   },
   'MULTI_STACK.armyTable': {
     confidence: 'measured',

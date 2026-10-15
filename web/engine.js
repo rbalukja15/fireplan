@@ -60,6 +60,7 @@ import {
   BOMBARDMENT,
   BOMBARDMENT_SPLIT,
   HERO_REACH,
+  MULTI_STACK,
 } from './data.js';
 
 const EPS = 1e-9;
@@ -1283,6 +1284,23 @@ export function simulate(config) {
   }
 }
 
+/**
+ * Re-scale a hero's own attack to the column for the class it is fighting.
+ * See runSimulation for why it is a ratio to the base column and not a
+ * replacement. Shared by simulate() and simulateMulti() so a hero cannot read
+ * one column in a single-stack battle and another in a pile.
+ */
+function applyHeroColumn(side, cls) {
+  if (!side.hero || !side.hero.def || cls === null) return;
+  const t = side.role === 'attacker'
+    ? side.hero.def.atkByTargetClass : side.hero.def.defByAttackerClass;
+  if (!t || t[cls] === undefined) return;
+  const base = side.hero.def.atkColumnBase || 'land';
+  if (t[base] === undefined || t[base] === 0) return;
+  side.hero.atk *= t[cls] / t[base];
+  side.hero.atkColumn = cls;
+}
+
 function emptySideResult() {
   return {
     pool: null, hpLost: null, pctLost: null, deaths: null, unitsLeft: null,
@@ -1290,6 +1308,484 @@ function emptySideResult() {
     buildings: [],
   };
 }
+
+// ---------------------------------------------------------------------------
+// simulateMulti() — more than one stack a side
+// ---------------------------------------------------------------------------
+
+/**
+ * MORE THAN ONE STACK A SIDE, on the three laws the multi_stack sweep measured
+ * (MULTI_STACK in data.js; seven requests, every reading replayed by the
+ * suite):
+ *
+ *   1. THE PILE. Every defending stack standing together fights. An attacker
+ *      aimed at one of them is answered by ALL of them, each at its full
+ *      strength, and its own output is divided between them.
+ *   2. SEQUENCE. Attackers resolve one after another, in the order given, and
+ *      each one is a whole exchange against the pile AS THE LAST ONE LEFT IT:
+ *      the second of two stacks piling onto ten infantry takes 40.00 where the
+ *      first took 50.00, because two of the ten are already dead. Return fire
+ *      is NEVER divided among attackers. Every attacker eats every defender's
+ *      answer, so committing a second stack doubles the bill before it halves
+ *      the battle -- the opposite of what dividing would mean, and the easy
+ *      mistake to make when composing these by hand.
+ *   3. BUILDINGS. A fortress shelters every stack in the pile standing within
+ *      MULTI_STACK.escapeDistanceKm of it, an Airplane Convoy excepted. At
+ *      1 km a stack is still in the fight but out of the fortress.
+ *
+ * The split between UNLIKE defenders is not a fourth law. It is this engine's
+ * own row allocation -- target factor x survivors, measured on mixed stacks --
+ * applied across the pile as though its stacks were the rows of one. With
+ * nothing fitted it reproduces the one cell that discriminates (ten infantry
+ * beside ten convoys: 27.62 / 52.38, attacker 55.52, against a printed
+ * 27.6 / 52.4 / 55.5), which the sweep had filed as "uneven, not enough to fix
+ * a rule". Even, pool-share and head-count splits all miss it by 12 HP.
+ *
+ * Built from the primitives the single-stack loop uses -- stackOutput,
+ * allocate, deathsFromShare, refreshRound, fortressDR -- and held to it: with
+ * one stack a side it must reproduce simulate() exactly, and the suite checks
+ * that across a sweep, so the two cannot drift apart.
+ *
+ * Config: { attackers: [stack, ...], defenders: [stack, ...], rounds,
+ *           terrain, defenderTerrain }
+ *   A stack is simulate()'s side config plus `distance` in km -- for an
+ *   attacker, to its target; for a defender, from the stack that owns the
+ *   pile's building (0 = standing on it). Attackers fire in array order.
+ *   A stack that is merely present and not attacking is simply not listed:
+ *   measured, an idle stack beside the attacker takes nothing.
+ *
+ * SCOPE: direct strikes into one pile. Refused with a reason, never
+ * approximated: patrol; mutual attacks; an air stack attacking the ground
+ * (its post-fire law runs on its own losses, which a pile turns into a sum of
+ * answers nobody has measured); hero bombardment abilities; a hero firing
+ * alone past its stack's reach; attackers of mixed classes; a pile of mixed
+ * classes.
+ *
+ * Returns { attackers: [side], defenders: [side], rounds, coverage,
+ * derivation }, each side in simulate()'s Result shape. Never throws.
+ */
+export function simulateMulti(config) {
+  const derivation = [];
+  const caveats = [];
+  try {
+    return runMulti(config || {}, derivation, caveats);
+  } catch (err) {
+    // A defect here must not become a plausible wrong answer.
+    derivation.push({
+      label: 'Internal error',
+      formula: `The engine failed while computing this configuration: ${err && err.message}`,
+      value: null,
+    });
+    const count = (k) => (config && Array.isArray(config[k]) ? config[k].length : 0);
+    return {
+      attackers: Array.from({ length: count('attackers') }, () => emptySideResult()),
+      defenders: Array.from({ length: count('defenders') }, () => emptySideResult()),
+      rounds: { asked: null, fought: 0, decided: false, ranOut: false },
+      coverage: {
+        level: 'unknown',
+        reason: 'The engine failed on this configuration, so no number below is trustworthy.',
+        caveats: caveats.concat([`Internal error: ${err && err.message}`]),
+      },
+      derivation,
+    };
+  }
+}
+
+function runMulti(config, derivation, caveats) {
+  const terrain = (typeof config.terrain === 'string') ? config.terrain : 'land';
+  const defenderTerrain = (typeof config.defenderTerrain === 'string')
+    ? config.defenderTerrain : terrain;
+  const atkCfgs = Array.isArray(config.attackers) ? config.attackers : [];
+  const defCfgs = Array.isArray(config.defenders) ? config.defenders : [];
+  let rounds = num(config.rounds, 1);
+  if (!Number.isFinite(rounds) || rounds <= 0) rounds = 1;
+
+  const atks = atkCfgs.map((c, i) => {
+    const battle = { terrain, defenderTerrain, mutual: false,
+                     distance: Math.max(0, num(c && c.distance, 0)) };
+    const s = makeSide(c, 'attacker', derivation, caveats, battle);
+    s.slot = `A.${i + 1}`;
+    s.battle = battle;
+    return s;
+  });
+  const defs = defCfgs.map((c, j) => {
+    const battle = { terrain, defenderTerrain, mutual: false, distance: 0 };
+    const s = makeSide(c, 'defender', derivation, caveats, battle);
+    s.slot = `B.${j + 1}`;
+    s.offsetKm = Math.max(0, num(c && c.distance, 0));
+    return s;
+  });
+
+  const withhold = (why) => {
+    derivation.push({ label: 'Result withheld', formula: why, value: null });
+    return {
+      attackers: atks.map((s) => sideResult(s, true)),
+      defenders: defs.map((s) => sideResult(s, true)),
+      rounds: { asked: rounds, fought: 0, decided: false, ranOut: false },
+      coverage: { level: 'unknown', reason: why, caveats },
+      derivation,
+    };
+  };
+
+  // ---- what this function will not compute ------------------------------
+  if (!atks.length || !defs.length) {
+    return withhold('A battle needs at least one stack on each side.');
+  }
+  const conflicts = atks.concat(defs).map((s) => s.groupConflict).filter(Boolean);
+  if (conflicts.length) return withhold(conflicts.join(' '));
+  if (atks.concat(defs).some((s) => !s.rows.length || s.pool === null)) {
+    return withhold('A stack has no unit with a measured max HP, so no pool can be computed.');
+  }
+  if (config.mutual) {
+    return withhold('Mutual attacks are measured for one stack a side only; with a pile, '
+      + 'which stack the second engagement comes from was never read.');
+  }
+  if (config.mode === 'patrol' || atkCfgs.some((c) => c && c.mode === 'patrol')) {
+    return withhold('Patrol is not modelled with more than one stack a side. Its attrition '
+      + 'is solved as a fixed point between one attacker and one defender, and a pile '
+      + 'has no measured equivalent.');
+  }
+  const atkClasses = [...new Set(atks.map((s) => combatClass(s.rows[0].unit, terrain)))];
+  if (atkClasses.length > 1) {
+    return withhold(`The attackers are of different classes (${atkClasses.join(', ')}). `
+      + 'Each class reads a different column, and how a pile answers a mixed set of '
+      + 'attackers was never measured. Run each class as its own battle.');
+  }
+  const pileClasses = [...new Set(defs.map((s) => targetClassFor(
+    atks[0].rows[0].unit, s.rows[0].unit, defenderTerrain)))];
+  if (pileClasses.length > 1) {
+    return withhold(`The defending pile mixes classes (${pileClasses.join(', ')}). The `
+      + 'attacker would read a different column against each, and every pile on record '
+      + 'is one class.');
+  }
+  const atkClass = atkClasses[0];
+  const pileClass = pileClasses[0];
+  const pileUnit = defs[0].unit;
+  const surface = pileClass === 'land' || pileClass === 'naval';
+  if (surface && atks.some((s) => s.unit && s.unit.cls === 'air' && s.unit.code !== 'bal')) {
+    return withhold('An air stack attacking the ground fires with what survives the '
+      + 'incoming fire of that same round. Against a pile that incoming fire is the sum '
+      + 'of every defender’s answer, and that combination was never measured.');
+  }
+  for (const s of atks) {
+    if (s.hero && BOMBARDMENT[s.hero.code]) {
+      return withhold(`${s.slot}: ${s.hero.def.label}'s bombardment ability lands on a `
+        + 'blast radius shared by pool, and how it divides across a pile was never read.');
+    }
+    s.outOfRange = s.rows.every((r) => r.inert);
+    const reach = s.hero && HERO_REACH[s.hero.code];
+    if (s.outOfRange && reach && s.battle.distance <= reach.reach) {
+      return withhold(`${s.slot}: nothing in the stack reaches ${s.battle.distance} km `
+        + 'but its hero does. A hero firing alone into a pile is not modelled.');
+    }
+  }
+  for (const a of atks) {
+    const ac = attackCoefficient(a.unit, pileUnit, defenderTerrain, terrain);
+    if (ac.value === null) {
+      return withhold(`${a.slot} attacking ${pileUnit.label} has never been measured: `
+        + `${ac.source}.`);
+    }
+    for (const d of defs) {
+      const dc = defenceCoefficient(d.unit, a.unit, defenderTerrain, terrain);
+      if (dc.value === null) {
+        return withhold(`${d.slot} defending against ${a.unit.label} has never been `
+          + `measured: ${dc.source}.`);
+      }
+    }
+  }
+
+  for (const s of atks) for (const r of s.rows) r.embarkedTargetClass = pileClass;
+  for (const s of defs) for (const r of s.rows) r.embarkedTargetClass = atkClass;
+  for (const s of atks) applyHeroColumn(s, pileClass);
+  for (const s of defs) applyHeroColumn(s, atkClass);
+
+  // ---- coverage ------------------------------------------------------------
+  let level = 'measured';
+  const reasons = [];
+  const because = (lvl, why) => {
+    level = worst(level, lvl);
+    if (why && !reasons.includes(why)) reasons.push(why);
+  };
+  for (const a of atks) {
+    for (const d of defs) {
+      const m = coverageOfStacks(a.rows, d.rows, defenderTerrain, terrain);
+      because(m.level, m.reason);
+    }
+  }
+  for (const s of atks.concat(defs)) {
+    if (s.hero && s.hero.hpBuffHits) {
+      because('estimated', `${s.slot}'s hero raises the max HP of a unit type in its own `
+        + 'stack, and this engine does not model HP buffs — those pools are understated.');
+    }
+    if (s.hero && s.hero.interpolated) {
+      because('estimated', `${s.slot}'s hero sits at a level that was never submitted, so `
+        + 'its stack multiplier is interpolated between measured levels.');
+    }
+    if (!s.tf.exact) {
+      because('estimated', null);
+      caveats.push(`${s.slot}: ${s.tf.note}`);
+    }
+  }
+  for (const d of defs) {
+    if (d.tf.output !== 1 && d.n > 20) {
+      because('estimated', null);
+      caveats.push(`${d.slot}: the defender's trench output bonus was only ever measured at `
+        + '10 units.');
+    }
+  }
+  if (!Number.isInteger(rounds)) {
+    caveats.push(`Fractional rounds (${rounds}) are measured only for patrol. Computing `
+      + `${Math.max(1, Math.floor(rounds))}.`);
+    rounds = Math.max(1, Math.floor(rounds));
+  }
+  if (rounds !== 1) {
+    because('estimated', 'Multi-round: every multi-stack reading, like every other reading '
+      + 'in the record, used maxRounds = 1. Each round here repeats the measured sequence.');
+  }
+  // THE ENVELOPE THE LAWS WERE READ IN: one round, melee, two stacks a side.
+  // Outside it the arithmetic is the same arithmetic, but saying "measured"
+  // would claim a reading nobody took.
+  if (atks.length > 2 || defs.length > 2) {
+    because('estimated', `The pile and sequence laws were measured with two stacks a side; `
+      + `this battle has ${atks.length} attacking and ${defs.length} defending.`);
+  }
+  if (defs.length > 1 && atks.some((a) => a.battle.distance > MELEE_RANGE)) {
+    because('estimated', 'Ranged fire into a pile: the split across the pile is the same '
+      + 'allocation law, but every pile reading was taken in melee.');
+  }
+  if (defs.some((d) => d.offsetKm > MULTI_STACK.escapeDistanceKm)) {
+    because('estimated', `A defender stands more than ${MULTI_STACK.escapeDistanceKm} km from `
+      + 'the pile. Membership was read at 0 and 1 km only; it is treated here as still in '
+      + 'the fight.');
+  }
+  if (defs.some((d) => d.offsetKm > 0 && d.offsetKm < MULTI_STACK.escapeDistanceKm)) {
+    because('estimated', `A defender stands between 0 and ${MULTI_STACK.escapeDistanceKm} km `
+      + 'from the building: sheltered at 0, not at 1, and nothing in between was read. It '
+      + 'is treated as sheltered.');
+  }
+
+  // ---- the pile's building --------------------------------------------------
+  const owners = defs.filter((d) => d.buildings.length);
+  const owner = owners[0] || null;
+  if (owners.length > 1) {
+    because('estimated', `More than one defending stack carries buildings. Every reading `
+      + `used one building; ${owner.slot}'s is used and the others are ignored.`);
+  }
+  const fort = owner ? fortressOf(owner) : null;
+  const except = MULTI_STACK.buildingInheritanceExceptions || [];
+  for (const d of defs) {
+    d.sheltered = !!fort && (d === owner || (d.offsetKm < MULTI_STACK.escapeDistanceKm
+      && !d.rows.some((r) => r.unit && except.includes(r.unit.code))));
+    if (fort && !d.sheltered && d !== owner && d.offsetKm < MULTI_STACK.escapeDistanceKm) {
+      caveats.push(`${d.slot} stands on the fortress but does NOT inherit it: an Airplane `
+        + 'Convoy stacks with nothing (measured, losses identical with and without it).');
+    }
+  }
+  if (fort) {
+    for (const a of atks) {
+      if (a.unit.cls !== 'land') {
+        because('estimated', 'Fortress mitigation was measured only against a land attacker.');
+      }
+    }
+    if (fort.level > FORTRESS.maxMeasuredLevel) {
+      because('estimated', `Fortress DR above level ${FORTRESS.maxMeasuredLevel} is unmeasured.`);
+    }
+  }
+  for (const a of atks) {
+    a.bdOk = a.rows.every((r) => r.unit
+      && BUILDING_DAMAGE_PER_EFFECTIVE_UNIT[r.unit.code] !== undefined);
+    if (owner && !a.bdOk) {
+      caveats.push(`${a.slot}: damage to buildings has no reading for every unit in this `
+        + 'stack, so it deals none here.');
+    }
+    if (a.buildings.length) {
+      caveats.push(`${a.slot}: buildings on the ATTACKING side are inert in this model.`);
+    }
+  }
+
+  derivation.push({
+    label: 'Multi-stack battle',
+    formula: `${atks.length} attacking stack(s) into a pile of ${defs.length}. Each attacker `
+      + 'in turn is answered in full by every defender, and divides its own output across '
+      + 'the pile by target factor x survivors; the pile is left as each attacker leaves it '
+      + `(MULTI_STACK). ${fort ? `${owner.slot}'s fortress shelters `
+        + `${defs.filter((d) => d.sheltered).map((d) => d.slot).join(', ')}.` : ''}`,
+    value: null,
+  });
+
+  // ---- the battle ----------------------------------------------------------
+  let roundsFought = 0;
+  let destroyedNoted = false;
+  const settle = (side) => {
+    if (side.pool <= EPS) {
+      side.pool = 0;
+      side.wiped = true;
+      if (side.deaths < side.n0 && !side.clampNoted) {
+        side.clampNoted = true;
+        caveats.push(`${side.slot}: the stack is wiped (0 HP) but the measured death rule, `
+          + `floor(HP lost / per-unit HP), gives only ${side.deaths} of ${side.n0}. Whether the `
+          + 'site clamps the death count for a wiped damaged stack was never read.');
+      }
+      side.n = 0;
+    } else {
+      side.n = Math.max(0, side.n0 - side.deaths);
+    }
+  };
+
+  for (let r = 1; r <= rounds; r += 1) {
+    const tag = rounds > 1 ? `R${r} ` : '';
+    if (r > 1) {
+      for (const s of atks) refreshRound(s);
+      for (const s of defs) refreshRound(s);
+    }
+    const able = atks.filter((a) => a.pool > EPS && !a.outOfRange);
+    if (!able.length || defs.every((d) => d.pool <= EPS)) {
+      derivation.push({
+        label: `${tag}round skipped`,
+        formula: able.length
+          ? 'Every defending stack is destroyed; the battle is over.'
+          : 'No attacking stack is left that can reach the pile; the battle is over.',
+        value: null,
+      });
+      break;
+    }
+    roundsFought = r;
+
+    for (const a of able) {
+      const pile = defs.filter((d) => d.pool > EPS);
+      if (!pile.length) break;
+      const suppressed = a.battle.distance > MELEE_RANGE;
+
+      // 1. EVERY defender answers, at full strength, from where it stands now.
+      let incoming = 0;
+      const said = [];
+      for (const d of pile) {
+        const out = suppressed ? 0 : stackOutput(d, (u) => defenceCoefficient(
+          u, a.unit, defenderTerrain, terrain).value, 1).total;
+        d.damageDealt += out;
+        d.outputRaw += out;
+        incoming += out;
+        said.push(`${d.slot} ${round4(out)}`);
+      }
+      // 2. The attacker takes all of it -- never a share of it.
+      const aAlloc = allocate(a, incoming);
+      let aDeaths = 0;
+      for (const pt of aAlloc.parts) {
+        const dd = deathsFromShare(pt.row, pt.share);
+        pt.row.hpLost += pt.share;
+        pt.row.deaths += dd;
+        aDeaths += dd;
+      }
+      const aLost = aAlloc.parts.reduce((t, pt) => t + pt.share, 0);
+
+      // 3. Its output, from its state at the start of the round.
+      const raw = stackOutput(a, (u) => attackCoefficient(
+        u, pileUnit, defenderTerrain, terrain).value, 1).total;
+
+      // 4. Divided across the pile as one stack's rows, then each stack's own
+      //    shelter. DR from the fortress's HP NOW: an earlier attacker in this
+      //    round has already chipped it (measured, 4.2 not 4.0 at 0 km).
+      const dr = fort ? fortressDR(fort.hp) : 0;
+      const targets = [];
+      const w = [];
+      for (const d of pile) {
+        const rw = allocationWeights(d.rows);
+        d.rows.forEach((row, i) => { targets.push({ side: d, row }); w.push(rw[i]); });
+        if (d.hero && d.hero.pool) { targets.push({ side: d, row: d.hero }); w.push(HERO_ALLOC_WEIGHT); }
+      }
+      const sum = w.reduce((x, y) => x + y, 0);
+      const landed = new Map();
+      let delivered = 0;
+      targets.forEach((t, i) => {
+        const want = (sum > 0 ? raw * (w[i] / sum) : raw / (targets.length || 1))
+          * (t.side.sheltered ? 1 - dr : 1);
+        delivered += want;
+        const left = t.row.pool === null ? null : Math.max(0, t.row.pool - (t.row.hpLost || 0));
+        const got = Math.min(want, left === null ? want : left);
+        const dd = deathsFromShare(t.row, got);
+        t.row.hpLost += got;
+        t.row.deaths += dd;
+        const acc = landed.get(t.side) || { lost: 0, deaths: 0 };
+        acc.lost += got;
+        acc.deaths += dd;
+        landed.set(t.side, acc);
+      });
+      a.damageDealt += delivered;
+      a.outputRaw += raw;
+
+      // 5. The building takes its own figure from every attacker, undivided.
+      let bDmg = null;
+      if (owner && a.bdOk) {
+        bDmg = a.rows.reduce((t, row) => {
+          const frac = row.liveFrac === undefined ? row.hpPct / 100 : row.liveFrac;
+          return t + BUILDING_DAMAGE_PER_EFFECTIVE_UNIT[row.unit.code] * row.effective
+            * hpMultiplier(frac);
+        }, 0);
+        owner.damageToBuildings = (owner.damageToBuildings || 0) + bDmg;
+        a.damageToBuildings = (a.damageToBuildings || 0) + bDmg;
+        const target = owner.buildings[0];
+        if (target.hp !== null) {
+          const applied = Math.min(bDmg, target.hp);
+          target.hp -= applied;
+          target.hpLost += applied;
+          if (target.hp <= EPS) {
+            target.destroyed = true;
+            if (target.mitigates && !destroyedNoted) {
+              destroyedNoted = true;
+              caveats.push('The fortress is destroyed. What a fortress at zero HP confers was '
+                + 'never measured — the formula\'s "+1" term would still say 15%, and this '
+                + 'engine says 0%.');
+            }
+          }
+        }
+      }
+
+      a.hpLost += aLost;
+      a.pool -= aLost;
+      a.deaths += aDeaths;
+      for (const [d, acc] of landed) {
+        d.hpLost += acc.lost;
+        d.pool -= acc.lost;
+        d.deaths += acc.deaths;
+      }
+      settle(a);
+      for (const d of pile) settle(d);
+
+      derivation.push({
+        label: `${tag}${a.slot} attacks the pile`,
+        formula: (suppressed
+          ? `From ${a.battle.distance} km, past the ${MELEE_RANGE} km a defender can answer: `
+            + 'nothing comes back. '
+          : `Every defender answers in full — ${said.join(' + ')} = ${round4(incoming)}; `
+            + `${a.slot} loses ${round4(aLost)}. `)
+          + `It deals ${round4(raw)}`
+          + (dr > 0 ? `, ${round4(dr * 100)}% off for the sheltered stacks` : '')
+          + `: ${[...landed].map(([d, acc]) => `${d.slot} ${round4(acc.lost)}`).join(', ')}`
+          + (bDmg !== null ? `; the ${owner.buildings[0].label} takes ${round4(bDmg)}` : '')
+          + '.',
+        value: delivered,
+      });
+
+      // The next attacker meets the pile as this one left it.
+      for (const d of pile) refreshRound(d);
+    }
+  }
+
+  const decided = defs.every((d) => d.wiped) || atks.every((a) => a.wiped);
+  return {
+    attackers: atks.map((s) => sideResult(s, false)),
+    defenders: defs.map((s) => sideResult(s, false)),
+    rounds: {
+      asked: rounds,
+      fought: roundsFought,
+      decided,
+      ranOut: !decided && roundsFought >= rounds,
+    },
+    coverage: { level, reason: reasons.join(' '), caveats },
+    derivation,
+  };
+}
+
 
 function runSimulation(config, derivation, caveats) {
   // Terrain and distance are properties of the BATTLE, not of a side.
@@ -1339,18 +1835,8 @@ function runSimulation(config, derivation, caveats) {
   // threw that curve away. The base column is 'land' for every hero measured
   // against infantry, which is all sixteen land ones, and the hero's own class
   // for the air and naval ones, whose curves were read air-against-air.
-  const heroCol = (side, cls) => {
-    if (!side.hero || !side.hero.def || cls === null) return;
-    const t = side.role === 'attacker'
-      ? side.hero.def.atkByTargetClass : side.hero.def.defByAttackerClass;
-    if (!t || t[cls] === undefined) return;
-    const base = side.hero.def.atkColumnBase || 'land';
-    if (t[base] === undefined || t[base] === 0) return;
-    side.hero.atk *= t[cls] / t[base];
-    side.hero.atkColumn = cls;
-  };
-  heroCol(atk, defClass);
-  heroCol(def, atkClass);
+  applyHeroColumn(atk, defClass);
+  applyHeroColumn(def, atkClass);
   for (const s of [atk, def]) {
     if (s.hero && s.hero.atkColumn && s.hero.atkColumn !== 'land') {
       derivation.push({
