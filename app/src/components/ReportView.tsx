@@ -7,6 +7,7 @@ const fmt = (n: number | null | undefined): string =>
     : n.toLocaleString('en-US', { maximumFractionDigits: 1 })
 
 function headline(r: BattleResult): string {
+  if (r.attacker.hpLost === null && r.defender.hpLost === null) return 'Result withheld'
   const rounds = r.rounds?.fought
   const at = rounds !== undefined ? ` — round ${fmt(rounds)}` : ''
   if (r.attacker.wiped && r.defender.wiped) return `Mutual annihilation${at}`

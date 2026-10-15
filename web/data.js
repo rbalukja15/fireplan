@@ -205,6 +205,35 @@ export const CLASS_DEFENCE = {
   bb:     { land: 40.0, air: 6.0,  naval: 40.0 },
 };
 
+// ---------------------------------------------------------------------------
+// WHERE THE AIRCRAFT WAS when its cells were read
+// ---------------------------------------------------------------------------
+// CLASS_ATTACK and CLASS_DEFENCE are keyed by class, and an aircraft is class
+// air whether it is flying or parked on the ground, so the tables alone cannot
+// say which position a figure belongs to. The record can. Every cell with an
+// aircraft as the TARGET was read in exactly one position per attacking class,
+// and for two of the three classes the server refused the other position:
+//
+//   attacked by AIR    read AIRBORNE only: air_matrix, class_matrix (air/air),
+//                      class_matrix_2, defence_matrix. Parked: never submitted.
+//   attacked by LAND   read PARKED only: class_matrix (TERRAIN_PAIR sends
+//                      land/air as land/land), class_matrix_2, defence_matrix,
+//                      target_terrain, land_hero_target_class. Airborne:
+//                      land_attacks_air sent it, and 9 of 9 came back empty.
+//   attacked by NAVAL  read PARKED only: class_matrix_2, target_terrain, and
+//                      defence_matrix retried at sea/land. Airborne: sea/air
+//                      aborted the batch all 6 times.
+//
+// So a fighter's 20 against aircraft is an AIRBORNE fighter's 20, and its 5
+// against ground troops is a PARKED fighter's 5. A Balloon is not in this:
+// it fights as a land unit on land and the server will not fly it at all.
+export const AIR_POSITION = {
+  // attacking class -> the position its cells against an aircraft were read in
+  read: { air: 'air', land: 'land', naval: 'land' },
+  // attacking class -> the position the server would not run
+  refused: { land: 'air', naval: 'air' },
+};
+
 // Superseded by CLASS_DEFENCE's air column, which reproduces every one of
 // these from different attackers. Kept because it is an independent reading of
 // the same ten numbers, and a second source that agrees is worth more than a
@@ -1664,6 +1693,12 @@ export const PROVENANCE = {
   'RIG.dryRunPollution': {
     confidence: 'measured',
     note: 'Found while dry-running this sweep, before a request was sent: --dry-run appended eighteen rows of NOTHING to results.jsonl. record() is called unconditionally by every experiment, and a dry run has no readings to record. They are not wrong measurements, they are not measurements \u2014 and a reader replaying the archive could not tell "the site returned no reading" from "nobody asked the site". The eighteen were removed and record() now refuses while a dry run is in progress. The guard cannot key on the readings being empty, because they legitimately are in hero_hp_cap and hero_caps, whose 152 blank rows record server REFUSALS; it keys on whether a request was actually sent.',
+  },
+  'AIR_POSITION': {
+    confidence: 'measured',
+    source: 'results.jsonl: every row with a Fighter, Bomber or Zeppelin as the target, grouped by the attacker\u2019s class and the target\u2019s terrain. Where a sweep did not log its terrain (class_matrix), the terrain is TERRAIN_PAIR in dxcalc_probe.py, which sent land-vs-air as land/land and air-vs-air as air/air.',
+    method: 'Airborne targets appear only under AIR attackers; parked targets only under land and naval ones. The two refusals are empty batches, not missing rows: land_attacks_air submitted inf, art and ht against int, tac and zep at land/air (9 requests, no result line in any), and the naval defence cells at sea/air aborted for bb and cl against every flier (6) before running cleanly at sea/land.',
+    notEvidenceFor: 'That a PARKED aircraft defends against an AIR attacker the way an airborne one does, or that the attacker treats it as an air target rather than a ground one. Neither was submitted. For a fighter the two candidates are 20 and 5 on defence; for a Bomber hitting it, 3 and 30 on attack. The engine uses the airborne figures and says it is a stand-in.',
   },
   'MULTI_STACK.laws': {
     confidence: 'measured',

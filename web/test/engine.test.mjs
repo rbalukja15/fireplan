@@ -49,7 +49,7 @@ import {
   BOMBARDMENT, BOMBARDMENT_SPLIT, HERO_REACH,
   MUTUAL,
   MULTI_STACK, SCOPE_LIMITS, STACK_GROUP, STACK_GROUP_LABEL,
-  FORTRESS, DAMAGE_ALLOCATION,
+  FORTRESS, DAMAGE_ALLOCATION, AIR_POSITION,
 } from '../data.js';
 import {
   heroBuff,
@@ -159,10 +159,14 @@ console.log('\n2. unit_stats — the same-class diagonal, all four runs of the r
     const code = r.meta.unit;
     if (seen.has(code)) { run += 1; seen = new Set(); }
     seen.add(code);
+    // In the terrain it was sent in. The three fliers were flown in AIR
+    // terrain, and since a parked aircraft is a different cell (AIR_POSITION),
+    // replaying them on land would be replaying a battle nobody fought.
     const res = simulate({
       attacker: { unit: code, count: 10 },
       defender: { unit: code, count: 10 },
       rounds: 1,
+      terrain: r.meta.terrain || 'land',
     });
     const eA = r.readings['A.1.1'];
     const eB = r.readings['B.1.1'];
@@ -548,13 +552,20 @@ console.log('\n10. honesty — simulate() never throws, and never overstates wha
     + 'here should be measured', measuredCells === 0, `${measuredCells} claimed measured`);
 }
 {
-  // Same sweep in the clean configuration: one round, no trench, no buildings.
+  // Same sweep in the clean configuration: one round, no trench, no buildings,
+  // and each pairing in the position the record read it in. That is land for
+  // everything except aircraft against aircraft, which were only ever flown:
+  // the same duel with the targets PARKED is a different cell, never
+  // submitted, and section 12y pins it as estimated.
   const codes = Object.keys(UNITS);
+  const FLIERS = new Set(['int', 'tac', 'zep']);
+  const readAt = (a, d) => (FLIERS.has(a) && FLIERS.has(d) ? { terrain: 'air' } : {});
   const seen = { measured: 0, estimated: 0, unknown: 0 };
   for (const a of codes) {
     for (const d of codes) {
       const res = simulate({
         attacker: { unit: a, count: 10 }, defender: { unit: d, count: 10 }, rounds: 1,
+        ...readAt(a, d),
       });
       seen[res.coverage.level] += 1;
       // A pairing may call itself measured only where BOTH halves are
@@ -593,7 +604,7 @@ console.log('\n10. honesty — simulate() never throws, and never overstates wha
       for (const a of codes) {
         for (const d of codes) {
           const r = simulate({ attacker: { unit: a, count: 10 },
-            defender: { unit: d, count: 10 }, rounds: 1 });
+            defender: { unit: d, count: 10 }, rounds: 1, ...readAt(a, d) });
           if (r.coverage.level !== 'measured') notMeasured.push(`${a}v${d}`);
         }
       }
@@ -953,9 +964,12 @@ console.log('\n12. composite stacks — replayed against the four measured mixtu
   // count it. The Balloon is the only unit left that supplies one, which is
   // itself worth stating: everything else in the roster is corroborated on
   // both halves now.
+  // Flown, not parked: the two fighter-against-flier pairings are the measured
+  // ones only in the air, which is where air_matrix read them (AIR_POSITION).
   const crossPair = simulate({
     attacker: { rows: [{ unit: 'int', count: 10 }, { unit: 'bal', count: 40 }] },
     defender: { rows: [{ unit: 'int', count: 30 }, { unit: 'tac', count: 10 }] },
+    terrain: 'air',
   });
   check('a mixture containing a weaker cell reports it, and counts it',
     crossPair.coverage.level === 'estimated'
@@ -3198,6 +3212,89 @@ console.log('\n12x. building damage for the nine units that had no figure');
     BUILDING_DAMAGE_PER_EFFECTIVE_UNIT.int === 1.0
     && BUILDING_DAMAGE_PER_EFFECTIVE_UNIT.tac === 6.0
     && BUILDING_DAMAGE_PER_EFFECTIVE_UNIT.zep === 30.0);
+}
+
+// ===========================================================================
+console.log('\n12y. where the aircraft is — parked and airborne are different cells');
+// ===========================================================================
+// An aircraft is class air flying or parked, so the class tables cannot tell
+// the two apart and coverage used to treat them as one cell. They are not:
+// every reading against an aircraft was taken in ONE position per attacking
+// class, and the server refused the other position for two of the three.
+{
+  const FLY = new Set(['int', 'tac', 'zep']);
+  const str = (x) => (typeof x === 'string' ? x : null);
+  // AIR_POSITION is re-derived from the archive here, so it cannot drift.
+  const positions = { air: new Set(), land: new Set(), naval: new Set() };
+  let placed = 0;
+  let refusedEmpty = 0;
+  for (const r of rows) {
+    const m = r.meta || {};
+    const tgt = str(m.target) || str(m.defender);
+    if (!FLY.has(tgt)) continue;
+    const atk = str(m.atk) || str(m.attacker) || str(m.unit);
+    const terr = Array.isArray(m.terrain) ? m.terrain : [];
+    const dt = str(m.def_terrain) || str(m.tgt_terrain) || terr[1] || null;
+    const at = str(m.atk_terrain) || terr[0] || null;
+    const hasReading = r.readings && Object.keys(r.readings).length > 0;
+    if (r.experiment === 'land_attacks_air') {
+      if (!hasReading) refusedEmpty += 1;
+      continue;
+    }
+    if (!hasReading || !atk || !UNITS[atk] || (dt !== 'air' && dt !== 'land')) continue;
+    positions[combatClass(atk, at || 'land')].add(dt);
+    placed += 1;
+  }
+  check(`every placed reading against an aircraft sits in AIR_POSITION.read (${placed} rows)`,
+    placed >= 30 && Object.entries(positions).every(([cls, set]) =>
+      set.size === 1 && set.has(AIR_POSITION.read[cls])),
+    JSON.stringify(Object.fromEntries(Object.entries(positions).map(([k, v]) => [k, [...v]]))));
+  check('and the airborne request from the ground came back empty every time',
+    refusedEmpty === 9 && AIR_POSITION.refused.land === 'air', `${refusedEmpty} empty`);
+
+  const fight = (atkUnit, atkTerrain, target, targetTerrain) => simulate({
+    attacker: { rows: [{ unit: atkUnit, count: 40 }] },
+    defender: { rows: [{ unit: target, count: 40 }] },
+    rounds: 1, terrain: atkTerrain, defenderTerrain: targetTerrain,
+  });
+  for (const t of FLY) {
+    const lbl = UNITS[t].label;
+    // the two positions on record
+    check(`${lbl} AIRBORNE against aircraft: measured`,
+      fight('int', 'air', t, 'air').coverage.level === 'measured');
+    check(`${lbl} PARKED against infantry and battleships: measured`,
+      fight('inf', 'land', t, 'land').coverage.level === 'measured'
+      && fight('bb', 'sea', t, 'land').coverage.level === 'measured');
+    // a stand-in, said as one
+    const parked = fight('tac', 'air', t, 'land');
+    check(`${lbl} PARKED against aircraft: estimated, with the factor of ten spelled out`,
+      parked.coverage.level === 'estimated' && /PARKED/.test(parked.coverage.reason)
+      && /factor of ten/.test(parked.coverage.reason) && parked.attacker.hpLost !== null,
+      `${parked.coverage.level}: ${parked.coverage.reason.slice(0, 120)}`);
+    // no reading at all: withheld, not borrowed from the other position
+    for (const [atkUnit, atkTerrain] of [['inf', 'land'], ['bb', 'sea']]) {
+      const up = fight(atkUnit, atkTerrain, t, 'air');
+      check(`${UNITS[atkUnit].label} against an AIRBORNE ${lbl}: withheld, not borrowed`,
+        up.coverage.level === 'unknown' && up.attacker.hpLost === null
+        && up.defender.hpLost === null && /will not run/.test(up.coverage.reason),
+        `${up.coverage.level}: ${up.coverage.reason.slice(0, 120)}`);
+    }
+  }
+  // the rule touches aircraft and nothing else
+  check('an EMBARKED fighter is a naval-class target and is untouched by position',
+    fight('inf', 'land', 'int', 'sea').coverage.level === 'measured');
+  check('the Balloon keeps its own reason — it is a land unit on land, not a parked aircraft',
+    /Balloon/.test(fight('inf', 'land', 'bal', 'land').coverage.reason)
+    && !/PARKED/.test(fight('inf', 'land', 'bal', 'land').coverage.reason));
+  check('a call that states no position is not second-guessed',
+    coverageOf('int', 'int').level === 'measured' && coverageOf('inf', 'int').level === 'measured');
+  check('and the pile engine inherits the withholding through the same lookups',
+    simulateMulti({ attackers: [{ rows: [{ unit: 'inf', count: 20 }] }],
+      defenders: [{ rows: [{ unit: 'int', count: 20 }] }],
+      terrain: 'land', defenderTerrain: 'air' }).coverage.level === 'unknown');
+  check('the record says what it cannot say, where a reader will meet it',
+    /never submitted|Neither was submitted/.test(PROVENANCE.AIR_POSITION.notEvidenceFor)
+    && /9 requests/.test(PROVENANCE.AIR_POSITION.method));
 }
 
 // ===========================================================================

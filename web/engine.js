@@ -61,6 +61,7 @@ import {
   BOMBARDMENT_SPLIT,
   HERO_REACH,
   MULTI_STACK,
+  AIR_POSITION,
 } from './data.js';
 
 const EPS = 1e-9;
@@ -551,8 +552,11 @@ export function coverageOf(atkUnit, defUnit, defTerrain, atkTerrain) {
   if (worse.level === 'unknown') {
     return {
       level: 'unknown',
-      reason: `${which} has never been measured: ${worse.source}. The engine `
-        + 'withholds the numbers rather than inventing them.',
+      reason: worse.refused
+        ? `${which} has no reading to give: ${worse.source}. The engine withholds `
+          + 'the numbers rather than borrowing them from the other position.'
+        : `${which} has never been measured: ${worse.source}. The engine `
+          + 'withholds the numbers rather than inventing them.',
     };
   }
   if (worse.level === 'estimated') {
@@ -566,7 +570,12 @@ export function coverageOf(atkUnit, defUnit, defTerrain, atkTerrain) {
     return {
       level: 'estimated',
       reason: `${which} is a stand-in, not a reading: ${worse.source}.`
-        + (standIn
+        + (worse.position
+          ? ' Which figures a parked aircraft takes against an air attacker was '
+            + 'never read: a fighter defends at 20 airborne and 5 parked against '
+            + 'ground troops, and a Bomber hits air at 3 and ground at 30, so this '
+            + 'could be out by a factor of ten in either direction.'
+          : standIn
           ? ' This exact off-diagonal pairing has never been submitted and no '
             + 'column covers it. Attack is known to vary by target class (the '
             + 'Bomber is 3.0 against air and 30.0 against ground), so it may '
@@ -665,6 +674,46 @@ export function targetClassFor(attacker, target, targetTerrain) {
   return combatClass(t, targetTerrain);
 }
 
+/**
+ * WHERE THE AIRCRAFT IS. An aircraft is class air flying or parked, so the
+ * class tables cannot tell a parked fighter from an airborne one. Coverage
+ * used to read them as the same cell, and called two configurations measured
+ * that nobody had measured: aircraft attacking PARKED aircraft (every air-vs-
+ * air reading had them airborne) and ground troops attacking AIRBORNE ones
+ * (every ground-vs-air reading had them parked, and the airborne request came
+ * back empty nine times out of nine). AIR_POSITION is the record of which
+ * position each attacking class was read against; this asks it.
+ *
+ * Returns null when the pairing matches the record, else { level, refused,
+ * note }. A target terrain other than 'air' or 'land' states no position and
+ * is left alone -- embarked aircraft are a different class entirely.
+ */
+function airPositionGap(target, targetTerrain, attackerCls) {
+  const t = resolveUnit(target);
+  if (!t || (targetTerrain !== 'air' && targetTerrain !== 'land')) return null;
+  if (combatClass(t, targetTerrain) !== 'air') return null;
+  const named = (pos) => (pos === 'air' ? 'AIRBORNE' : 'PARKED');
+  if (AIR_POSITION.refused[attackerCls] === targetTerrain) {
+    return {
+      level: 'unknown',
+      refused: true,
+      note: `a ${attackerCls} stack against an ${named(targetTerrain)} ${t.label} is a `
+        + `combination the server will not run (it came back empty every time it was `
+        + `sent, AIR_POSITION); the ${attackerCls} column against aircraft was read with `
+        + `them ${named(AIR_POSITION.read[attackerCls])}`,
+    };
+  }
+  const read = AIR_POSITION.read[attackerCls];
+  if (read === undefined || read === targetTerrain) return null;
+  return {
+    level: 'estimated',
+    position: true,
+    note: `the ${attackerCls} column against ${t.label} was read with it `
+      + `${named(read)}, and here it is ${named(targetTerrain)} — that position was `
+      + `never submitted, so the ${named(read).toLowerCase()} figure stands in`,
+  };
+}
+
 export function attackCoefficient(atkUnit, defUnit, defTerrain, atkTerrain) {
   const a = resolveUnit(atkUnit);
   const d = resolveUnit(defUnit);
@@ -680,7 +729,9 @@ export function attackCoefficient(atkUnit, defUnit, defTerrain, atkTerrain) {
   if (v !== undefined) {
     const sameClass = aCls === dCls;
     const embarked = dCls === 'naval' && d.cls !== 'sea';
-    return {
+    const gap = airPositionGap(d, defTerrain, aCls);
+    if (gap && gap.refused) return { value: null, level: 'unknown', refused: true, source: gap.note };
+    const found = {
       value: v,
       // Corroboration is a property of the RECORD, so it is read from the
       // record rather than inferred from the attacker's class here. A blanket
@@ -698,6 +749,9 @@ export function attackCoefficient(atkUnit, defUnit, defTerrain, atkTerrain) {
           ? `CLASS_ATTACK (${aCls} vs ${aCls}; flat across every target in the class)`
           : `CLASS_ATTACK (${aCls} attacking ${dCls}, measured directly)`,
     };
+    if (!gap) return found;
+    return { value: v, level: worst(found.level, gap.level), position: true,
+             source: `${found.source}; but ${gap.note}` };
   }
   if (a.atk === null) {
     return { value: null, level: 'unknown', source: `${a.code} has no measured attack` };
@@ -736,12 +790,12 @@ export function defenceCoefficient(defUnit, atkUnit, defTerrain, atkTerrain) {
   const row = CLASS_DEFENCE[d.code];
   const v = row ? row[aCls] : undefined;
   if (v !== undefined) {
-    return {
-      value: v,
-      level: 'measured',
-      source: `CLASS_DEFENCE (${d.label} against ${aCls} attackers; two `
-        + 'independent attackers of that class read the same figure)',
-    };
+    const source = `CLASS_DEFENCE (${d.label} against ${aCls} attackers; two `
+      + 'independent attackers of that class read the same figure)';
+    const gap = airPositionGap(d, defTerrain, aCls);
+    if (gap && gap.refused) return { value: null, level: 'unknown', refused: true, source: gap.note };
+    if (gap) return { value: v, level: gap.level, position: true, source: `${source}; but ${gap.note}` };
+    return { value: v, level: 'measured', source };
   }
   if (d.def === null) return { value: null, level: 'unknown', source: `${d.code} has no measured defence` };
   return { value: null, level: 'unknown', source: `no reading for ${dCls} defending against ${aCls}` };
